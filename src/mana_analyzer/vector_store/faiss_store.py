@@ -67,7 +67,7 @@ class FaissStore:
             ]
             ids = [chunk.id for chunk in chunks]
             logger.debug("Embedding %d documents", len(texts))
-            vectors = self.embeddings.embed_documents(texts)
+            vectors = self._embed_in_batches(texts)
             pairs = list(zip(texts, vectors, strict=False))
 
             if store is None:
@@ -91,6 +91,51 @@ class FaissStore:
             logger.info("FAISS index persisted")
         else:
             logger.info("No FAISS changes to persist")
+
+    def _embed_in_batches(
+        self,
+        texts: list[str],
+        max_tokens_per_request: int = 250_000,
+        max_items_per_request: int = 512,
+    ) -> list[list[float]]:
+        try:
+            import tiktoken
+
+            encoder = tiktoken.get_encoding("cl100k_base")
+            token_counts = [len(encoder.encode(t, disallowed_special=())) for t in texts]
+        except Exception:
+            token_counts = [max(1, len(t) // 4) for t in texts]
+
+        vectors: list[list[float]] = []
+        batch_texts: list[str] = []
+        batch_tokens = 0
+        for text, tokens in zip(texts, token_counts, strict=False):
+            # A single chunk larger than the limit: send it alone; API will truncate or error.
+            if tokens >= max_tokens_per_request:
+                if batch_texts:
+                    logger.debug("Embedding batch: items=%d tokens=%d", len(batch_texts), batch_tokens)
+                    vectors.extend(self.embeddings.embed_documents(batch_texts))
+                    batch_texts, batch_tokens = [], 0
+                logger.warning("Single chunk exceeds token budget (%d tokens); embedding alone", tokens)
+                vectors.extend(self.embeddings.embed_documents([text]))
+                continue
+
+            if (
+                batch_tokens + tokens > max_tokens_per_request
+                or len(batch_texts) >= max_items_per_request
+            ) and batch_texts:
+                logger.debug("Embedding batch: items=%d tokens=%d", len(batch_texts), batch_tokens)
+                vectors.extend(self.embeddings.embed_documents(batch_texts))
+                batch_texts, batch_tokens = [], 0
+
+            batch_texts.append(text)
+            batch_tokens += tokens
+
+        if batch_texts:
+            logger.debug("Embedding batch: items=%d tokens=%d", len(batch_texts), batch_tokens)
+            vectors.extend(self.embeddings.embed_documents(batch_texts))
+
+        return vectors
 
     def search(self, index_dir: Path, query: str, k: int) -> list[SearchHit]:
         logger.info("Searching FAISS index: index_dir=%s k=%d", index_dir, k)
