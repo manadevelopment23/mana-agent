@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 from mana_analyzer.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
 from mana_analyzer.commands import cli
+from mana_analyzer.commands.ui_helpers import _looks_like_edit_request, _looks_like_plan_trigger_request
 
 runner = CliRunner()
 
@@ -25,6 +26,18 @@ class DummySettings:
     coding_search_budget = 4
     coding_read_budget = 6
     coding_require_read_files = 2
+
+
+def test_chat_intent_helpers_do_not_treat_plain_text_as_plan_or_edit() -> None:
+    assert not _looks_like_plan_trigger_request("test")
+    assert not _looks_like_edit_request("test")
+
+
+def test_chat_intent_helpers_detect_plan_and_edit_requests() -> None:
+    assert _looks_like_plan_trigger_request("give me an implementation plan for auth")
+    assert _looks_like_plan_trigger_request("execute the plan")
+    assert _looks_like_edit_request("fix src/mana_analyzer/commands/chat_cli.py")
+    assert _looks_like_edit_request("implement this")
 
 
 def test_render_turn_summary_and_transparency_sections() -> None:

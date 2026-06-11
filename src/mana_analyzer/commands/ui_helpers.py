@@ -188,6 +188,54 @@ _EDIT_TARGET_PATTERN = re.compile(
     r"\b(readme(?:\.md)?|[\w./-]+\.(?:py|md|js|jsx|ts|tsx|json|toml|ya?ml|ini|cfg|txt|sh|go|rs|java|kt|rb|php|swift|sql|c|cc|cpp|h|hpp|cs))\b"
 )
 
+_PLAN_TRIGGER_PATTERN = re.compile(
+    r"\b("
+    r"plan|planning|roadmap|checklist|execution\s+plan|implementation\s+plan|"
+    r"auto[-\s]?execute|execute\s+(?:the\s+)?plan|run\s+(?:the\s+)?plan"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_plan_trigger_request(question: str) -> bool:
+    text = str(question or "").strip()
+    if not text:
+        return False
+    return bool(_PLAN_TRIGGER_PATTERN.search(text))
+
+
+def _looks_like_edit_request(question: str) -> bool:
+    text = str(question or "").strip()
+    if not text:
+        return False
+
+    lowered = text.lower()
+    has_intent = any(token in lowered for token in _EDIT_INTENT_TOKENS)
+    if not has_intent:
+        return False
+
+    if _EDIT_TARGET_PATTERN.search(text):
+        return True
+
+    directive_prefixes = (
+        "add ",
+        "create ",
+        "delete ",
+        "edit ",
+        "fix ",
+        "implement ",
+        "integrate ",
+        "modify ",
+        "patch ",
+        "refactor ",
+        "remove ",
+        "rewrite ",
+        "update ",
+    )
+    return lowered.startswith(directive_prefixes) or any(
+        marker in lowered for marker in ("apply patch", "write file", "edit this", "fix this", "implement this")
+    )
+
 
 def _run_with_live_buffer(
     console: Console,
