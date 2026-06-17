@@ -154,6 +154,24 @@ class CodingMemoryService:
                     UNIQUE(flow_id, file_path, mode, start_line, end_line)
                 );
 
+                CREATE TABLE IF NOT EXISTS coding_flow_tool_calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    flow_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    arguments_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    status TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS coding_flow_verification_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    flow_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    results_json TEXT NOT NULL,
+                    status TEXT NOT NULL
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_coding_flows_status_updated
                   ON coding_flows(status, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_coding_turns_flow_created
@@ -164,6 +182,10 @@ class CodingMemoryService:
                   ON coding_flow_tool_fingerprints(flow_id, kind, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_coding_flow_read_cache_flow_file
                   ON coding_flow_read_cache(flow_id, file_path, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_coding_flow_tool_calls_flow_created
+                  ON coding_flow_tool_calls(flow_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_coding_flow_verification_flow_created
+                  ON coding_flow_verification_results(flow_id, created_at DESC);
                 """
             )
             cols = {
@@ -592,6 +614,59 @@ class CodingMemoryService:
         """Persist multiple fingerprints for a flow/kind pair."""
         for item in fingerprints:
             self.record_tool_fingerprint(flow_id=flow_id, kind=kind, fingerprint=str(item))
+
+    def record_tool_call(
+        self,
+        *,
+        flow_id: str,
+        tool_name: str,
+        arguments: dict[str, Any] | None,
+        result: Any,
+        status: str,
+    ) -> None:
+        """Persist one coding-agent tool call/result row."""
+
+        resolved_flow = str(flow_id or "").strip()
+        resolved_tool = str(tool_name or "").strip()
+        if not resolved_flow or not resolved_tool:
+            return
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO coding_flow_tool_calls (
+                    flow_id, created_at, tool_name, arguments_json, result_json, status
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    resolved_flow,
+                    _utc_now(),
+                    resolved_tool,
+                    json.dumps(arguments or {}, ensure_ascii=False, sort_keys=True),
+                    json.dumps(result, ensure_ascii=False, default=str, sort_keys=True),
+                    str(status or ""),
+                ),
+            )
+
+    def record_verification_result(self, *, flow_id: str, results: dict[str, Any], status: str) -> None:
+        """Persist verification tool output for a coding flow."""
+
+        resolved_flow = str(flow_id or "").strip()
+        if not resolved_flow:
+            return
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO coding_flow_verification_results (
+                    flow_id, created_at, results_json, status
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    resolved_flow,
+                    _utc_now(),
+                    json.dumps(results or {}, ensure_ascii=False, default=str, sort_keys=True),
+                    str(status or ""),
+                ),
+            )
 
     def prune_tool_fingerprints(self, *, flow_id: str, kind: str, keep: int = 4000) -> None:
         """Prune stale fingerprints, keeping only the most recent rows."""

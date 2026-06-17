@@ -28,13 +28,13 @@ mana-analyzer flow . --format json
 
 `CodingMemoryService` persists per-project state to:
 
-- `<project>/.mana_index/chat_memory.sqlite3`
+- `<project>/.mana/index/chat_memory.sqlite3`
 
 Quick inspection:
 
 ```bash
-sqlite3 .mana_index/chat_memory.sqlite3 ".tables"
-sqlite3 .mana_index/chat_memory.sqlite3 "select flow_id,status,updated_at from coding_flows order by updated_at desc limit 10;"
+sqlite3 .mana/index/chat_memory.sqlite3 ".tables"
+sqlite3 .mana/index/chat_memory.sqlite3 "select flow_id,status,updated_at from coding_flows order by updated_at desc limit 10;"
 ```
 
 ## Chat memory schema (high-level)
@@ -46,6 +46,9 @@ Tables created by `CodingMemoryService._ensure_schema(...)`:
 - `coding_flow_decisions`
 - `coding_flow_tasks`
 - `coding_flow_checkpoints`
+- `coding_flow_tool_calls`
+- `coding_flow_verification_results`
+- `coding_flow_read_cache`
 
 Key JSON columns:
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, ClassVar, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -33,6 +33,55 @@ class ExecutionDecision(BaseModel):
     why: str
 
 
+CodingAgentPhase = Literal[
+    "understand",
+    "plan",
+    "search",
+    "read",
+    "patch",
+    "verify",
+    "revise",
+    "finalize",
+]
+
+
+class CodingAgentStateMachine(BaseModel):
+    """Small explicit phase machine used by coding-agent orchestration tests."""
+
+    phase: CodingAgentPhase = "understand"
+    files_read: set[str] = Field(default_factory=set)
+    patched_files: set[str] = Field(default_factory=set)
+    verification_run: bool = False
+    transitions: list[dict[str, str]] = Field(default_factory=list)
+
+    _ORDER: ClassVar[tuple[CodingAgentPhase, ...]] = (
+        "understand",
+        "plan",
+        "search",
+        "read",
+        "patch",
+        "verify",
+        "revise",
+        "finalize",
+    )
+
+    def mark_read(self, path: str) -> None:
+        cleaned = str(path or "").strip()
+        if cleaned:
+            self.files_read.add(cleaned)
+
+    def can_patch(self, targets: list[str]) -> bool:
+        return all(str(item).strip() in self.files_read for item in targets if str(item).strip())
+
+    def transition(self, next_phase: CodingAgentPhase, *, reason: str = "", targets: list[str] | None = None) -> None:
+        if next_phase == "patch" and not self.can_patch(targets or []):
+            raise ValueError("cannot enter patch phase before target files are read")
+        if next_phase not in self._ORDER:
+            raise ValueError(f"unknown coding-agent phase: {next_phase}")
+        self.transitions.append({"from_phase": self.phase, "to_phase": next_phase, "reason": reason})
+        self.phase = next_phase
+
+
 class DynamicReadPolicy(BaseModel):
     """LLM-selected read policy for one coding turn (full-auto only)."""
 
@@ -58,4 +107,3 @@ def as_jsonable(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {str(k): as_jsonable(v) for k, v in obj.items()}
     return obj
-

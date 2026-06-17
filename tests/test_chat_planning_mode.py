@@ -17,11 +17,18 @@ class DummySettings:
     openai_coding_planner_model = None
     openai_embed_model = "fake"
     default_top_k = 8
+    coding_flow_max_turns = 5
+    coding_flow_max_tasks = 20
+    coding_plan_max_steps = 8
+    coding_search_budget = 4
+    coding_read_budget = 6
+    coding_require_read_files = 2
 
 
 class RecordingAskService:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
+        self.ask_agent = object()
 
     def ask(self, index_dir: str, question: str, k: int) -> AskResponse:
         _ = index_dir
@@ -36,14 +43,62 @@ class RecordingAskService:
         )
 
 
-def test_chat_planning_mode_asks_questions_and_resets(monkeypatch, tmp_path: Path) -> None:
+class FakeWorkerClient:
+    def __init__(self, **_kwargs: object) -> None:
+        return None
+
+    def start(self) -> None:
+        return None
+
+    def health(self) -> dict[str, str]:
+        return {"status": "ok"}
+
+    def stop(self) -> None:
+        return None
+
+
+class RecordingCodingAgent:
     calls: list[str] = []
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    def __init__(self, **_kwargs: object) -> None:
+        self.active = "flow-plan-test"
+
+    def set_tools_manager_orchestrator(self, _orchestrator: object) -> None:
+        return None
+
+    def get_active_flow_id(self) -> str | None:
+        return self.active
+
+    def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+        _ = (request, flow_id)
+        return False
+
+    def generate(self, request: str, **_kwargs: object) -> dict:
+        self.calls.append(request)
+        return {
+            "answer": "Plan response",
+            "changed_files": [],
+            "warnings": [],
+            "diff": "",
+            "flow_id": self.active,
+            "actions_taken": [],
+        }
+
+    def generate_dir_mode(self, request: str, **kwargs: object) -> dict:
+        return self.generate(request, **kwargs)
+
+
+def test_chat_planning_mode_asks_questions_and_resets(monkeypatch, tmp_path: Path) -> None:
+    calls: list[str] = []
+    RecordingCodingAgent.calls = []
+
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli.build_ask_service",
+        "mana_analyzer.commands.chat_cli.build_ask_service",
         lambda _s, model_override=None: RecordingAskService(calls),
     )
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.CodingAgent", RecordingCodingAgent)
 
     user_input = "\n".join(
         [
@@ -61,18 +116,18 @@ def test_chat_planning_mode_asks_questions_and_resets(monkeypatch, tmp_path: Pat
 
     result = runner.invoke(
         cli.app,
-        ["chat", "--planning-mode", "--planning-max-questions", "3"],
+        ["chat", "--planning-max-questions", "3"],
         input=user_input,
     )
 
     assert result.exit_code == 0
     assert result.stdout.count("Planning question 1/3") == 2
     assert "Generating decision-complete plan" in result.stdout
-    assert len(calls) == 2
-    assert "You are in planning mode." in calls[0]
-    assert "plan auth module" in calls[0]
-    assert "A3: markdown with milestones and tests" in calls[0]
-    assert "plan billing module" in calls[1]
+    assert len(RecordingCodingAgent.calls) == 2
+    assert "You are in planning mode." in RecordingCodingAgent.calls[0]
+    assert "plan auth module" in RecordingCodingAgent.calls[0]
+    assert "A3: markdown with milestones and tests" in RecordingCodingAgent.calls[0]
+    assert "plan billing module" in RecordingCodingAgent.calls[1]
 
 
 def test_main_warns_for_python_314(monkeypatch) -> None:
@@ -87,9 +142,9 @@ def test_chat_planning_mode_uses_llm_generated_questions(monkeypatch, tmp_path: 
     calls: list[str] = []
     generated_args: list[dict] = []
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli.build_ask_service",
+        "mana_analyzer.commands.chat_cli.build_ask_service",
         lambda _s, model_override=None: RecordingAskService(calls),
     )
 
@@ -112,7 +167,9 @@ def test_chat_planning_mode_uses_llm_generated_questions(monkeypatch, tmp_path: 
         )
         return f"LLM question {asked_count + 1}?"
 
-    monkeypatch.setattr("mana_analyzer.commands.cli._generate_planning_question_llm", _fake_llm_question)
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli._generate_planning_question_llm", _fake_llm_question)
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.CodingAgent", RecordingCodingAgent)
 
     user_input = "\n".join(
         [
@@ -126,7 +183,7 @@ def test_chat_planning_mode_uses_llm_generated_questions(monkeypatch, tmp_path: 
 
     result = runner.invoke(
         cli.app,
-        ["chat", "--planning-mode", "--planning-max-questions", "3"],
+        ["chat", "--planning-max-questions", "3"],
         input=user_input,
     )
 
@@ -141,15 +198,17 @@ def test_chat_planning_mode_uses_llm_generated_questions(monkeypatch, tmp_path: 
 def test_chat_planning_mode_falls_back_to_static_on_llm_question_failure(monkeypatch, tmp_path: Path) -> None:
     calls: list[str] = []
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli.build_ask_service",
+        "mana_analyzer.commands.chat_cli.build_ask_service",
         lambda _s, model_override=None: RecordingAskService(calls),
     )
     monkeypatch.setattr(
-        "mana_analyzer.commands.cli._generate_planning_question_llm",
+        "mana_analyzer.commands.chat_cli._generate_planning_question_llm",
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("llm question failed")),
     )
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.CodingAgent", RecordingCodingAgent)
 
     user_input = "\n".join(
         [
@@ -163,7 +222,7 @@ def test_chat_planning_mode_falls_back_to_static_on_llm_question_failure(monkeyp
 
     result = runner.invoke(
         cli.app,
-        ["chat", "--planning-mode", "--planning-max-questions", "3"],
+        ["chat", "--planning-max-questions", "3"],
         input=user_input,
     )
 

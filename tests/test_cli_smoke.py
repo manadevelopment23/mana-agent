@@ -41,6 +41,16 @@ class FakeSearchService:
         ]
 
 
+def test_chat_help_hides_manual_plan_execute_flags() -> None:
+    result = runner.invoke(app, ["chat", "--help"])
+    assert result.exit_code == 0
+    assert "--planning-mode" not in result.stdout
+    assert "--auto-execute-plan" not in result.stdout
+    assert "--no-auto-execute-plan" not in result.stdout
+    assert "--execution-prof" in result.stdout
+    assert "--full-auto" in result.stdout
+
+
 class FakeAnalyzeService:
     def __init__(self, findings: list[Finding]) -> None:
         self._findings = findings
@@ -1252,19 +1262,23 @@ def test_chat_planning_mode_auto_executes_after_clarifications(monkeypatch, tmp_
             _FakeOrchestrator.calls.append(str(kwargs.get("request", "")))
             return _FakeAutoResult()
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _AskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolsManagerOrchestrator", _FakeOrchestrator)
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.build_ask_service", lambda _s, model_override=None: _AskService())
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolsManagerOrchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(
+        "mana_analyzer.commands.chat_cli._generate_planning_question_llm",
+        lambda **kwargs: f"Clarification question {int(kwargs['asked_count']) + 1}?",
+    )
 
     result = runner.invoke(
         app,
-        ["chat", "--agent-tools", "--planning-mode"],
+        ["chat", "--planning-mode", "--auto-execute-plan"],
         input="plan auth module\nanswer one\nanswer two\nanswer three\nquit\n",
     )
     assert result.exit_code == 0
     assert "Auto-executing plan" in result.stdout
-    assert "Auto-Execute" in result.stdout
+    assert "Auto-execute pass" in result.stdout
     assert "Generating decision-complete plan..." not in result.stdout
     assert _FakeOrchestrator.calls
 
@@ -1283,34 +1297,63 @@ def test_chat_planning_mode_no_auto_execute_keeps_plan_only_behavior(monkeypatch
             self.ask_agent = object()
             self.qna_chain = type("_Qna", (), {"llm": _PlanningLlm()})()
 
-        def ask_with_tools(
-            self,
-            index_dir: str,
-            question: str,
-            k: int,
-            max_steps: int = 6,
-            timeout_seconds: int = 30,
-        ) -> AskResponseWithTrace:
-            _ = (index_dir, question, k, max_steps, timeout_seconds)
-            return AskResponseWithTrace(
-                answer="Plan:\\n1. inspect\\n2. edit\\n3. verify",
-                sources=[],
-                mode="agent-tools",
-                trace=[],
-                warnings=[],
-            )
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _AskService())
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        generate_calls: list[str] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-plan-only"
+
+        def set_tools_manager_orchestrator(self, _orchestrator: object) -> None:
+            return None
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, request: str, **_kwargs: object) -> dict:
+            _FakeCodingAgent.generate_calls.append(request)
+            return {
+                "answer": "Plan:\\n1. inspect\\n2. edit\\n3. verify",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "actions_taken": [],
+            }
+
+        def generate_auto_execute(self, *_args: object, **_kwargs: object) -> dict:  # pragma: no cover
+            raise AssertionError("default planning requests should not auto-execute")
+
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.build_ask_service", lambda _s, model_override=None: _AskService())
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
-        ["chat", "--agent-tools", "--planning-mode", "--no-auto-execute-plan"],
+        ["chat"],
         input="plan auth module\nanswer one\nanswer two\nanswer three\nquit\n",
     )
     assert result.exit_code == 0
     assert "Generating decision-complete plan..." in result.stdout
     assert "Auto-executing plan" not in result.stdout
+    assert _FakeCodingAgent.generate_calls
 
 
 def test_flow_checklist_cli_view_renders_codex_sections(monkeypatch, tmp_path: Path) -> None:
@@ -2473,6 +2516,78 @@ def test_chat_balanced_profile_keeps_coding_agent_non_full_auto_mode(monkeypatch
     assert bool(_FakeCodingAgent.init_kwargs.get("full_auto_mode", True)) is False
 
 
+def test_chat_balanced_profile_auto_executes_clear_edit_requests(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        auto_calls: list[dict[str, object]] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-balanced-auto"
+
+        def set_tools_manager_orchestrator(self, _orchestrator: object) -> None:
+            return None
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate_auto_execute(self, *_args: object, **kwargs: object) -> dict:
+            _FakeCodingAgent.auto_calls.append(dict(kwargs))
+            return {
+                "answer": "done",
+                "changed_files": ["README.md"],
+                "warnings": [],
+                "diff": "diff --git a/README.md b/README.md\n",
+                "flow_id": self.active,
+                "plan": {"objective": "Update README", "steps": []},
+                "progress": {"phase": "answer", "why": "complete"},
+                "checklist": {"done": 1, "pending": 0, "blocked": 0, "total": 1},
+                "actions_taken": [],
+                "next_step": "done",
+                "auto_execute_passes": 1,
+                "auto_execute_terminal_reason": "completed",
+                "toolsmanager_requests_count": 1,
+                "pass_logs": [],
+                "planner_decisions": [],
+            }
+
+        def generate(self, *_args: object, **_kwargs: object) -> dict:  # pragma: no cover - should not be used
+            raise AssertionError("balanced edit requests should route to generate_auto_execute")
+
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.CodingAgent", _FakeCodingAgent)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--execution-profile", "balanced"],
+        input="update README.md with the current CLI flags\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert _FakeCodingAgent.auto_calls
+    assert int(_FakeCodingAgent.auto_calls[0].get("pass_cap", 0) or 0) == 4
+
+
 def test_chat_full_auto_profile_forces_auto_execute_for_edit_requests(monkeypatch, tmp_path: Path) -> None:
     class _FakeAskService(FakeAskService):
         def __init__(self) -> None:
@@ -2533,14 +2648,14 @@ def test_chat_full_auto_profile_forces_auto_execute_for_edit_requests(monkeypatc
         def generate_dir_mode(self, *_args: object, **_kwargs: object) -> dict:  # pragma: no cover - should not be used
             raise AssertionError("full-auto should route edit requests to generate_auto_execute")
 
-    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
-    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
-        ["chat", "--agent-tools", "--coding-agent", "--execution-profile", "full-auto"],
+        ["chat", "--execution-profile", "full-auto"],
         input="update readme.md with full cli flags and descriptions\nquit\n",
     )
     assert result.exit_code == 0

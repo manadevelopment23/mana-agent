@@ -1,241 +1,250 @@
 # mana-analyzer
 
-**AI-powered, installable Python CLI for unified codebase analysis and agent-driven automation**
+LLM-powered repository analysis and coding-agent automation for local codebases.
 
----
+`mana-analyzer` is an installable Python CLI that indexes a project, runs static
+and dependency analysis, builds reports, answers questions with repository
+context, and runs a tool-aware coding agent that can inspect, patch, and verify
+code.
 
-## Overview
+## What It Does
 
-`mana-analyzer` is a **tool-aware, LLM-augmented code analysis framework** designed to understand, analyze, and interact with real-world software repositories through one primary `analyze` workflow.
+- Builds an incremental semantic index for source files.
+- Runs static checks, structure analysis, dependency detection, and security
+  scanning.
+- Produces JSON, Markdown, HTML, DOT, and GraphML analysis artifacts.
+- Answers repository questions with search-backed context.
+- Provides an interactive chat mode with coding-agent workflows.
+- Persists coding-flow state under the analyzed project so work can continue
+  across turns.
 
-It combines:
-- static analysis,
-- semantic indexing (RAG),
-- dependency & structure detection,
-- security checks,
-- and *agent-based reasoning* (including a coding agent that can read, search, patch, and verify code).
+## Requirements
 
-The system is optimized for **large, multi-language repositories** and is safe-by-default: agents must inspect files before modifying them, all edits go through patch tools, and every step is logged.
+- Python 3.10 through 3.14
+- An OpenAI-compatible chat and embedding endpoint
+- `OPENAI_API_KEY` and model settings in the environment or `.env`
 
----
-
-## What Problems It Solves
-
-- 🔍 *"Where is this logic implemented?"* → `analyze --query` semantic search with line-level citations
-- 🧠 *"Explain this repository"* → unified architecture, technology, structure, dependency, and security report
-- 🛠️ *"Fix this bug"* → coding agent that reads code, plans, patches, and verifies
-- 🔐 *"Is this project secure?"* → dependency + vulnerability scanning
-- 📊 *"Show dependencies"* → analyze artifacts with JSON / DOT / GraphML dependency graphs
-- 🤖 *"Let the agent work"* → tool-aware chat with multi-step execution
-
----
-
-## Key Features
-
-- ✅ **Unified analysis** – indexing, search, findings, describe, deps, graph, report, and flow in one command
-- ✅ **Incremental indexing** – only changed files are re-embedded
-- 🌍 **Multi-language parsing** – Python, JS/TS, Go, Rust, JVM, C/C++, Bash, Markdown, etc.
-- 📐 **Static analysis** – complexity, unused imports, docstrings, nesting, patterns
-- 🔎 **Semantic search** – FAISS-backed vector similarity search via `analyze --query`
-- 🧠 **RAG Q&A (`ask`)** – grounded answers with file + line references
-- 🧩 **Architecture & technology detection** – frameworks, languages, layout
-- 🔗 **Dependency graphs** – JSON, DOT, GraphML emitted by `analyze`
-- 🧪 **Security scans** – `pip list --outdated`, `safety` (optional)
-- 💬 **Interactive chat** – tool-aware, stateful REPL
-- 🧑‍💻 **Coding agent** – plans → reads → edits → verifies
-- 🧰 **Pluggable architecture** – LLMs, vector stores, parsers, tools
-
----
-
-## Repository Structure
-
-```
-src/
-└─ mana_analyzer/
-   ├─ commands/        # Typer CLI entry points
-   ├─ analysis/        # Static analysis & chunking
-   ├─ parsers/         # Language-specific parsers
-   ├─ services/        # Core services (index, ask, analyze, report, ...)
-   ├─ llm/             # LLM agents, prompts, tool workers
-   ├─ tools/           # Tool definitions (search, patch, filesystem)
-   ├─ vector_store/    # FAISS abstraction
-   ├─ utils/           # Logging, discovery, helpers
-   └─ config/          # Settings & env handling
-
-tests/                # Pytest suite + fixtures
-```
-
-## Project Structure Analysis
-
-A detailed generated analysis is available in:
-
-- `docs/project_structure_analysis.md`
-- `docs/project_structure_analysis.json`
-
----
+The default dependency set uses CPU FAISS. Redis/RQ support is included for
+optional tool-worker execution paths.
 
 ## Installation
-
-### Requirements
-
-- Python **3.10+**
-- An OpenAI-compatible API key (OpenAI, Azure, or self-hosted)
-
-### Install
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-
-pip install --upgrade pip
-pip install -e .[dev]
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
 
-Optional extras:
-
-- `dev` – testing, linting
-- `security` – vulnerability scanning
-- `faiss-gpu` – GPU FAISS (CUDA required)
-
----
-
-## Environment Variables
+For local development, install the package plus the tools used by the test and
+quality-check commands:
 
 ```bash
-export OPENAI_API_KEY="sk-..."
-export OPENAI_BASE_URL="https://api.openai.com/v1"   # optional
+python -m pip install -e .
+python -m pip install pytest ruff mypy
 ```
 
-All settings can also be defined via `.env` or `settings.toml`.
+## Configuration
 
----
+Create a `.env` file or export settings in your shell:
+
+```bash
+OPENAI_API_KEY="sk-..."
+OPENAI_BASE_URL="https://api.openai.com/v1"
+OPENAI_CHAT_MODEL="gpt-4.1"
+OPENAI_TOOL_WORKER_MODEL="gpt-4.1"
+OPENAI_CODING_PLANNER_MODEL="gpt-4.1"
+OPENAI_EMBED_MODEL="text-embedding-3-small"
+DEFAULT_TOP_K=8
+```
+
+See [.env.example](./.env.example) for the local template used by this repo.
 
 ## Quick Start
 
+Analyze a repository and write artifacts into its `.mana/` directory:
+
 ```bash
-# Run the unified LLM analysis pipeline
 mana-analyzer analyze /path/to/project
-
-# Include semantic search results in the same report
-mana-analyzer analyze /path/to/project --query "authentication flow"
-
-# Machine-readable output
-mana-analyzer analyze /path/to/project --json
-
-# Ask an indexed question (interactive Q&A remains separate)
-mana-analyzer ask "How is configuration loaded?"
-
-# Start interactive agent chat
-mana-analyzer chat
 ```
 
----
+Include semantic search results in the same report:
+
+```bash
+mana-analyzer analyze /path/to/project --query "authentication flow"
+```
+
+Emit strict machine-readable output:
+
+```bash
+mana-analyzer analyze /path/to/project --json
+```
+
+Ask a repository question:
+
+```bash
+mana-analyzer ask "How is configuration loaded?" --root-dir /path/to/project
+```
+
+Start the interactive coding-agent chat:
+
+```bash
+mana-analyzer chat --root-dir /path/to/project
+```
+
+Useful global flags:
+
+```bash
+mana-analyzer --verbose analyze .
+mana-analyzer --log-dir .mana/logs ask "summarize the parser"
+mana-analyzer --output-dir .mana/output chat
+```
 
 ## CLI Commands
 
 | Command | Purpose |
-|-------|--------|
-| `ask` | RAG-based Q&A |
-| `analyze` | Unified index, optional search, static + LLM findings, describe, deps, graph, security, flow, and report artifacts |
-| `chat` | Interactive agent session |
+| --- | --- |
+| `analyze` | Runs the unified repository analysis pipeline. |
+| `ask` | Answers a question using indexed/search-backed repository context. |
+| `chat` | Opens an interactive agent session with optional coding workflows. |
 
-`analyze` writes:
+All commands support `--help`. `analyze`, `ask`, and `chat` support `--json`
+where structured output is available.
 
-- `<project>/.mana/analyze.json`
-- `<project>/.mana/analyze.md`
-- `<project>/.mana/analyze.html`
-- `<project>/.mana/analyze.dot`
-- `<project>/.mana/analyze.graphml`
+### `analyze`
 
-`analyze`, `ask`, and `chat` support `--help`; `analyze` and `ask` support `--json`.
-Text mode uses a unified Rich UI output layer; `--json` remains strict machine-readable JSON.
-`--verbose` streams debug logs to console (`stderr`) and writes them to `.mana_logs/...`.
+`analyze` indexes the target project, runs static and LLM-assisted findings,
+builds structure/dependency/security summaries, and writes report artifacts.
 
----
+Common options:
 
-## Coding Agent (How It Works)
+- `--query`: include semantic search results in the report.
+- `--k`: control the number of search hits.
+- `--model`: override the configured chat model.
+- `--no-include-tests`: exclude tests from structure analysis.
+- `--offline`: skip online security lookups.
+- `--output-format`: choose generated artifact formats.
+- `--fail-on`: make the command fail for selected finding levels.
+- `--json`: emit JSON to stdout.
 
-The coding agent follows a **tool-first execution model**:
+Generated artifacts are written under the analyzed project:
 
-1. Plan tasks
-2. Search repository
-3. Read files (required)
-4. Apply patches (`apply_patch`)
-5. Verify changes
-6. Finalize or revise
-
-Safety rules:
-- No blind edits
-- Unified diff patches only
-- Verification before completion
-
-Flow state is persisted at:
+```text
+.mana/analyze.json
+.mana/analyze.md
+.mana/analyze.html
+.mana/analyze.dot
+.mana/analyze.graphml
 ```
+
+### `ask`
+
+`ask` answers one question from repository context. It can use a provided index,
+discover indexes in directory mode, or create a temporary index when enabled.
+
+Common options:
+
+- `--root-dir`: project root for tool execution and default index discovery.
+- `--index-dir`: explicit index directory.
+- `--dir-mode`: discover multiple project indexes.
+- `--auto-index-missing`: index missing projects when possible.
+- `--agent-tools/--no-agent-tools`: enable or disable agent tool use.
+- `--agent-max-steps`: cap tool-use steps.
+- `--json`: emit structured response data.
+
+### `chat`
+
+`chat` opens an interactive REPL for repository Q&A and coding-agent tasks.
+It supports planning mode, auto-execution, persisted coding memory, optional
+tool-worker execution, and diagram rendering.
+
+Common options:
+
+- `--root-dir`: project root for tools and coding memory.
+- `--flow-id`: resume or pin a coding flow.
+- `--planning-mode`: ask planning questions before execution.
+- `--auto-execute-plan`: execute generated plans.
+- `--full-auto`: keep resuming auto-execution until completion or a limit.
+- `--coding-memory/--no-coding-memory`: persist coding-flow state.
+- `--tool-worker-process`: run tools through the worker process path.
+- `--multiline-input`: allow multiline REPL input.
+- `--diagram-render-images`: render Mermaid diagrams to image artifacts.
+
+Coding memory is stored at:
+
+```text
 <project>/.mana/index/chat_memory.sqlite3
 ```
 
-The active flow snapshot is included in `analyze` output:
-```bash
-mana-analyzer analyze .
+## Coding Agent Safety Model
+
+The coding agent is designed around explicit tool use and traceable state:
+
+1. Understand the request and active flow context.
+2. Plan concrete steps.
+3. Search the repository with text and semantic tools.
+4. Read target files before editing them.
+5. Patch files through constrained patch/write tools.
+6. Run relevant verification where possible.
+7. Revise after failed checks when the agent can make progress.
+8. Finalize with changed files, checks, skipped checks, and warnings.
+
+Repository tools include semantic search, text search, file listing, symbol
+lookup, file reads, chunk reads, patch application, file writes, command
+execution, verification, git status/diff, and tool-contract inspection.
+
+## Project Layout
+
+```text
+src/mana_analyzer/
+  analysis/       Static analysis and chunking
+  commands/       Typer CLI commands and output rendering
+  config/         Settings and environment handling
+  dependencies/   Dependency graph support
+  describe/       Repository description and deep-flow helpers
+  llm/            Chains, agents, prompts, tool managers, workers
+  parsers/        Python and multi-language parser entry points
+  renderers/      HTML report rendering
+  services/       Index, ask, analyze, report, structure, security services
+  tools/          Agent tools for repository access and mutation
+  utils/          Discovery, IO, logging, guards, tool-run helpers
+  vector_store/   FAISS vector-store wrapper
+
+tests/            Pytest suite
+docs/             Additional workflow and troubleshooting docs
 ```
-
----
-
-## Architecture (High Level)
-
-```mermaid
-flowchart TD
-  CLI --> Services
-  Services --> Parsers
-  Services --> FAISS
-  Services --> LLM
-  LLM --> Tools
-  Tools --> Repo
-```
-
-Layers:
-- **CLI** – Typer-based interface
-- **Services** – business logic
-- **LLM** – agents, prompts, planners
-- **Tools** – filesystem, search, patch
-- **Vector Store** – FAISS
-
----
 
 ## Development
 
+Run the test suite:
+
 ```bash
-pip install -e .[dev]
 pytest -q
-ruff check src tests
-mypy src tests
 ```
 
----
+Run local quality checks:
 
-## Use Cases
+```bash
+ruff check src tests
+mypy src tests
+python -c "import mana_analyzer; print('ok')"
+mana-analyzer --help
+mana-analyzer analyze --help
+mana-analyzer ask --help
+mana-analyzer chat --help
+```
 
-- Architecture reviews
-- Onboarding new engineers
-- Large legacy code understanding
-- Automated refactoring
-- AI-assisted bug fixing
-- CI reporting & documentation
+The GitHub Actions workflow currently installs the package on Python 3.12 and
+runs `pytest -q`.
 
----
+## Documentation
+
+- [Coding flows](./docs/coding-flows.md)
+- [Coding-agent language tooling](./docs/coding-agent-language-tooling.md)
+- [Debugging guide](./docs/debugging.md)
+- [Optional dependencies notes](./docs/optional-deps.md)
+- [Generated project structure analysis](./docs/project_structure_analysis.md)
 
 ## License
 
-MIT License
-
----
-
-## Status
-
-✅ Actively developed
-✅ Production-ready core
-✅ Extensible agent system
-
----
-
-**mana-analyzer** turns codebases into searchable, explainable, and fixable systems.
+MIT License. See [LICENSE](./LICENSE).

@@ -889,7 +889,7 @@ class ToolWorkerClient:
         if proc.poll() is not None:
             raise ToolWorkerProcessError(
                 code="worker_dead", 
-                message=f"worker process already terminated with code {proc.returncode}", 
+                message=f"worker process already terminated with code {getattr(proc, 'returncode', proc.poll())}", 
                 retriable=True
             )
         
@@ -915,7 +915,7 @@ class ToolWorkerClient:
             if proc.poll() is not None:
                 raise ToolWorkerProcessError(
                     code="worker_dead", 
-                    message=f"worker terminated unexpectedly with code {proc.returncode}", 
+                    message=f"worker terminated unexpectedly with code {getattr(proc, 'returncode', proc.poll())}", 
                     retriable=True
                 )
             
@@ -1342,6 +1342,7 @@ class _ToolWorkerServer:
                                 trace=[
                                     {
                                         "tool_name": tool_name,
+                                        "status": "duplicate_blocked",
                                         "result": "duplicate_blocked",
                                         "turn_id": env.request_id,
                                         "message": "Tool already executed in this turn.",

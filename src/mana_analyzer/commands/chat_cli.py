@@ -2,6 +2,105 @@ from __future__ import annotations
 
 from .cli_internal import *
 
+
+def _planning_questions(max_questions: int) -> list[str]:
+    questions = [
+        "What is the concrete goal and the success criteria?",
+        "What should be in scope and out of scope?",
+        "What constraints, risks, or preferences should shape the implementation?",
+        "What acceptance tests or verification steps should be included?",
+        "Are there rollout, migration, or compatibility requirements?",
+        "What output format should the final plan use?",
+    ]
+    limit = max(1, min(int(max_questions or 3), len(questions)))
+    return questions[:limit]
+
+
+def _generate_planning_question_llm(
+    *,
+    ask_service,
+    planning_request: str,
+    prior_questions: list[str],
+    prior_answers: list[str],
+    asked_count: int,
+    max_questions: int,
+) -> str:
+    qna_chain = getattr(ask_service, "qna_chain", None)
+    llm = getattr(qna_chain, "llm", None)
+    if llm is None or not hasattr(llm, "invoke"):
+        raise RuntimeError("planning question LLM is unavailable")
+    prompt = (
+        "Generate exactly one concise clarification question for a coding plan.\n"
+        f"Request: {planning_request}\n"
+        f"Question number: {asked_count + 1} of {max_questions}\n"
+        "Prior Q&A:\n"
+    )
+    for idx, (prior_q, prior_a) in enumerate(zip(prior_questions, prior_answers), start=1):
+        prompt += f"Q{idx}: {prior_q}\nA{idx}: {prior_a}\n"
+    prompt += "Ask only for information that materially changes the implementation plan."
+    response = llm.invoke(prompt)
+    content = str(getattr(response, "content", response) or "").strip()
+    if not content:
+        raise RuntimeError("planning question LLM returned an empty question")
+    return content
+
+
+def _build_planning_instruction(
+    planning_request: str,
+    planning_answers: list[str],
+    max_questions: int,
+    *,
+    questions: list[str] | None = None,
+) -> str:
+    lines = [
+        "You are in planning mode.",
+        "Produce a decision-complete implementation plan. Do not edit files.",
+        "",
+        f"Original request: {planning_request}",
+        "",
+        "Clarifications:",
+    ]
+    effective_questions = questions or _planning_questions(max_questions)
+    for idx, answer in enumerate(planning_answers, start=1):
+        question = effective_questions[idx - 1] if idx - 1 < len(effective_questions) else f"Question {idx}"
+        lines.append(f"Q{idx}: {question}")
+        lines.append(f"A{idx}: {answer}")
+    return "\n".join(lines)
+
+
+def _render_auto_execute_pass_status(
+    console,
+    *,
+    objective: str,
+    pass_index: int,
+    pass_cap: int,
+    planner_step_id: str,
+    planner_step_title: str,
+    planner_decision: str,
+    planner_decision_reason: str,
+    batch_reason: str,
+    expected_progress: str,
+) -> None:
+    details = []
+    if objective:
+        details.append(f"objective={objective}")
+    if planner_step_id or planner_step_title:
+        details.append(f"step={planner_step_id or planner_step_title}")
+    if planner_decision:
+        details.append(f"decision={planner_decision}")
+    if planner_decision_reason:
+        details.append(f"reason={planner_decision_reason}")
+    if batch_reason:
+        details.append(f"batch={batch_reason}")
+    if expected_progress:
+        details.append(f"expected={expected_progress}")
+    suffix = "; ".join(details)
+    console.print(
+        f"[cyan]Auto-execute pass {max(0, int(pass_index))}/{max(1, int(pass_cap))}[/cyan]"
+        + (f" - {suffix}" if suffix else "")
+    )
+
+
 @app.command()
 def chat(
     model: str | None = typer.Option(None, "--model"),
@@ -102,16 +201,18 @@ def chat(
         False,
         "--planning-mode",
         help="Enable multi-step planning Q&A before generating plan answers.",
+        hidden=True,
     ),
     planning_max_questions: int = typer.Option(
         3,
         "--planning-max-questions",
         help="Maximum planning clarification questions to ask (1-6).",
     ),
-    auto_execute_plan: bool = typer.Option(
-        False,
+    auto_execute_plan: bool | None = typer.Option(
+        None,
         "--auto-execute-plan/--no-auto-execute-plan",
         help="Automatically execute plan-producing turns in agent-tools mode.",
+        hidden=True,
     ),
     auto_execute_max_passes: int = typer.Option(
         4,
@@ -237,6 +338,9 @@ def chat(
     if execution_profile not in {"full-auto", "balanced", "conservative"}:
         raise typer.BadParameter("--execution-profile must be one of: full-auto, balanced, conservative.")
 
+    legacy_auto_execute_plan_requested = auto_execute_plan is True
+    legacy_auto_execute_plan_disabled = auto_execute_plan is False
+    auto_execute_plan = not legacy_auto_execute_plan_disabled
     if execution_profile == "full-auto":
         auto_execute_plan = True
         # Keep user override when they pass a non-default value.
@@ -616,11 +720,11 @@ def chat(
 
         console.print("mana-analyzer chat – type 'exit' or 'quit' to end.")
 
-        if planning_mode:
-            console.print(
-                f"[bold cyan]Planning mode enabled:[/bold cyan] "
-                f"up to {planning_question_limit} clarification question(s) before each plan answer."
-            )
+        console.print(
+            f"[bold cyan]Automatic mode selection:[/bold cyan] "
+            f"plan-like requests ask up to {planning_question_limit} clarification question(s); "
+            "clear edit requests auto-execute when tools are available."
+        )
 
         # CodingAgent is always active
         console.print("[bold red]Coding agent active[/bold red] – all decisions routed through CodingAgent.")
@@ -631,8 +735,9 @@ def chat(
             else:
                 console.print("[cyan]Flow memory:[/cyan] new flow will be created on first request.")
         if True:  # agent_tools always on
+            auto_execute_status = "automatic" if auto_execute_plan else "disabled by legacy override"
             console.print(
-                f"[cyan]Auto-execute:[/cyan] {'enabled' if auto_execute_plan else 'disabled'} "
+                f"[cyan]Auto-execute:[/cyan] {auto_execute_status} "
                 f"(max passes: {auto_execute_max_passes})"
             )
             console.print(f"[cyan]Execution profile:[/cyan] {execution_profile}")
@@ -1287,17 +1392,24 @@ def chat(
                 continue
 
             plan_trigger_request = _looks_like_plan_trigger_request(question)
+            edit_request = _looks_like_edit_request(question)
+            auto_planning_turn = bool(
+                planning_request is not None
+                or planning_mode
+                or (plan_trigger_request and not edit_request)
+            )
+            force_plan_only_response = False
             force_auto_execute_edit = bool(
-                execution_profile == "full-auto"
-                and coding_agent_instance is not None
+                coding_agent_instance is not None
                 and auto_execute_plan
-                and _looks_like_edit_request(question)
+                and edit_request
             )
 
             if (
                 coding_agent_instance is not None
                 and auto_execute_plan
                 and hasattr(coding_agent_instance, "generate_auto_execute")
+                and not auto_planning_turn
                 and (plan_trigger_request or force_auto_execute_edit)
             ):
                 pending_prechecklist = None
@@ -1325,7 +1437,7 @@ def chat(
                 if isinstance(target_flow, str) and target_flow.strip():
                     active_flow_id = target_flow.strip()
 
-            if planning_mode:
+            if auto_planning_turn:
                 if planning_request is None:
                     planning_request = question
                     planning_answers = []
@@ -1396,7 +1508,7 @@ def chat(
                 planning_request = None
                 planning_answers = []
                 planning_questions = []
-                if agent_tools and auto_execute_plan:
+                if agent_tools and legacy_auto_execute_plan_requested:
                     auto_payload, auto_debug_tail = _run_auto_execute_pipeline_with_resume(question)
                     _emit_auto_execute_terminal(
                         user_question=question,
@@ -1404,6 +1516,7 @@ def chat(
                         debug_tail=auto_debug_tail,
                     )
                     continue
+                force_plan_only_response = True
                 console.print("[cyan]Generating decision-complete plan...[/cyan]")
 
             logger.info("Chat question received", extra={"question": question, "dir_mode": dir_mode, "agent_tools": agent_tools})
@@ -1472,7 +1585,11 @@ def chat(
             # ==========================================================
             if coding_agent_instance is not None:
                 cb = RichToolCallbackHandler(show_inputs=True)
-                execute_plan_now = bool(auto_execute_plan and (plan_trigger_request or force_auto_execute_edit))
+                execute_plan_now = bool(
+                    auto_execute_plan
+                    and not force_plan_only_response
+                    and (plan_trigger_request or force_auto_execute_edit)
+                )
                 request_for_generation = question
                 turn_full_auto_resume_cycles = 0
                 turn_full_auto_passes_total = 0

@@ -19,6 +19,7 @@ import json
 import re
 import subprocess
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional, Sequence
 
@@ -116,6 +117,10 @@ def _looks_like_git_diff_payload(text: str) -> bool:
     )
     has_hunk_header = any(line.startswith("@@ ") for line in lines[:80])
     return has_file_headers and has_hunk_header
+
+
+def _looks_like_unified_diff_payload(text: str) -> bool:
+    return _looks_like_git_diff_payload(text)
 
 
 def _normalise_user_path(path: str) -> str:
@@ -346,6 +351,120 @@ def _parse_json_patch(text: str) -> tuple[list[dict[str, Any]], list[_PatchFile]
     return data, parsed, err
 
 
+def _parse_unified_range(value: str) -> tuple[int, int]:
+    raw = value.strip()
+    if "," in raw:
+        start, count = raw.split(",", 1)
+        return int(start), int(count)
+    return int(raw), 1
+
+
+def _parse_unified_diff(text: str) -> tuple[list[_PatchFile], str]:
+    """Parse a small, standard unified diff into internal patch structures."""
+
+    lines = text.splitlines()
+    files: list[_PatchFile] = []
+    idx = 0
+    current_old = ""
+    current_new = ""
+
+    def clean_path(raw: str) -> str:
+        path = raw.split("\t", 1)[0].strip()
+        path = path.split(" ", 1)[0].strip()
+        if path.startswith("a/") or path.startswith("b/"):
+            path = path[2:]
+        return path
+
+    while idx < len(lines):
+        line = lines[idx]
+        if line.startswith("diff --git "):
+            idx += 1
+            continue
+        if not line.startswith("--- "):
+            idx += 1
+            continue
+        current_old = clean_path(line[4:])
+        idx += 1
+        if idx >= len(lines) or not lines[idx].startswith("+++ "):
+            return [], "unified diff missing +++ header"
+        current_new = clean_path(lines[idx][4:])
+        idx += 1
+        hunks: list[_PatchHunk] = []
+        while idx < len(lines) and not lines[idx].startswith("--- "):
+            hline = lines[idx]
+            if hline.startswith("diff --git "):
+                break
+            if not hline.startswith("@@ "):
+                idx += 1
+                continue
+            match = re.match(r"^@@\s+-(\d+(?:,\d+)?)\s+\+(\d+(?:,\d+)?)\s+@@", hline)
+            if not match:
+                return [], f"invalid hunk header: {hline}"
+            old_start, old_count = _parse_unified_range(match.group(1))
+            new_start, new_count = _parse_unified_range(match.group(2))
+            idx += 1
+            patch_lines: list[_PatchLine] = []
+            while idx < len(lines):
+                payload = lines[idx]
+                if payload.startswith("@@ ") or payload.startswith("--- ") or payload.startswith("diff --git "):
+                    break
+                if payload.startswith("\\ No newline at end of file"):
+                    idx += 1
+                    continue
+                if not payload:
+                    op = " "
+                    text_payload = ""
+                else:
+                    op = payload[0]
+                    text_payload = payload[1:]
+                if op not in {" ", "+", "-"}:
+                    return [], f"invalid unified diff line: {payload}"
+                patch_lines.append(_PatchLine(op=op, text=text_payload))
+                idx += 1
+            hunks.append(
+                _PatchHunk(
+                    old_start=old_start,
+                    old_count=old_count,
+                    new_start=new_start,
+                    new_count=new_count,
+                    lines=patch_lines,
+                )
+            )
+        if not hunks:
+            return [], f"no hunks found for {current_new or current_old}"
+        files.append(_PatchFile(old_path=current_old, new_path=current_new, hunks=hunks))
+
+    if not files:
+        return [], "no unified diff files found"
+    return files, ""
+
+
+def _parsed_touched_files(parsed_files: Sequence[_PatchFile]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in parsed_files:
+        rel = _target_rel_path(item)
+        if rel and rel not in seen:
+            seen.add(rel)
+            out.append(rel)
+    return out
+
+
+def extract_patch_touched_files(patch: str) -> dict[str, Any]:
+    """Return touched files for JSON or unified diff patch text without writing."""
+
+    patch = _strip_markdown_fences(str(patch or ""))
+    parsed_files: list[_PatchFile] = []
+    error = ""
+    if _looks_like_unified_diff_payload(patch):
+        parsed_files, error = _parse_unified_diff(patch)
+    else:
+        _raw, parsed_files, error = _parse_json_patch(patch)
+    if error:
+        return {"ok": False, "touched_files": [], "error": error}
+    return {"ok": True, "touched_files": _parsed_touched_files(parsed_files)}
+
+
 # ---------------------------------------------------------------------------
 # Attempt logging helper
 # ---------------------------------------------------------------------------
@@ -455,6 +574,86 @@ def _rollback_files(
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{rel}: {exc}")
     return "; ".join(errors)
+
+
+def _is_binary_file(path: Path) -> bool:
+    try:
+        return b"\x00" in path.read_bytes()[:4096]
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return True
+
+
+def _normalise_read_files(repo_root: Path, read_files: Sequence[str] | None) -> set[str]:
+    root = repo_root.resolve()
+    out: set[str] = set()
+    for raw in read_files or []:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        path = Path(value)
+        target = path.resolve() if path.is_absolute() else (root / path).resolve()
+        try:
+            out.add(target.relative_to(root).as_posix())
+        except ValueError:
+            continue
+    return out
+
+
+def _validate_patch_targets_are_read(
+    repo_root: Path,
+    touched_files: Sequence[str],
+    read_files: Sequence[str] | None,
+) -> tuple[bool, str]:
+    read_set = _normalise_read_files(repo_root, read_files)
+    unread: list[str] = []
+    for rel in touched_files:
+        target = (repo_root / rel).resolve()
+        if target.exists() and rel not in read_set:
+            unread.append(rel)
+    if unread:
+        return False, f"Blocked: patch targets unread files: {unread}"
+    return True, ""
+
+
+def _validate_patch_targets_not_binary(repo_root: Path, touched_files: Sequence[str]) -> tuple[bool, str]:
+    binary: list[str] = []
+    for rel in touched_files:
+        target = (repo_root / rel).resolve()
+        if target.exists() and _is_binary_file(target):
+            binary.append(rel)
+    if binary:
+        return False, f"Blocked: patch targets binary files: {binary}"
+    return True, ""
+
+
+def _write_patch_history(
+    *,
+    repo_root: Path,
+    patch: str,
+    result: dict[str, Any],
+    touched_files: Sequence[str],
+    check_only: bool,
+) -> None:
+    try:
+        logs_dir = repo_root / ".mana_logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        payload = {
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "tool": "apply_patch",
+            "check_only": bool(check_only),
+            "touched_files": list(touched_files),
+            "patch_preview": patch[:20000],
+            "result": result,
+        }
+        (logs_dir / f"apply_patch_{stamp}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except Exception:
+        return None
 
 
 def _apply_via_write_file(
@@ -667,6 +866,8 @@ def safe_apply_patch(
     check_only: bool = False,
     strategy_hint: str = "auto",
     strict_strategy: bool = False,
+    read_files: Sequence[str] | None = None,
+    require_read: bool = False,
 ) -> dict[str, Any]:
     """
     Safely apply a JSON patch inside the repository.
@@ -725,27 +926,17 @@ def safe_apply_patch(
     # Strip markdown fences that LLMs sometimes wrap around JSON.
     patch = _strip_markdown_fences(patch)
 
-    if _looks_like_git_diff_payload(patch):
-        return ApplyPatchResult(
-            ok=False,
-            touched_files=[],
-            strategy_requested=requested_strategy,
-            error=(
-                "Error: git diff/unified diff payloads are not supported. "
-                "Use JSON patch list format, e.g. "
-                "[{\"path\":\"src/foo.py\",\"create\":false,"
-                "\"hunks\":[{\"old_start\":1,\"old_lines\":[\"old\"],"
-                "\"new_lines\":[\"new\"]}]}]."
-            ),
-        ).to_dict()
-
     repo_root = repo_root.resolve()
 
     # ---- Parse JSON once, derive both raw data and structured files --------
-    raw_data, parsed_files, parse_err = _parse_json_patch(patch)
+    raw_data: list[dict[str, Any]] = []
+    if _looks_like_unified_diff_payload(patch):
+        parsed_files, parse_err = _parse_unified_diff(patch)
+    else:
+        raw_data, parsed_files, parse_err = _parse_json_patch(patch)
 
     if parse_err:
-        return ApplyPatchResult(
+        result = ApplyPatchResult(
             ok=False,
             touched_files=[],
             strategy_requested=requested_strategy,
@@ -755,12 +946,22 @@ def safe_apply_patch(
                 "path/create/hunks(old_start, old_lines, new_lines)."
             ),
         ).to_dict()
+        _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=[], check_only=check_only)
+        return result
 
     # ---- Extract touched paths / detect deletions --------------------------
-    touched, deleted = _extract_touched_paths_and_deletes(raw_data)
+    if raw_data:
+        touched, deleted = _extract_touched_paths_and_deletes(raw_data)
+    else:
+        touched = set(_parsed_touched_files(parsed_files))
+        deleted = {
+            _normalise_user_path(item.old_path)
+            for item in parsed_files
+            if _is_dev_null(item.new_path) and not _is_dev_null(item.old_path)
+        }
 
     if deleted:
-        return ApplyPatchResult(
+        result = ApplyPatchResult(
             ok=False,
             touched_files=sorted(touched),
             strategy_requested=requested_strategy,
@@ -768,17 +969,44 @@ def safe_apply_patch(
                 f"Blocked: patch deletes files (not allowed): {sorted(deleted)}"
             ),
         ).to_dict()
+        _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=sorted(touched), check_only=check_only)
+        return result
 
     ok, touched_files, err = _validate_touched_paths(
         repo_root, touched, allowed_prefixes,
     )
     if not ok:
-        return ApplyPatchResult(
+        result = ApplyPatchResult(
             ok=False,
             touched_files=[],
             strategy_requested=requested_strategy,
             error=err,
         ).to_dict()
+        _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=[], check_only=check_only)
+        return result
+
+    binary_ok, binary_err = _validate_patch_targets_not_binary(repo_root, touched_files)
+    if not binary_ok:
+        result = ApplyPatchResult(
+            ok=False,
+            touched_files=touched_files,
+            strategy_requested=requested_strategy,
+            error=binary_err,
+        ).to_dict()
+        _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=touched_files, check_only=check_only)
+        return result
+
+    if require_read:
+        read_ok, read_err = _validate_patch_targets_are_read(repo_root, touched_files, read_files)
+        if not read_ok:
+            result = ApplyPatchResult(
+                ok=False,
+                touched_files=touched_files,
+                strategy_requested=requested_strategy,
+                error=read_err,
+            ).to_dict()
+            _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=touched_files, check_only=check_only)
+            return result
 
     # ---- Collect target paths for snapshots --------------------------------
     all_target_paths: list[str] = []
@@ -813,7 +1041,7 @@ def safe_apply_patch(
 
         if py_ok:
             if check_only:
-                return ApplyPatchResult(
+                result = ApplyPatchResult(
                     ok=True,
                     touched_files=touched_files,
                     check_only=True,
@@ -822,6 +1050,8 @@ def safe_apply_patch(
                     attempts=attempts,
                     stdout="py strategy check succeeded",
                 ).to_dict()
+                _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=touched_files, check_only=check_only)
+                return result
 
             write_ok, write_detail, write_stdout, write_stderr = (
                 _apply_via_write_file(
@@ -834,7 +1064,7 @@ def safe_apply_patch(
             attempts.append(_attempt("py", "write", write_ok, write_detail))
 
             if write_ok:
-                return ApplyPatchResult(
+                result = ApplyPatchResult(
                     ok=True,
                     touched_files=touched_files,
                     check_only=False,
@@ -844,9 +1074,11 @@ def safe_apply_patch(
                     stdout=write_stdout or "py strategy applied successfully",
                     stderr=write_stderr,
                 ).to_dict()
+                _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=touched_files, check_only=check_only)
+                return result
 
             if strict_strategy and requested_strategy == "py":
-                return ApplyPatchResult(
+                result = ApplyPatchResult(
                     ok=False,
                     touched_files=touched_files,
                     check_only=False,
@@ -855,10 +1087,12 @@ def safe_apply_patch(
                     attempts=attempts,
                     error=f"Error: py strategy write failed: {write_detail}",
                 ).to_dict()
+                _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=touched_files, check_only=check_only)
+                return result
 
         else:
             if strict_strategy and requested_strategy == "py":
-                return ApplyPatchResult(
+                result = ApplyPatchResult(
                     ok=False,
                     touched_files=touched_files,
                     check_only=check_only,
@@ -867,6 +1101,8 @@ def safe_apply_patch(
                     attempts=attempts,
                     error=f"Error: py strategy failed: {py_detail}",
                 ).to_dict()
+                _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=touched_files, check_only=check_only)
+                return result
 
     # -----------------------------------------------------------------------
     # Strategy: perl
@@ -889,7 +1125,7 @@ def safe_apply_patch(
         )
 
         if perl_ok:
-            return ApplyPatchResult(
+            result = ApplyPatchResult(
                 ok=True,
                 touched_files=touched_files,
                 check_only=check_only,
@@ -899,6 +1135,8 @@ def safe_apply_patch(
                 stdout=perl_stdout,
                 stderr=perl_stderr,
             ).to_dict()
+            _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=touched_files, check_only=check_only)
+            return result
 
         if not check_only and snapshots:
             rollback_err = _rollback_files(repo_root, snapshots)
@@ -908,7 +1146,7 @@ def safe_apply_patch(
                 )
 
         if strict_strategy and requested_strategy == "perl":
-            return ApplyPatchResult(
+            result = ApplyPatchResult(
                 ok=False,
                 touched_files=touched_files,
                 check_only=check_only,
@@ -917,9 +1155,11 @@ def safe_apply_patch(
                 attempts=attempts,
                 error=f"Error: perl strategy failed: {perl_stderr}",
             ).to_dict()
+            _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=touched_files, check_only=check_only)
+            return result
 
     # All strategies exhausted
-    return ApplyPatchResult(
+    result = ApplyPatchResult(
         ok=False,
         touched_files=touched_files,
         check_only=check_only,
@@ -930,6 +1170,8 @@ def safe_apply_patch(
         attempts=attempts,
         error="Error: all patch strategies exhausted without success.",
     ).to_dict()
+    _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=touched_files, check_only=check_only)
+    return result
 
 
 # ---------------------------------------------------------------------------

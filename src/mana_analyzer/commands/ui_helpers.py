@@ -169,6 +169,7 @@ _EDIT_INTENT_TOKENS = (
     "rewrite",
     "refactor",
     "fix",
+    "build",
     "create",
     "add",
     "remove",
@@ -219,6 +220,7 @@ def _looks_like_edit_request(question: str) -> bool:
 
     directive_prefixes = (
         "add ",
+        "build ",
         "create ",
         "delete ",
         "edit ",

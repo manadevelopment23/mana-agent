@@ -16,4 +16,4 @@ dist/
 .mana_cache/
 .mana_llm_logs/
 logs/
-.mana
+.mana/

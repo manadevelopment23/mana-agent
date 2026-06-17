@@ -6,12 +6,14 @@ A coding flow is the persisted execution context for coding-agent turns in chat 
 
 - objective/constraints/acceptance signals extracted from user requests
 - per-turn tool outcomes and warnings
+- individual tool call/result rows
+- files read, patches applied, and verification results
 - open/done checklist tasks
 - recent decisions and transition history
 
 Flows are project-scoped and stored in:
 
-- `<project>/.mana_index/chat_memory.sqlite3`
+- `<project>/.mana/index/chat_memory.sqlite3`
 
 ## Stored data model
 
@@ -22,6 +24,9 @@ Flows are project-scoped and stored in:
 - `coding_flow_tasks`: extracted checklist-like task rows (`open`/`done`)
 - `coding_flow_decisions`: extracted decisions and rationales
 - `coding_flow_checkpoints`: snapshots captured via checkpoint operations
+- `coding_flow_tool_calls`: persisted tool name, arguments, result payload, and status
+- `coding_flow_verification_results`: persisted verification payloads and pass/fail status
+- `coding_flow_read_cache`: safe read cache used to avoid repeated disk reads and enforce read-before-patch flow
 
 `FlowSummary` is an aggregated read model over the latest flow + recent tasks/decisions/turns.
 
@@ -56,8 +61,8 @@ Chat commands:
 Database-level inspection (debugging):
 
 ```bash
-sqlite3 .mana_index/chat_memory.sqlite3 ".tables"
-sqlite3 .mana_index/chat_memory.sqlite3 "select flow_id, status, updated_at from coding_flows order by updated_at desc limit 5;"
+sqlite3 .mana/index/chat_memory.sqlite3 ".tables"
+sqlite3 .mana/index/chat_memory.sqlite3 "select flow_id, status, updated_at from coding_flows order by updated_at desc limit 5;"
 ```
 
 ## Planner/fallback and memory lifecycle
@@ -73,12 +78,56 @@ The coding agent and tools manager cooperate in this sequence:
    - If still invalid, deterministic fallback checklist/plan is used.
 3. Tool execution loop:
    - `ToolsManagerOrchestrator.run(...)` executes planner batches, tracks passes, warnings, and terminal reasons.
+   - `AskAgent` records every tool call it executes or blocks.
+   - Mutation tools are gated by read state: existing target files must be read before `apply_patch` or `write_file`.
 4. Transition and turn persistence:
    - `CodingAgent` records transitions/checklist outcomes.
    - `CodingMemoryService.record_turn(...)` stores turn payloads and task/decision extraction.
+   - `CodingMemoryService.record_tool_call(...)` and `record_verification_result(...)` store detailed execution evidence.
 5. Flow control:
    - `checkpoint_flow(...)` writes snapshots.
    - `reset_flow(...)` marks flow status reset.
+
+## Tool safety and verification
+
+The coding agent exposes strict contracts through the `tool_contracts` tool. Each contract includes:
+
+- name
+- description
+- input schema
+- output schema
+- error format
+- safety rules
+- examples
+
+Available coding tools:
+
+- `semantic_search`, `repo_search`, `list_files`, `find_symbols`
+- `read_file`, `chunk_file`
+- `apply_patch`, `write_file`
+- `run_command`, `verify_project`
+- `git_status`, `git_diff`
+- `tool_contracts`
+
+Patch safety:
+
+- rejects unread existing target files when read tracking is active
+- rejects paths outside the project root
+- rejects absolute paths, `..`, binary edits, and file deletes
+- accepts JSON patch operations and standard unified diffs
+- writes patch preview/result history to `<project>/.mana_logs/`
+
+Verification behavior:
+
+- `verify_project` runs `pytest -q`, `ruff check src tests`, `mypy src tests`, import smoke, and CLI help smoke checks when tools are available
+- missing commands are reported as skipped, not silently ignored
+- final responses should list changed files, checks run, failures/skips, and the next recommended step
+
+Example chat bug-fix request:
+
+```text
+Fix the failing parser test. Search for the failing symbol, read the relevant files, patch the bug, and run pytest for the affected tests.
+```
 
 ## Troubleshooting examples
 
@@ -93,7 +142,7 @@ Checks:
 
 ```bash
 mana-analyzer flow . --format json
-sqlite3 .mana_index/chat_memory.sqlite3 "select flow_id,status,updated_at from coding_flows order by updated_at desc limit 10;"
+sqlite3 .mana/index/chat_memory.sqlite3 "select flow_id,status,updated_at from coding_flows order by updated_at desc limit 10;"
 ```
 
 Actions:

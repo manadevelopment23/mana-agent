@@ -26,6 +26,16 @@ from mana_analyzer.llm.run_logger import LlmRunLogger
 from mana_analyzer.config.settings import default_index_dir
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
 from mana_analyzer.services.search_service import SearchService
+from mana_analyzer.tools import coding_tool_contracts_payload, extract_patch_touched_files
+from mana_analyzer.tools.repository import (
+    dumps_tool_result,
+    find_symbols as repo_find_symbols,
+    git_diff as repo_git_diff,
+    git_status as repo_git_status,
+    list_files as repo_list_files,
+    repo_search as repo_text_search,
+    verify_project as repo_verify_project,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +63,26 @@ class _ListToolsInput(BaseModel):
 
 class _LsInput(BaseModel):
     pass
+
+class _RepoSearchInput(BaseModel):
+    query: str
+    glob: str = "**/*"
+    regex: bool = False
+    limit: int = 100
+
+class _ListFilesInput(BaseModel):
+    glob: str = "**/*"
+    limit: int = 200
+
+class _FindSymbolsInput(BaseModel):
+    query: str = ""
+    limit: int = 100
+
+class _GitDiffInput(BaseModel):
+    path: str = ""
+
+class _VerifyProjectInput(BaseModel):
+    quick: bool = False
 
 
 class AskAgent:
@@ -246,6 +276,47 @@ class AskAgent:
         if not resolved.exists():
             raise FileNotFoundError(str(resolved))
         return resolved
+
+    @staticmethod
+    def _is_binary_path(path: Path) -> bool:
+        try:
+            return b"\x00" in path.read_bytes()[:4096]
+        except Exception:
+            return True
+
+    def _to_project_rel(self, path: str | Path) -> str:
+        requested = Path(path)
+        resolved = requested if requested.is_absolute() else (self.project_root / requested)
+        resolved = resolved.resolve()
+        return resolved.relative_to(self.project_root).as_posix()
+
+    def _mutation_unread_targets(
+        self,
+        *,
+        name: str,
+        args: dict[str, Any],
+        unique_read_files: set[str],
+    ) -> list[str]:
+        targets: list[str] = []
+        if name == "write_file":
+            raw_path = str(args.get("path", "")).strip()
+            if raw_path:
+                try:
+                    targets = [self._to_project_rel(raw_path)]
+                except Exception:
+                    return [raw_path]
+        elif name == "apply_patch":
+            touched = extract_patch_touched_files(str(args.get("patch", "") or ""))
+            if not bool(touched.get("ok")):
+                return []
+            targets = [str(item) for item in touched.get("touched_files", [])]
+
+        unread: list[str] = []
+        for rel in targets:
+            target = (self.project_root / rel).resolve()
+            if target.exists() and rel not in unique_read_files:
+                unread.append(rel)
+        return unread
 
     @staticmethod
     def _normalize_line_request(start_line: int, end_line: int, line_window: int) -> tuple[int, int]:
@@ -535,6 +606,8 @@ class AskAgent:
             args_summary = f"path={path!r} mode={mode!r} start={start_line} end={end_line}"
             try:
                 resolved = self._resolve_read_path(path)
+                if self._is_binary_path(resolved):
+                    raise ValueError("binary files cannot be read by read_file")
                 requested_mode = self._normalize_read_mode(mode)
                 start, end = self._normalize_line_request(start_line, end_line, safe_read_line_window)
                 cached_payload, invalidated = self._lookup_read_cache(
@@ -738,6 +811,29 @@ class AskAgent:
             dirs = StructureService._list_directories(self.project_root)
             return json.dumps({"directories": dirs})
 
+        def repo_search(query: str, glob: str = "**/*", regex: bool = False, limit: int = 100) -> str:
+            return dumps_tool_result(
+                repo_text_search(self.project_root, query=query, glob=glob, regex=regex, limit=limit)
+            )
+
+        def list_files(glob: str = "**/*", limit: int = 200) -> str:
+            return dumps_tool_result(repo_list_files(self.project_root, glob=glob, limit=limit))
+
+        def find_symbols(query: str = "", limit: int = 100) -> str:
+            return dumps_tool_result(repo_find_symbols(self.project_root, query=query, limit=limit))
+
+        def git_status() -> str:
+            return dumps_tool_result(repo_git_status(self.project_root))
+
+        def git_diff(path: str = "") -> str:
+            return dumps_tool_result(repo_git_diff(self.project_root, path=path))
+
+        def verify_project(quick: bool = False) -> str:
+            return dumps_tool_result(repo_verify_project(self.project_root, quick=quick))
+
+        def tool_contracts() -> str:
+            return dumps_tool_result(coding_tool_contracts_payload())
+
         base_tools: list[BaseTool] = [
             StructuredTool.from_function(
                 func=semantic_search,
@@ -778,6 +874,48 @@ class AskAgent:
                 name="ls",
                 description="List project directories relative to the root.",
                 args_schema=_LsInput,
+            ),
+            StructuredTool.from_function(
+                func=repo_search,
+                name="repo_search",
+                description="Search repository text with regex or literal matching. Read-only.",
+                args_schema=_RepoSearchInput,
+            ),
+            StructuredTool.from_function(
+                func=list_files,
+                name="list_files",
+                description="List repository files relative to the project root. Read-only.",
+                args_schema=_ListFilesInput,
+            ),
+            StructuredTool.from_function(
+                func=find_symbols,
+                name="find_symbols",
+                description="Find Python classes/functions/methods using AST. Read-only.",
+                args_schema=_FindSymbolsInput,
+            ),
+            StructuredTool.from_function(
+                func=git_status,
+                name="git_status",
+                description="Return git status --short. Read-only.",
+                args_schema=_LsInput,
+            ),
+            StructuredTool.from_function(
+                func=git_diff,
+                name="git_diff",
+                description="Return git diff, optionally for one project-relative path. Read-only.",
+                args_schema=_GitDiffInput,
+            ),
+            StructuredTool.from_function(
+                func=verify_project,
+                name="verify_project",
+                description="Run standard pytest/ruff/mypy/import/CLI smoke checks and report skipped tools.",
+                args_schema=_VerifyProjectInput,
+            ),
+            StructuredTool.from_function(
+                func=tool_contracts,
+                name="tool_contracts",
+                description="Return strict name/schema/output/error/safety/examples contracts for coding tools.",
+                args_schema=_ListToolsInput,
             ),
         ]
 
@@ -881,6 +1019,29 @@ class AskAgent:
         disk_read_count = 0
 
         final_answer = ""
+
+        def persist_tool_call(tool_name: str, tool_args: dict[str, Any], tool_result: Any, status: str) -> None:
+            if not flow_id or self.coding_memory_service is None:
+                return
+            try:
+                self.coding_memory_service.record_tool_call(
+                    flow_id=flow_id,
+                    tool_name=tool_name,
+                    arguments=tool_args,
+                    result=tool_result,
+                    status=status,
+                )
+                if tool_name == "verify_project":
+                    payload = self._coerce_tool_payload(tool_result)
+                    if payload is not None:
+                        self.coding_memory_service.record_verification_result(
+                            flow_id=flow_id,
+                            results=payload,
+                            status="passed" if bool(payload.get("ok")) else "failed",
+                        )
+            except Exception:
+                return
+
         for _ in range(max_steps):
             try:
                 ai_msg = bound.invoke(messages, config=cfg)
@@ -902,8 +1063,10 @@ class AskAgent:
 
                 if name not in tool_map:
                     content = json.dumps({"error": f"unknown tool: {name}"})
+                    persist_tool_call(name, args if isinstance(args, dict) else {}, content, "error")
                 elif allowed_tools and name not in allowed_tools:
                     content = json.dumps({"error": f"tool blocked by policy: {name}"})
+                    persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                 elif name != "read_file" and seen_tool_args[tool_sig] > 2:
                     content = json.dumps(
                         {
@@ -913,6 +1076,7 @@ class AskAgent:
                             )
                         }
                     )
+                    persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                 elif forced_patch_fallback and name == "apply_patch":
                     content = json.dumps(
                         {
@@ -923,17 +1087,21 @@ class AskAgent:
                             ),
                         }
                     )
+                    persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                 elif block_internet and name == "search_internet":
                     content = json.dumps({"error": "search_internet blocked by coding-agent repo-only policy"})
+                    persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                 else:
                     if name == "semantic_search":
                         if search_budget > 0 and tool_counts["semantic_search"] >= search_budget:
                             content = json.dumps({"error": "semantic_search budget exhausted"})
+                            persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
                         k_val = int(args.get("k", 0) or 0)
                         if k_val > max_semantic_k:
                             content = json.dumps({"error": f"semantic_search k must be <= {max_semantic_k}"})
+                            persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
                         normalized = self._normalize_search_key(args)
@@ -942,6 +1110,7 @@ class AskAgent:
                             content = json.dumps(
                                 {"error": "duplicate semantic_search intent blocked; move to read_file or edit phase"}
                             )
+                            persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
                     if name == "read_file":
@@ -960,6 +1129,7 @@ class AskAgent:
                             )
                         ):
                             content = json.dumps({"error": "read_file budget exhausted"})
+                            persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
                     if name in {"apply_patch", "write_file"} and require_read_files > 0:
@@ -971,15 +1141,62 @@ class AskAgent:
                                     )
                                 }
                             )
+                            persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
+                            messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
+                            continue
+                    if name in {"apply_patch", "write_file"}:
+                        unread_targets = self._mutation_unread_targets(
+                            name=name,
+                            args=args if isinstance(args, dict) else {},
+                            unique_read_files=unique_read_files,
+                        )
+                        if unread_targets:
+                            content = json.dumps(
+                                {
+                                    "ok": False,
+                                    "error": (
+                                        "mutation blocked by policy: target files must be read before editing"
+                                    ),
+                                    "unread_files": unread_targets,
+                                }
+                            )
+                            persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
                     try:
+                        trace_count_before = len(traces)
+                        tool_started = perf_counter()
                         try:
                             content = tool_map[name].invoke(args, config=cfg)
                         except TypeError:
                             content = tool_map[name].invoke(args)
+                        if len(traces) == trace_count_before:
+                            traces.append(
+                                ToolInvocationTrace(
+                                    tool_name=name,
+                                    args_summary=json.dumps(args, sort_keys=True, default=str)[:500],
+                                    duration_ms=(perf_counter() - tool_started) * 1000,
+                                    status="ok" if not self._search_error_detail(content) else "error",
+                                    output_preview=str(content)[:4000],
+                                )
+                            )
                     except Exception as exc:
                         content = json.dumps({"error": str(exc)})
+                        traces.append(
+                            ToolInvocationTrace(
+                                tool_name=name,
+                                args_summary=json.dumps(args, sort_keys=True, default=str)[:500],
+                                duration_ms=0.0,
+                                status="error",
+                                output_preview=str(exc)[:4000],
+                            )
+                        )
+                    persist_tool_call(
+                        name,
+                        args if isinstance(args, dict) else {},
+                        content,
+                        "error" if self._search_error_detail(content) else "ok",
+                    )
 
                 if name == "apply_patch":
                     if self._is_apply_patch_failure(content):
@@ -998,7 +1215,10 @@ class AskAgent:
                     if payload is not None:
                         file_path = str(payload.get("file_path", "")).strip()
                         if file_path:
-                            unique_read_files.add(file_path)
+                            try:
+                                unique_read_files.add(self._to_project_rel(file_path))
+                            except Exception:
+                                unique_read_files.add(file_path)
                         if not bool(payload.get("cache_hit", False)) and not str(payload.get("error", "")).strip():
                             disk_read_count += 1
                 if name == "search_internet":
