@@ -8,6 +8,27 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MANA_ROOT_DIRNAME = ".mana"
 
+# Default embedding models per provider. The chat and embedding endpoints share a
+# single base URL, so when no embedding model is configured explicitly we pick a
+# provider-appropriate default based on that URL (an OpenAI embedding model does
+# not exist on NVIDIA's API and vice versa).
+OPENAI_DEFAULT_EMBED_MODEL = "text-embedding-3-small"
+NVIDIA_DEFAULT_EMBED_MODEL = "nvidia/nv-embedqa-e5-v5"
+
+
+def resolve_embed_model(base_url: str | None, explicit_model: str | None = None) -> str:
+    """Return the embedding model to use for the given base URL.
+
+    An explicitly configured model always wins. Otherwise the model is inferred
+    from the base URL: NVIDIA endpoints get an NVIDIA embedding model, everything
+    else falls back to the OpenAI default.
+    """
+    if explicit_model and explicit_model.strip():
+        return explicit_model.strip()
+    if base_url and "nvidia" in base_url.lower():
+        return NVIDIA_DEFAULT_EMBED_MODEL
+    return OPENAI_DEFAULT_EMBED_MODEL
+
 
 class Settings(BaseSettings):
     openai_api_key: str = Field(alias="OPENAI_API_KEY")
@@ -15,7 +36,9 @@ class Settings(BaseSettings):
     openai_chat_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_CHAT_MODEL")
     openai_tool_worker_model: str | None = Field(default=None, alias="OPENAI_TOOL_WORKER_MODEL")
     openai_coding_planner_model: str | None = Field(default=None, alias="OPENAI_CODING_PLANNER_MODEL")
-    openai_embed_model: str = Field(default="text-embedding-3-small", alias="OPENAI_EMBED_MODEL")
+    # Left unset by default so the embedding model can be auto-selected from the
+    # active base URL (see ``resolve_embed_model``). An explicit value always wins.
+    openai_embed_model: str | None = Field(default=None, alias="OPENAI_EMBED_MODEL")
     default_top_k: int = Field(default=8, alias="DEFAULT_TOP_K")
     coding_flow_max_turns: int = Field(default=5, alias="CODING_FLOW_MAX_TURNS")
     coding_flow_max_tasks: int = Field(default=20, alias="CODING_FLOW_MAX_TASKS")

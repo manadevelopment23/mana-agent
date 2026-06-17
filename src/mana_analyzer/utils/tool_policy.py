@@ -18,8 +18,8 @@ from typing import Iterable
 # High-level aliases → concrete registered tool names.
 TOOL_GROUPS: dict[str, list[str]] = {
     "file_system": ["ls", "list_files", "read_file", "repo_search"],
-    "inspect": ["ls", "list_files", "read_file", "repo_search", "find_symbols"],
-    "search": ["semantic_search", "repo_search", "list_files"],
+    "inspect": ["ls", "list_files", "read_file", "repo_search", "find_symbols", "call_graph"],
+    "search": ["semantic_search", "repo_search", "list_files", "find_symbols", "call_graph"],
     "edit": ["apply_patch", "write_file", "git_diff"],
     "verify": ["verify_project", "run_command"],
 }
@@ -38,6 +38,7 @@ REGISTERED_TOOLS: frozenset[str] = frozenset(
         "repo_search",
         "list_files",
         "find_symbols",
+        "call_graph",
         "git_status",
         "git_diff",
         "verify_project",

@@ -7,6 +7,7 @@ Tool implementations used by agentic components.
 from .apply_patch import build_apply_patch_tool, safe_apply_patch, extract_patch_touched_files  # noqa: F401
 from .contracts import coding_tool_contracts, coding_tool_contracts_payload  # noqa: F401
 from .repository import (  # noqa: F401
+    call_graph,
     explore_src,
     find_symbols,
     git_diff,
@@ -26,6 +27,7 @@ __all__ = [
     "build_apply_patch_tool",
     "coding_tool_contracts",
     "coding_tool_contracts_payload",
+    "call_graph",
     "extract_patch_touched_files",
     "explore_src",
     "find_symbols",

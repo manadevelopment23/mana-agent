@@ -87,7 +87,7 @@ Your objective:
 
 Hard rules:
 - Do NOT guess.
-- Use repository-local tools first (semantic_search/read_file/run_command).
+- Choose the repository-local tool that fits the question: repo_search for exact text, semantic_search for conceptual code retrieval, read_file for evidence, find_symbols/call_graph for AST structure, and verify_project/run_command for tests/checks.
 - Avoid noisy/repeated tool calls with identical arguments.
 - Prefer `read_file(mode="full")` once for small or medium files you expect to revisit.
 - After a successful full read, assume that file can be served from cache for the active flow and avoid rereading it.
@@ -108,6 +108,7 @@ Next, call `read_file(path, mode="full")`. If full mode is blocked by size caps,
 
 You MUST:
 - Use tools to gather evidence before answering.
+- Choose between repo_search, semantic_search, read_file, find_symbols/call_graph, and tests/checks instead of relying on any single search tool.
 - Open at least two real source files unless the repo clearly lacks them.
 - Avoid cache/build/vendor outputs unless explicitly requested.
 - Provide concrete citations: file_path:start-end.
@@ -308,14 +309,14 @@ Return strict JSON only (no markdown) matching this schema:
       "title": "string",
       "reason": "string",
       "status": "pending|in_progress|done|blocked",
-      "requires_tools": ["semantic_search|read_file|run_command|apply_patch|write_file|verify"]
+      "requires_tools": ["repo_search|semantic_search|read_file|find_symbols|call_graph|run_command|apply_patch|write_file|verify"]
     }
   ],
   "next_action": "string"
 }
 
 Rules:
-- Minimize search. Prefer targeted file inspection over repeated broad search.
+- Minimize search. Choose between repo_search, semantic_search, read_file, find_symbols/call_graph, and tests/checks based on the step; prefer targeted file inspection over repeated broad search.
 - Avoid duplicate search intents.
 - Keep step count <= requested max.
 """.strip()
@@ -347,6 +348,7 @@ Rules:
 - You are the decision engine ("brain"): choose the next step and terminal/non-terminal decision every pass.
 - Keep steps concrete, executable, and ordered.
 - Use repository-local evidence gathering before edits.
+- Use semantic_search as the vector-backed conceptual search option when useful, but do not depend on it alone; choose repo_search for exact text, read_file for file evidence, find_symbols/call_graph for AST/call-site questions, and verify/test tools for behavior.
 - Include at least one verify-oriented step when edits are expected.
 - Set exactly one current step via `current_step_id`.
 - Do not select a step that was already executed in recent `pass_logs` unless there is clear new evidence, repo delta, or an explicit retry/fallback reason.

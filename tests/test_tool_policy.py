@@ -46,6 +46,7 @@ def test_resolve_non_strict_drops_unknown_but_expands() -> None:
 def test_blank_and_duplicate_names_are_normalized() -> None:
     expanded, unknown = expand_tool_aliases(["", "  ", "ls", "ls", "inspect"])
     assert unknown == []
-    # inspect group includes find_symbols on top of file_system tools.
+    # inspect group includes AST/callgraph tools on top of file_system tools.
     assert "find_symbols" in expanded
+    assert "call_graph" in expanded
     assert expanded == sorted(set(expanded))

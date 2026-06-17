@@ -531,7 +531,7 @@ class ToolsManagerOrchestrator:
                     id="s1",
                     title="Inspect target files",
                     tool_intent="inspect",
-                    args_hint="Use semantic_search/read_file on concrete files.",
+                    args_hint="Choose repo_search, semantic_search, read_file, find_symbols, or call_graph for the task.",
                     success_signal="relevant file context gathered",
                     fallback="If unknown files, run targeted search once.",
                     status="in_progress",
@@ -1189,7 +1189,8 @@ class ToolsManagerOrchestrator:
 
         if step.tool_intent == "inspect":
             directive = (
-                "Inspect repository files for this step using semantic_search/read_file/run_command. "
+                "Inspect repository files for this step using repo_search, semantic_search, read_file, "
+                "find_symbols, call_graph, or run_command as appropriate. "
                 "Gather concrete evidence with file paths and line ranges."
             )
         elif step.tool_intent == "search":
@@ -2260,7 +2261,10 @@ class ToolsManagerOrchestrator:
             return str(match.group(1) or "").strip().lower()
         known = (
             "semantic_search",
+            "repo_search",
             "read_file",
+            "find_symbols",
+            "call_graph",
             "run_command",
             "apply_patch",
             "write_file",
@@ -2281,4 +2285,3 @@ __all__ = [
     "AutoExecuteResult",
     "ToolsManagerOrchestrator",
 ]
- 

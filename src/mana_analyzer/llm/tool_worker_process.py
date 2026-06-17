@@ -14,13 +14,13 @@ from pathlib import Path
 from typing import Any, Callable, Literal
 
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception, before_sleep_log
-from langchain_openai import OpenAIEmbeddings
 from langchain_core.callbacks.base import BaseCallbackHandler
 from pydantic import BaseModel, Field, ValidationError
 
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
 from mana_analyzer.services.search_service import SearchService
 from mana_analyzer.llm.ask_agent import AskAgent
+from mana_analyzer.vector_store.embeddings import build_embeddings
 from mana_analyzer.tools import build_apply_patch_tool, build_write_file_tool
 from mana_analyzer.tools import safe_apply_patch, safe_write_file
 from mana_analyzer.tools.search_internet import build_search_internet_tool, safe_search_internet
@@ -1022,9 +1022,10 @@ class ToolWorkerClient:
 
 def _build_worker_ask_agent(payload: WorkerInitPayload) -> AskAgent:
     logger.info(f"[_build_worker_ask_agent] Building AskAgent with model={payload.model}")
-    embeddings = OpenAIEmbeddings(
+    embeddings = build_embeddings(
         api_key=payload.api_key,
         base_url=payload.base_url,
+        model=getattr(payload, "embed_model", None),
     )
     search_service = SearchService(store=FaissStore(embeddings))
     ask_agent = AskAgent(

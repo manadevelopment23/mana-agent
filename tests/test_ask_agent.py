@@ -76,8 +76,215 @@ def test_ask_agent_enforces_max_steps(tmp_path: Path) -> None:
         ]
     )
     result = agent.run("How?", tmp_path / ".mana/index", 2, max_steps=1, timeout_seconds=2)
-    assert "step limit" in result.answer.lower()
+    # The raw step-limit string must never be the user-facing answer anymore.
+    assert "Tool loop reached the step limit before a final answer." not in result.answer
+    assert result.answer.strip()
+    # The trace is preserved and a best-effort answer is synthesized from evidence.
     assert result.trace
+    assert any(item.tool_name == "semantic_search" for item in result.trace)
+    assert any("returned best-effort final answer" in str(w) for w in result.warnings)
+
+
+class _CountingTool:
+    """Records every invocation so tests can assert dedup behavior."""
+
+    def __init__(self, return_value, name: str) -> None:
+        self.calls: list[dict] = []
+        self._return_value = return_value
+        self.__name__ = name
+
+    def __call__(self, **kwargs):  # noqa: ANN003
+        self.calls.append(kwargs)
+        value = self._return_value
+        return value(kwargs) if callable(value) else value
+
+
+def _register_tool(agent: AskAgent, name: str, func) -> None:  # noqa: ANN001
+    agent.tools = [
+        StructuredTool.from_function(func=func, name=name, description=f"Test tool {name}.")
+    ]
+
+
+def test_ask_agent_blocks_exact_duplicate_tool_call(tmp_path: Path) -> None:
+    counter = _CountingTool({"ok": True, "result": "stable"}, "search_internet")
+    agent = _build_agent(tmp_path)
+    _register_tool(agent, "search_internet", lambda query: counter(query=query))
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "search_internet", "args": {"query": "x"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "2", "name": "search_internet", "args": {"query": "x"}}]),
+            _FakeAIMessage("Done", tool_calls=[]),
+        ]
+    )
+
+    result = agent.run("dup?", tmp_path / ".mana/index", 2, max_steps=5, timeout_seconds=2)
+    assert result.answer == "Done"
+    # The identical second call is blocked, so the tool runs exactly once.
+    assert len(counter.calls) == 1
+    assert any("Duplicate tool call blocked: search_internet" in str(w) for w in result.warnings)
+
+
+def test_ask_agent_deduplicates_similar_repo_searches(tmp_path: Path) -> None:
+    counter = _CountingTool({"ok": True, "result": "readme-hit"}, "repo_search")
+    agent = _build_agent(tmp_path)
+    _register_tool(agent, "repo_search", lambda query: counter(query=query))
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "repo_search", "args": {"query": "README"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "2", "name": "repo_search", "args": {"query": "README.md"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "3", "name": "repo_search", "args": {"query": "README*"}}]),
+        ]
+    )
+
+    result = agent.run("docs?", tmp_path / ".mana/index", 2, max_steps=6, timeout_seconds=2)
+    # README / README.md / README* collapse to one canonical search.
+    assert len(counter.calls) == 1
+    assert any("Duplicate tool call blocked: repo_search" in str(w) for w in result.warnings)
+    assert "Tool loop reached the step limit before a final answer." not in result.answer
+
+
+def test_ask_agent_stops_on_no_progress(tmp_path: Path) -> None:
+    # Different (non-duplicate) queries that return identical evidence.
+    counter = _CountingTool({"ok": True, "result": "same-evidence"}, "repo_search")
+    agent = _build_agent(tmp_path)
+    _register_tool(agent, "repo_search", lambda query: counter(query=query))
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "repo_search", "args": {"query": "alpha"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "2", "name": "repo_search", "args": {"query": "beta"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "3", "name": "repo_search", "args": {"query": "gamma"}}]),
+            _FakeAIMessage("Should not be reached", tool_calls=[]),
+        ]
+    )
+
+    result = agent.run("progress?", tmp_path / ".mana/index", 2, max_steps=9, timeout_seconds=2)
+    assert result.answer != "Should not be reached"
+    assert any("no-progress detection" in str(w) for w in result.warnings)
+    assert result.trace
+
+
+def test_ask_agent_forces_final_answer_when_budget_low(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "semantic_search", "args": {"query": "q1", "k": 2}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "2", "name": "semantic_search", "args": {"query": "q2", "k": 2}}]),
+        ]
+    )
+
+    result = agent.run("low budget?", tmp_path / ".mana/index", 2, max_steps=2, timeout_seconds=2)
+    assert "Tool loop reached the step limit before a final answer." not in result.answer
+    assert result.answer.strip()
+    assert any("low remaining tool budget" in str(w) for w in result.warnings)
+
+
+class _SynthesizingLLM:
+    """Fake LLM that drives the tool loop and also answers the synthesis pass."""
+
+    def __init__(self, responses: list[_FakeAIMessage]) -> None:
+        self._responses = responses
+        self.synthesis_calls: list[list[object]] = []
+
+    def bind_tools(self, _tools: list[object]) -> _FakeBoundModel:
+        return _FakeBoundModel(self._responses)
+
+    def invoke(self, messages: list[object]) -> _FakeAIMessage:
+        # Only the tool-free synthesis pass calls llm.invoke() directly.
+        self.synthesis_calls.append(messages)
+        return _FakeAIMessage("Polished best-effort answer from the model.")
+
+
+def test_ask_agent_synthesis_uses_llm_when_available(tmp_path: Path) -> None:
+    llm = _SynthesizingLLM(
+        [
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "semantic_search", "args": {"query": "x", "k": 2}}]),
+        ]
+    )
+    agent = _build_agent(tmp_path)
+    agent.llm = llm
+    result = agent.run("How?", tmp_path / ".mana/index", 2, max_steps=1, timeout_seconds=2)
+    # The polished, model-written synthesis is returned (not the raw digest).
+    assert result.answer == "Polished best-effort answer from the model."
+    assert llm.synthesis_calls  # the tool-free synthesis pass actually ran
+
+
+def test_ask_agent_synthesis_falls_back_to_digest_when_llm_unavailable(tmp_path: Path) -> None:
+    # _FakeLLM has no .invoke(), so synthesis falls back to the deterministic digest.
+    agent = _build_agent(tmp_path)
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "semantic_search", "args": {"query": "x", "k": 2}}]),
+        ]
+    )
+    result = agent.run("How?", tmp_path / ".mana/index", 2, max_steps=1, timeout_seconds=2)
+    assert "best-effort summary from the evidence collected" in result.answer
+    assert "Tool loop reached the step limit before a final answer." not in result.answer
+
+
+def test_ask_agent_repeated_errors_trigger_no_progress(tmp_path: Path) -> None:
+    # A non-guarded tool that keeps failing (with changing error text) should
+    # trip no-progress detection rather than relying on a dedicated guard.
+    state = {"n": 0}
+
+    def _always_fail(query):  # noqa: ANN001
+        state["n"] += 1
+        return {"ok": False, "result": "", "error": f"transient failure #{state['n']} for {query}"}
+
+    agent = _build_agent(tmp_path)
+    _register_tool(agent, "repo_search", _always_fail)
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "repo_search", "args": {"query": "a"}}]),
+            _FakeAIMessage("", tool_calls=[{"id": "2", "name": "repo_search", "args": {"query": "b"}}]),
+            _FakeAIMessage("Should not be reached", tool_calls=[]),
+        ]
+    )
+    result = agent.run("err?", tmp_path / ".mana/index", 2, max_steps=9, timeout_seconds=2)
+    assert result.answer != "Should not be reached"
+    assert any("no-progress detection" in str(w) for w in result.warnings)
+
+
+def test_ask_agent_does_not_merge_searches_with_different_glob(tmp_path: Path) -> None:
+    counter = _CountingTool({"ok": True, "result": "hit"}, "repo_search")
+    agent = _build_agent(tmp_path)
+    agent.tools = [
+        StructuredTool.from_function(
+            func=lambda query, glob="**/*": counter(query=query, glob=glob),
+            name="repo_search",
+            description="Test repo_search.",
+        )
+    ]
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage(
+                "", tool_calls=[{"id": "1", "name": "repo_search", "args": {"query": "config", "glob": "**/*.py"}}]
+            ),
+            _FakeAIMessage(
+                "", tool_calls=[{"id": "2", "name": "repo_search", "args": {"query": "config", "glob": "**/*.ts"}}]
+            ),
+            _FakeAIMessage("Done", tool_calls=[]),
+        ]
+    )
+    result = agent.run("scope?", tmp_path / ".mana/index", 2, max_steps=5, timeout_seconds=2)
+    # Same query term but different glob scope -> two genuinely different searches.
+    assert len(counter.calls) == 2
+    assert result.answer == "Done"
+    assert not any("Duplicate tool call blocked" in str(w) for w in result.warnings)
+
+
+def test_ask_agent_successful_result_is_not_treated_as_stagnation(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+    agent.llm = _FakeLLM(
+        [
+            _FakeAIMessage("", tool_calls=[{"id": "1", "name": "semantic_search", "args": {"query": "demo", "k": 3}}]),
+            _FakeAIMessage("Final answer from model.", tool_calls=[]),
+        ]
+    )
+    result = agent.run("ok?", tmp_path / ".mana/index", 3, max_steps=5, timeout_seconds=2)
+    # The model's own answer wins; no synthesized fallback or early stop.
+    assert result.answer == "Final answer from model."
+    assert not any("best-effort final answer" in str(w) for w in result.warnings)
+    assert any(item.status == "ok" for item in result.trace)
 
 
 def test_ask_agent_blocks_dangerous_command(tmp_path: Path) -> None:
@@ -88,6 +295,13 @@ def test_ask_agent_blocks_dangerous_command(tmp_path: Path) -> None:
     output = run_command.invoke({"cmd": "rm -rf /tmp/foo"})
     assert "blocked" in output.lower()
     assert traces[-1].status == "error"
+
+
+def test_ask_agent_registers_call_graph_tool(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+    tools, _traces, _, _ = agent._build_tools(k_default=4, timeout_seconds=1)
+
+    assert "call_graph" in {item.name for item in tools}
 
 
 def test_ask_agent_records_timeout(tmp_path: Path, monkeypatch) -> None:
@@ -466,7 +680,10 @@ def test_ask_agent_reports_search_internet_failure_once(tmp_path: Path) -> None:
     )
 
     result = agent.run("Need latest info", tmp_path / ".mana/index", 2, max_steps=4, timeout_seconds=2)
-    assert result.answer == "Done"
+    # A failing search that is then retried identically makes no progress, so the
+    # loop now stops early and synthesizes a best-effort answer instead of spinning.
+    assert "Tool loop reached the step limit before a final answer." not in result.answer
+    assert result.answer.strip()
     matches = [w for w in result.warnings if "search_internet failed: DuckDuckGo fallback failed" in str(w)]
     assert len(matches) == 1
 

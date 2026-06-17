@@ -19,10 +19,12 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.callbacks.base import BaseCallbackHandler
+from rich import box
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.syntax import Syntax
 from rich.table import Table
@@ -301,6 +303,78 @@ def _classify_direct_command(question: str) -> str | None:
     return None
 
 
+# -----------------------------------------
+# Chat console chrome (banner / status / headers)
+# -----------------------------------------
+
+# ANSI sequence for a colored readline prompt. The \001/\002 guards tell
+# readline these bytes are non-printing so line-wrapping math stays correct.
+CHAT_PROMPT = "\001\033[1;96m\002💬 ❯ \001\033[0m\002"
+
+
+def _render_chat_banner(console: Console, *, subtitle: str = "") -> None:
+    """Render the welcome banner shown once when chat starts."""
+    title = Text()
+    title.append("◆ ", style="bright_cyan")
+    title.append("mana-analyzer", style="bold bright_white")
+    title.append(" chat", style="bright_cyan")
+
+    body = Text()
+    if subtitle:
+        body.append(subtitle + "\n\n", style="dim")
+    body.append("Ask about this project, or request an edit and I'll dig in.\n")
+    body.append("Type ", style="dim")
+    body.append("help", style="bold yellow")
+    body.append(" for commands · ", style="dim")
+    body.append("exit", style="bold yellow")
+    body.append("/", style="dim")
+    body.append("quit", style="bold yellow")
+    body.append(" to leave.", style="dim")
+
+    console.print(
+        Panel(
+            body,
+            title=title,
+            title_align="left",
+            border_style="bright_cyan",
+            box=box.ROUNDED,
+            padding=(1, 2),
+        )
+    )
+
+
+def _render_chat_status(
+    console: Console,
+    rows: list[tuple[str, str]],
+    *,
+    title: str = "session",
+) -> None:
+    """Render the session configuration as a compact key/value panel."""
+    if not rows:
+        return
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", justify="right", no_wrap=True)
+    grid.add_column(style="white")
+    for key, value in rows:
+        grid.add_row(str(key), str(value))
+    console.print(
+        Panel(
+            grid,
+            title=f"[dim]{title}[/dim]",
+            title_align="left",
+            border_style="bright_black",
+            box=box.ROUNDED,
+            padding=(0, 1),
+        )
+    )
+
+
+def _render_answer_header(console: Console, title: str = "Answer") -> None:
+    """Render a styled separator/header above an answer block."""
+    console.print()
+    console.print(Rule(f"[bold cyan]{title}[/bold cyan]", style="cyan", align="left"))
+
+
 def _render_direct_command(
     console: Console,
     command: str,
@@ -345,7 +419,7 @@ def _render_direct_command(
     else:  # pragma: no cover - defensive
         answer = "Unknown command."
 
-    console.print("\n[bold]Answer[/bold]")
+    _render_answer_header(console)
     console.print(answer)
     return answer
 
@@ -1274,7 +1348,7 @@ def _render_answer_sections(
             if txt and txt not in merged_warnings:
                 merged_warnings.append(txt)
 
-    console.print(f"\n[bold]{title}[/bold]")
+    _render_answer_header(console, title)
     if answer_text:
         console.print(Markdown(answer_text))
     else:

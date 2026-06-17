@@ -9,14 +9,14 @@ from mana_analyzer.llm.ask_agent import AskAgent
 from mana_analyzer.llm.coding_agent_models import CodingAgentStateMachine
 from mana_analyzer.tools.contracts import coding_tool_contracts
 from mana_analyzer.tools.apply_patch import safe_apply_patch
-from mana_analyzer.tools.repository import _run_check
+from mana_analyzer.tools.repository import _run_check, call_graph
 
 
 def test_tool_contracts_are_machine_readable() -> None:
     contracts = coding_tool_contracts()
 
     names = {item.name for item in contracts}
-    assert {"read_file", "apply_patch", "verify_project", "repo_search", "find_symbols"} <= names
+    assert {"read_file", "apply_patch", "verify_project", "repo_search", "find_symbols", "call_graph"} <= names
     for contract in contracts:
         payload = contract.model_dump()
         assert payload["name"]
@@ -108,6 +108,30 @@ def test_verification_command_reports_missing_tool(tmp_path: Path) -> None:
 
     assert result.status == "skipped"
     assert "not found" in result.reason
+
+
+def test_call_graph_reports_python_ast_call_edges(tmp_path: Path) -> None:
+    source = tmp_path / "pkg" / "demo.py"
+    source.parent.mkdir()
+    source.write_text(
+        """
+def helper():
+    return 1
+
+class Runner:
+    def run(self):
+        helper()
+        self.finish()
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    result = call_graph(tmp_path, query="Runner.run", limit=20)
+
+    assert result["ok"] is True
+    edges = result["edges"]
+    assert {"file": "pkg/demo.py", "line": 6, "caller": "Runner.run", "callee": "helper"} in edges
+    assert {"file": "pkg/demo.py", "line": 7, "caller": "Runner.run", "callee": "self.finish"} in edges
 
 
 def test_coding_agent_phase_machine_blocks_patch_until_read() -> None:

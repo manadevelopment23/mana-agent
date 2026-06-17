@@ -765,49 +765,45 @@ def chat(
         max_attempts = 3
         min_sources = 2
 
-        console.print("mana-analyzer chat – type 'exit' or 'quit' to end.")
-
-        console.print(
-            f"[bold cyan]Automatic mode selection:[/bold cyan] "
-            f"plan-like requests ask up to {planning_question_limit} clarification question(s); "
-            "clear edit requests auto-execute when tools are available."
+        _render_chat_banner(
+            console,
+            subtitle=(
+                f"Automatic mode: plan-like requests ask up to {planning_question_limit} "
+                "clarification question(s); clear edit requests auto-execute when tools are available."
+            ),
         )
 
-        # CodingAgent is always active
-        console.print("[bold red]Coding agent active[/bold red] – all decisions routed through CodingAgent.")
+        # Collect the per-session configuration so it renders as one tidy panel
+        # instead of a scattered list of single-line prints.
+        status_rows: list[tuple[str, str]] = []
+        status_rows.append(("coding agent", "active — all decisions routed through CodingAgent"))
         _ca_flow = flow_id or (coding_agent_instance.get_active_flow_id() if coding_agent_instance else None)
         if coding_memory:
             if _ca_flow:
-                console.print(f"[cyan]Flow memory active:[/cyan] resuming flow {_ca_flow}")
+                status_rows.append(("flow memory", f"active — resuming flow {_ca_flow}"))
             else:
-                console.print("[cyan]Flow memory active:[/cyan] new flow will be created on first request.")
-        if True:  # agent_tools always on
-            auto_execute_status = "automatic" if auto_execute_plan else "disabled by legacy override"
-            console.print(
-                f"[cyan]Auto-execute:[/cyan] {auto_execute_status} "
-                f"(max passes: {auto_execute_max_passes})"
-            )
-            console.print(f"[cyan]Execution profile:[/cyan] {execution_profile}")
-            if execution_profile == "full-auto":
-                if full_auto_status_every > 0:
-                    console.print(
-                        f"[cyan]Full-auto checkpoint:[/cyan] every {full_auto_status_every} pass(es)"
-                    )
-                else:
-                    console.print("[cyan]Full-auto checkpoint:[/cyan] disabled")
+                status_rows.append(("flow memory", "active — new flow on first request"))
+        auto_execute_status = "automatic" if auto_execute_plan else "disabled by legacy override"
+        status_rows.append(("auto-execute", f"{auto_execute_status} (max passes: {auto_execute_max_passes})"))
+        status_rows.append(("execution profile", execution_profile))
+        if execution_profile == "full-auto":
+            if full_auto_status_every > 0:
+                status_rows.append(("full-auto checkpoint", f"every {full_auto_status_every} pass(es)"))
+            else:
+                status_rows.append(("full-auto checkpoint", "disabled"))
         if diagram_render_images:
-            console.print(
-                f"[cyan]Diagram rendering:[/cyan] {diagram_format} -> {resolved_diagram_output_dir}"
-            )
+            status_rows.append(("diagram rendering", f"{diagram_format} → {resolved_diagram_output_dir}"))
         if tool_worker_client is not None and (coding_agent_instance is not None or tools_manager_orchestrator is not None):
             try:
                 tool_worker_client.start()
                 tool_worker_client.health()
-                console.print(
-                    "[cyan]Tool worker subprocess active:[/cyan] "
-                    f"tools-only strict={tool_worker_strict}; "
-                    f"exec-backend={tools_execution_config.backend}; "
-                    f"parallel={tools_execution_config.parallel_requests}"
+                status_rows.append(
+                    (
+                        "tool worker",
+                        f"active — strict={tool_worker_strict}, "
+                        f"backend={tools_execution_config.backend}, "
+                        f"parallel={tools_execution_config.parallel_requests}",
+                    )
                 )
             except Exception as exc:
                 _log_exception("tool_worker_client.start", exc)
@@ -816,6 +812,8 @@ def chat(
                 )
                 coding_agent_instance = None
                 tools_manager_orchestrator = None
+
+        _render_chat_status(console, status_rows)
 
         planning_request: str | None = None
         planning_answers: list[str] = []
@@ -1280,7 +1278,7 @@ def chat(
             )
             session_turns.append(turn_record)
             _ = rendered_dynamic
-            console.print("\n[bold]Answer[/bold]")
+            _render_answer_header(console)
             console.print(Markdown(answer_text) if answer_text else "[dim](no answer text)[/dim]")
             if warnings_merged:
                 warning_lines = "\n".join(f"- {w}" for w in warnings_merged[:12])
@@ -1330,7 +1328,7 @@ def chat(
             try:
                 question = _read_chat_input(
                     console,
-                    prompt="💬 » ",
+                    prompt=CHAT_PROMPT,
                     multiline_enabled=multiline_input,
                     multiline_terminator=multiline_terminator,
                 )
@@ -2130,7 +2128,7 @@ def chat(
                 )
                 session_turns.append(turn_record)
                 if answer_only_fallback or answer_only_no_edit or answer_only_auto_execute:
-                    console.print("\n[bold]Answer[/bold]")
+                    _render_answer_header(console)
                     if answer_text:
                         console.print(Markdown(answer_text))
                     else:

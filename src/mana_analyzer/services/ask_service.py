@@ -7,6 +7,7 @@ Central orchestration layer for answering questions over indexed code context.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Protocol, Sequence, runtime_checkable
 
@@ -19,6 +20,7 @@ from mana_analyzer.analysis.models import (
 from mana_analyzer.llm.ask_agent import AskAgent
 from mana_analyzer.llm.qna_chain import QnAChain
 from mana_analyzer.services.search_service import SearchService
+from mana_analyzer.services.structure_service import StructureService
 from mana_analyzer.utils.project_search import project_search
 from mana_analyzer.vector_store.faiss_store import FaissStore
 
@@ -69,6 +71,82 @@ class AskService:
             )
         return "\n\n---\n\n".join(blocks)
 
+    @staticmethod
+    def _looks_like_command_inventory_question(question: str) -> bool:
+        normalized = re.sub(r"[^a-z0-9]+", " ", question.casefold()).strip()
+        if not normalized:
+            return False
+        words = set(normalized.split())
+        has_command_term = bool(words & {"command", "commands", "cli", "entrypoint", "entrypoints"})
+        has_inventory_term = bool(words & {"all", "list", "available", "show", "what", "which", "project"})
+        return has_command_term and has_inventory_term
+
+    @staticmethod
+    def _read_console_scripts(project_root: Path) -> dict[str, str]:
+        pyproject = project_root / "pyproject.toml"
+        if not pyproject.exists():
+            return {}
+
+        scripts: dict[str, str] = {}
+        in_scripts = False
+        for raw_line in pyproject.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                in_scripts = line == "[project.scripts]"
+                continue
+            if not in_scripts or "=" not in line:
+                continue
+            name, target = line.split("=", 1)
+            scripts[name.strip().strip('"').strip("'")] = target.strip().strip('"').strip("'")
+        return scripts
+
+    def _command_inventory_fallback(self, search_root: Path) -> AskResponse:
+        scripts = self._read_console_scripts(search_root)
+        report = StructureService(include_tests=False).analyze_project(search_root)
+        command_names = sorted(set(report.commands))
+
+        lines = ["Command surface:"]
+        if scripts:
+            for script_name, target in sorted(scripts.items()):
+                lines.append(f"- `{script_name}` console script -> `{target}`")
+        else:
+            lines.append("- No console scripts found in `pyproject.toml`.")
+
+        if command_names:
+            lines.append("")
+            lines.append("Detected CLI subcommands:")
+            primary_script = sorted(scripts)[0] if scripts else "<console-script>"
+            for command in command_names:
+                lines.append(f"- `{primary_script} {command}`")
+            lines.append("")
+            lines.append("Use `--help` for details, for example:")
+            lines.append(f"- `{primary_script} --help`")
+            for command in command_names:
+                lines.append(f"- `{primary_script} {command} --help`")
+        else:
+            lines.append("")
+            lines.append("No CLI-style command declarations were detected.")
+
+        source_matches = []
+        for query in ("[project.scripts]", "@app.command"):
+            source_matches.extend(
+                project_search(query, search_root, max_results=20).matches
+            )
+        sources = [
+            SearchHit(
+                score=0.0,
+                file_path=match.file_path,
+                start_line=match.line_number,
+                end_line=match.line_number,
+                symbol_name="command-surface",
+                snippet=match.line_text[:500],
+            )
+            for match in source_matches
+        ]
+        return AskResponse(answer="\n".join(lines), sources=sources, warnings=[])
+
     def _project_search_fallback(
         self,
         question: str,
@@ -82,6 +160,12 @@ class AskService:
         useful before (or without) running indexing.
         """
         search_root = Path(root).resolve() if root else self.project_root
+        if self._looks_like_command_inventory_question(question):
+            try:
+                return self._command_inventory_fallback(search_root)
+            except Exception:
+                logger.exception("command inventory fallback failed; using direct project search")
+
         result = project_search(question, search_root, max_results=max(5, int(k) * 4))
         warnings = [SEMANTIC_INDEX_MISSING_WARNING]
         if not result.matches:
@@ -141,6 +225,12 @@ class AskService:
     def ask(self, index_dir: str | Path, question: str, k: int) -> AskResponse:
         resolved_index = Path(index_dir).resolve()
         logger.info("Running ask flow: index_dir=%s k=%d", resolved_index, k)
+
+        if self._looks_like_command_inventory_question(question):
+            try:
+                return self._command_inventory_fallback(self.project_root)
+            except Exception:
+                logger.exception("command inventory answer failed; trying semantic search")
 
         try:
             sources = self.store.search(resolved_index, query=question, k=k)

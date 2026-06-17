@@ -1380,6 +1380,7 @@ class CodingAgent:
                 "repo_search",
                 "list_files",
                 "find_symbols",
+                "call_graph",
                 "git_status",
                 "git_diff",
                 "verify_project",

@@ -159,6 +159,86 @@ def find_symbols(repo_root: Path, *, query: str = "", limit: int = 100) -> dict[
     return {"ok": True, "symbols": symbols, "limit": max_items, "truncated": False}
 
 
+def _call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _call_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    if isinstance(node, ast.Call):
+        return _call_name(node.func)
+    return ""
+
+
+class _CallGraphVisitor(ast.NodeVisitor):
+    def __init__(self, file_path: str) -> None:
+        self.file_path = file_path
+        self.scope: list[str] = []
+        self.edges: list[dict[str, Any]] = []
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> Any:
+        self._visit_function(node)
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
+
+    def visit_Call(self, node: ast.Call) -> Any:
+        caller = ".".join(self.scope) if self.scope else "<module>"
+        callee = _call_name(node.func)
+        if callee:
+            self.edges.append(
+                {
+                    "file": self.file_path,
+                    "line": int(getattr(node, "lineno", 1)),
+                    "caller": caller,
+                    "callee": callee,
+                }
+            )
+        self.generic_visit(node)
+
+
+def call_graph(repo_root: Path, *, query: str = "", limit: int = 100) -> dict[str, Any]:
+    """Build a lightweight Python AST call graph.
+
+    This is a local static-inspection tool, not a semantic vector search. It is
+    intentionally conservative: it records syntactic call edges as written and
+    does not attempt dynamic dispatch resolution.
+    """
+
+    root = repo_root.resolve()
+    needle = str(query or "").lower()
+    max_items = max(1, min(int(limit or 100), 1000))
+    edges: list[dict[str, Any]] = []
+    for path in sorted(_iter_files(root), key=lambda item: item.relative_to(root).as_posix()):
+        if path.suffix != ".py" or _is_binary(path):
+            continue
+        rel = path.relative_to(root).as_posix()
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        visitor = _CallGraphVisitor(rel)
+        visitor.visit(tree)
+        for edge in visitor.edges:
+            searchable = f"{edge['file']} {edge['caller']} {edge['callee']}".lower()
+            if needle and needle not in searchable:
+                continue
+            edges.append(edge)
+            if len(edges) >= max_items:
+                return {"ok": True, "edges": edges, "limit": max_items, "truncated": True}
+    return {"ok": True, "edges": edges, "limit": max_items, "truncated": False}
+
+
 def git_status(repo_root: Path) -> dict[str, Any]:
     completed = subprocess.run(["git", "status", "--short"], cwd=repo_root, capture_output=True, text=True, check=False)
     return {"ok": completed.returncode == 0, "returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}

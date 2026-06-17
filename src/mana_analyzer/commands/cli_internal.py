@@ -30,6 +30,7 @@ from mana_analyzer.config.settings import (
     default_logs_dir,
     mana_root_dir,
 )
+from mana_analyzer.vector_store.embeddings import build_embeddings
 from mana_analyzer.commands import ui_helpers as _ui_helpers
 from mana_analyzer.commands.ui_helpers import *  # noqa: F401,F403
 from mana_analyzer.commands.ui_helpers import _resolve_agent_max_steps
@@ -393,12 +394,11 @@ def build_file_agent(llm: Any, *, root_dir: Path | str = ".") -> Any:
 # ---------------------------------------------------------------------------
 
 def build_store(settings: Settings) -> FaissStore:
-    embeddings_cls = _public_symbol("OpenAIEmbeddings", OpenAIEmbeddings)
     store_cls = _public_symbol("FaissStore", FaissStore)
-    embeddings = embeddings_cls(
+    embeddings = build_embeddings(
         api_key=settings.openai_api_key,
-        model=settings.openai_embed_model,
         base_url=settings.openai_base_url,
+        model=settings.openai_embed_model,
     )
     return store_cls(embeddings=embeddings)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ from mana_analyzer.services.search_service import SearchService
 from mana_analyzer.tools import coding_tool_contracts_payload, extract_patch_touched_files
 from mana_analyzer.utils.tool_policy import resolve_allowed_tools
 from mana_analyzer.tools.repository import (
+    call_graph as repo_call_graph,
     dumps_tool_result,
     find_symbols as repo_find_symbols,
     git_diff as repo_git_diff,
@@ -79,6 +81,10 @@ class _FindSymbolsInput(BaseModel):
     query: str = ""
     limit: int = 100
 
+class _CallGraphInput(BaseModel):
+    query: str = ""
+    limit: int = 100
+
 class _GitDiffInput(BaseModel):
     path: str = ""
 
@@ -89,6 +95,17 @@ class _VerifyProjectInput(BaseModel):
 class AskAgent:
     READ_FULL_FILE_MAX_LINES = 5000
     READ_FULL_FILE_MAX_CHARS = 250000
+
+    # Tool-loop progress guards. When this many consecutive tool results add no
+    # new evidence (or are blocked duplicates), stop executing tools and
+    # synthesize a best-effort final answer from the evidence already collected.
+    MAX_STAGNANT_STEPS = 2
+
+    # Tools whose calls are deduplicated semantically (similar queries collapse
+    # to the same canonical intent, e.g. ``README`` / ``README.md`` / ``README*``).
+    SEARCH_LIKE_TOOLS = frozenset(
+        {"semantic_search", "repo_search", "find_symbols", "call_graph", "list_files"}
+    )
 
     _BLOCKED_PATTERNS = [
         "rm ",
@@ -211,6 +228,205 @@ class AskAgent:
         path = str(args.get("path", "")).strip().lower()
         k = int(args.get("k", 0) or 0)
         return f"q={query}|p={path}|k={k}"
+
+    @staticmethod
+    def tool_signature(tool_name: str, args: dict[str, Any] | None) -> str:
+        """Stable signature for an exact (tool, args) tuple.
+
+        Uses sorted-key JSON so semantically identical argument dicts always
+        produce the same string regardless of key ordering.
+        """
+        return json.dumps(
+            {"tool": tool_name, "args": args or {}},
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+        )
+
+    # Doc-ish suffixes stripped during query canonicalization so ``README`` and
+    # ``README.md`` collapse together. Embedded wildcards are intentionally left
+    # alone (only a trailing wildcard is dropped) so genuinely different patterns
+    # like ``a*b`` and ``ab`` are not merged.
+    _CANONICAL_QUERY_SUFFIXES = (".markdown", ".rst", ".txt", ".md")
+
+    @classmethod
+    def _canonical_search_query(cls, value: Any) -> str:
+        """Normalize a search query/glob so near-duplicates collapse together.
+
+        ``README``, ``README.md`` and ``README*`` all canonicalize to ``readme``.
+        Only trailing wildcards and a single trailing doc suffix are stripped so
+        that distinct patterns are not over-merged.
+        """
+        q = str(value or "").strip().lower()
+        q = re.sub(r"\s+", " ", q)
+        # Collapse a trailing glob wildcard only (README* -> README); keep any
+        # embedded wildcards intact so different patterns stay distinct.
+        q = q.rstrip("*")
+        for ext in cls._CANONICAL_QUERY_SUFFIXES:
+            if q.endswith(ext):
+                q = q[: -len(ext)]
+                break
+        return q.strip().rstrip(".")
+
+    @classmethod
+    def _search_intent_signature(cls, tool_name: str, args: dict[str, Any] | None) -> str:
+        """Canonical signature used to dedupe semantically similar searches.
+
+        The signature keys on the canonical primary term *plus* the secondary
+        scope arguments (``glob``/``regex`` for ``repo_search``) so two genuinely
+        different searches that merely share a query term are not collapsed.
+        """
+        args = args or {}
+        raw = args.get("query")
+        if raw is None or str(raw).strip() == "":
+            raw = args.get("glob", "")
+        payload: dict[str, Any] = {
+            "search_tool": tool_name,
+            "q": cls._canonical_search_query(raw),
+        }
+        if tool_name == "repo_search":
+            glob = str(args.get("glob", "") or "").strip().lower()
+            if glob and glob != "**/*":
+                payload["glob"] = glob
+            if bool(args.get("regex", False)):
+                payload["regex"] = True
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+
+    @classmethod
+    def _evidence_fingerprint(cls, content: Any) -> str:
+        """Fingerprint a tool result so repeated identical output is detectable."""
+        text = re.sub(r"\s+", " ", str(content)).strip().lower()
+        if not text:
+            return ""
+        return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _summarize_tool_result(cls, tool_name: str, content: Any) -> str:
+        """One-line, human-readable summary of a successful tool result."""
+        payload = cls._coerce_tool_payload(content)
+        text = ""
+        if isinstance(payload, dict):
+            for key in ("summary", "content", "result", "stdout", "matches", "files", "hits"):
+                value = payload.get(key)
+                if value:
+                    text = str(value)
+                    break
+        if not text:
+            text = str(content)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > 200:
+            text = text[:200] + "…"
+        return f"{tool_name}: {text}" if text else ""
+
+    def _evidence_digest(
+        self,
+        *,
+        user_query: str,
+        observations: list[str],
+        trace: list[ToolInvocationTrace],
+        sources: list[SearchHit],
+        reason: str,
+    ) -> str:
+        """Deterministic, evidence-only summary used as synthesis input/fallback."""
+        parts: list[str] = [
+            "I stopped the tool loop before the model produced a final answer "
+            f"(reason: {reason}). Here is a best-effort summary from the evidence collected so far."
+        ]
+        if user_query and user_query.strip():
+            parts.append(f"\nQuestion: {user_query.strip()}")
+
+        if observations:
+            parts.append("\nKey findings:")
+            for obs in observations[:10]:
+                parts.append(f"- {obs}")
+        elif trace:
+            parts.append("\nTools executed:")
+            for item in trace[-10:]:
+                parts.append(f"- {item.tool_name} ({item.status})")
+
+        if sources:
+            parts.append("\nRelevant sources:")
+            seen_src: set[str] = set()
+            for hit in sources:
+                ref = f"{hit.file_path}:{hit.start_line}-{hit.end_line}"
+                if ref in seen_src:
+                    continue
+                seen_src.add(ref)
+                parts.append(f"- {ref}")
+                if len(seen_src) >= 10:
+                    break
+
+        if not observations and not trace and not sources:
+            parts.append(
+                "\nNo tool evidence was gathered before stopping. "
+                "Please refine the question or retry."
+            )
+
+        return "\n".join(parts).strip()
+
+    def _synthesize_final_answer(
+        self,
+        *,
+        user_query: str,
+        observations: list[str],
+        trace: list[ToolInvocationTrace],
+        sources: list[SearchHit],
+        warnings: list[str],
+        reason: str,
+    ) -> str:
+        """Build a best-effort final answer from the evidence already collected.
+
+        This is used whenever the tool loop stops before the model emits its own
+        final answer (max steps reached, no-progress, duplicate loops, or a low
+        remaining tool budget) so the user never receives an empty answer or the
+        raw step-limit error string.
+
+        A final, tool-free LLM pass turns the collected evidence into a polished
+        answer. If that call is unavailable or fails for any reason we fall back
+        to the deterministic evidence digest so an answer is always produced.
+        """
+        digest = self._evidence_digest(
+            user_query=user_query,
+            observations=observations,
+            trace=trace,
+            sources=sources,
+            reason=reason,
+        )
+
+        llm = getattr(self, "llm", None)
+        invoke = getattr(llm, "invoke", None)
+        if invoke is None:
+            return digest
+
+        try:
+            messages = [
+                SystemMessage(
+                    content=(
+                        "You are summarizing the result of a partially-completed code "
+                        "investigation. The tool loop stopped early, so no further tools "
+                        "are available. Using ONLY the evidence provided, write a concise, "
+                        "useful answer to the user's question. Do not invent facts beyond "
+                        "the evidence; if the evidence is insufficient, say what is known "
+                        "and what remains uncertain. Cite file paths/line ranges when given."
+                    )
+                ),
+                HumanMessage(
+                    content=(
+                        f"User question:\n{user_query.strip()}\n\n"
+                        f"Reason the loop stopped: {reason}\n\n"
+                        f"Collected evidence:\n{digest}"
+                    )
+                ),
+            ]
+            ai_msg = invoke(messages)
+            text = self._extract_model_text(getattr(ai_msg, "content", ai_msg))
+            if text and text.strip():
+                return text.strip()
+        except Exception:
+            # Any failure (no network, fake LLM in tests, rate limit, …) falls
+            # back to the deterministic digest below.
+            pass
+        return digest
 
     @classmethod
     def _search_error_detail(cls, content: Any) -> str:
@@ -868,6 +1084,9 @@ class AskAgent:
         def find_symbols(query: str = "", limit: int = 100) -> str:
             return dumps_tool_result(repo_find_symbols(self.project_root, query=query, limit=limit))
 
+        def call_graph(query: str = "", limit: int = 100) -> str:
+            return dumps_tool_result(repo_call_graph(self.project_root, query=query, limit=limit))
+
         def git_status() -> str:
             return dumps_tool_result(repo_git_status(self.project_root))
 
@@ -938,6 +1157,12 @@ class AskAgent:
                 name="find_symbols",
                 description="Find Python classes/functions/methods using AST. Read-only.",
                 args_schema=_FindSymbolsInput,
+            ),
+            StructuredTool.from_function(
+                func=call_graph,
+                name="call_graph",
+                description="Inspect Python AST call edges by caller, callee, or file path. Read-only.",
+                args_schema=_CallGraphInput,
             ),
             StructuredTool.from_function(
                 func=git_status,
@@ -1068,6 +1293,14 @@ class AskAgent:
         unique_read_files: set[str] = set()
         disk_read_count = 0
 
+        # Loop-progress guards.
+        seen_tool_calls: set[str] = set()  # exact (tool, args) signatures
+        seen_search_intents: set[str] = set()  # canonical search-intent signatures
+        evidence_fingerprints: set[str] = set()  # fingerprints of useful results
+        observations: list[str] = []  # human-readable evidence collected so far
+        stagnant_steps = 0
+        force_synthesis_reason: str | None = None
+
         # Tool-call metrics: distinguish attempted / successful / failed /
         # blocked-by-policy so blocked calls are never hidden as "0 tool calls".
         tool_metrics: dict[str, int] = {
@@ -1131,7 +1364,15 @@ class AskAgent:
             except Exception:
                 return
 
-        for _ in range(max_steps):
+        for step_idx in range(max_steps):
+            # When the remaining tool budget is too low to make further progress,
+            # stop calling tools and synthesize a final answer from the evidence
+            # gathered so far rather than risk ending with no answer at all.
+            remaining_steps = max_steps - step_idx
+            if remaining_steps <= 1 and step_idx > 0 and not final_answer:
+                force_synthesis_reason = force_synthesis_reason or "remaining_tool_budget_low"
+                break
+
             try:
                 ai_msg = bound.invoke(messages, config=cfg)
             except TypeError:
@@ -1149,12 +1390,37 @@ class AskAgent:
                 args_key = json.dumps(args, sort_keys=True, default=str)
                 tool_sig = (name, args_key)
                 seen_tool_args[tool_sig] += 1
+                exact_signature = self.tool_signature(name, args if isinstance(args, dict) else {})
+                search_signature = (
+                    self._search_intent_signature(name, args if isinstance(args, dict) else {})
+                    if name in self.SEARCH_LIKE_TOOLS
+                    else None
+                )
+                is_duplicate_call = False
 
                 if name not in tool_map:
                     content = json.dumps({"error": f"unknown tool: {name}"})
                     persist_tool_call(name, args if isinstance(args, dict) else {}, content, "error")
                 elif allowed_tools and name not in allowed_tools:
                     content = json.dumps({"error": f"tool blocked by policy: {name}"})
+                    persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
+                elif name != "read_file" and (
+                    exact_signature in seen_tool_calls
+                    or (search_signature is not None and search_signature in seen_search_intents)
+                ):
+                    # Exact-duplicate or semantically-equivalent search already run.
+                    is_duplicate_call = True
+                    content = json.dumps(
+                        {
+                            "error": (
+                                f"Duplicate tool call blocked: {name}. This (or an equivalent) "
+                                "call already ran; use a different step or provide the final answer."
+                            )
+                        }
+                    )
+                    warning = f"Duplicate tool call blocked: {name}"
+                    if warning not in warnings:
+                        warnings.append(warning)
                     persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                 elif name != "read_file" and seen_tool_args[tool_sig] > 2:
                     content = json.dumps(
@@ -1181,6 +1447,13 @@ class AskAgent:
                     content = json.dumps({"error": "search_internet blocked by coding-agent repo-only policy"})
                     persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                 else:
+                    # Record signatures so the next identical/equivalent call is
+                    # recognized as a duplicate (read_file is intentionally
+                    # exempt: re-reads are idempotent and cache-backed).
+                    if name != "read_file":
+                        seen_tool_calls.add(exact_signature)
+                        if search_signature is not None:
+                            seen_search_intents.add(search_signature)
                     if name == "semantic_search":
                         if search_budget > 0 and tool_counts["semantic_search"] >= search_budget:
                             content = json.dumps({"error": "semantic_search budget exhausted"})
@@ -1305,6 +1578,30 @@ class AskAgent:
                         content,
                         "error" if self._search_error_detail(content) else "ok",
                     )
+                    # No-progress detection: a successful result that adds new
+                    # evidence resets the stagnation counter; an executed result
+                    # that repeats earlier evidence increments it. Errors also
+                    # count as no-progress (even when the error *text* changes),
+                    # except for tools that already have dedicated failure guards
+                    # (apply_patch -> write_file fallback, read_file -> repeated-
+                    # failure limit), which would otherwise be cut off early.
+                    if self._search_error_detail(content):
+                        if name not in {"apply_patch", "read_file"}:
+                            stagnant_steps += 1
+                    else:
+                        fingerprint = self._evidence_fingerprint(content)
+                        if fingerprint and fingerprint not in evidence_fingerprints:
+                            evidence_fingerprints.add(fingerprint)
+                            stagnant_steps = 0
+                            observation = self._summarize_tool_result(name, content)
+                            if observation:
+                                observations.append(observation)
+                        else:
+                            stagnant_steps += 1
+
+                # A blocked duplicate makes no progress either.
+                if is_duplicate_call:
+                    stagnant_steps += 1
 
                 if name == "apply_patch":
                     if self._is_apply_patch_failure(content):
@@ -1344,14 +1641,40 @@ class AskAgent:
                             warnings.append(warning)
                 messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
 
+                if stagnant_steps >= self.MAX_STAGNANT_STEPS and not force_synthesis_reason:
+                    force_synthesis_reason = "no_progress"
+
+            # Stop the loop early when no further progress is being made so we
+            # synthesize an answer from the evidence collected rather than spin.
+            if force_synthesis_reason and not final_answer:
+                break
+
+        # Final-answer fallback: never surface the raw step-limit string. Always
+        # synthesize a best-effort answer from the collected evidence/trace.
         if not final_answer:
-            if forced_patch_fallback:
-                final_answer = (
-                    "apply_patch was disabled after repeated failures in this run. "
-                    "Tool loop reached the step limit before write_file fallback completed."
-                )
-            else:
-                final_answer = "Tool loop reached the step limit before a final answer."
+            reason = force_synthesis_reason or (
+                "apply_patch_fallback_incomplete" if forced_patch_fallback else "max_steps_reached"
+            )
+            final_answer = self._synthesize_final_answer(
+                user_query=question,
+                observations=observations,
+                trace=traces,
+                sources=sources,
+                warnings=warnings,
+                reason=reason,
+            )
+            reason_messages = {
+                "max_steps_reached": "Tool loop reached max_steps; returned best-effort final answer.",
+                "no_progress": "Tool loop stopped after no-progress detection; returned best-effort final answer.",
+                "remaining_tool_budget_low": (
+                    "Tool loop stopped due to low remaining tool budget; returned best-effort final answer."
+                ),
+                "apply_patch_fallback_incomplete": (
+                    "apply_patch was disabled after repeated failures; "
+                    "returned best-effort final answer before the write_file fallback completed."
+                ),
+            }
+            warnings.append(reason_messages.get(reason, f"Tool loop stopped ({reason}); returned best-effort final answer."))
 
         deduped_sources = sorted(
             {(item.file_path, item.start_line, item.end_line, item.symbol_name): item for item in sources}.values(),
