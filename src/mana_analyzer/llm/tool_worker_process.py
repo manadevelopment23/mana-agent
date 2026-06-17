@@ -21,8 +21,7 @@ from mana_analyzer.services.coding_memory_service import CodingMemoryService
 from mana_analyzer.services.search_service import SearchService
 from mana_analyzer.llm.ask_agent import AskAgent
 from mana_analyzer.vector_store.embeddings import build_embeddings
-from mana_analyzer.tools import build_apply_patch_tool, build_write_file_tool
-from mana_analyzer.tools import safe_apply_patch, safe_write_file
+from mana_analyzer.tools import build_apply_patch_tool, build_create_file_tool, build_write_file_tool
 from mana_analyzer.tools.search_internet import build_search_internet_tool, safe_search_internet
 from mana_analyzer.vector_store.faiss_store import FaissStore
 from mana_analyzer.utils.redaction import redact_json_line, redact_secrets
@@ -1039,6 +1038,10 @@ def _build_worker_ask_agent(payload: WorkerInitPayload) -> AskAgent:
     ask_agent.tools.extend(
         [
             build_write_file_tool(
+                repo_root=Path(payload.repo_root),
+                allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
+            ),
+            build_create_file_tool(
                 repo_root=Path(payload.repo_root),
                 allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
             ),

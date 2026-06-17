@@ -20,7 +20,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.callbacks.base import BaseCallbackHandler
 from rich import box
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -77,7 +77,7 @@ def _sanitize_full_auto_answer_text(
 
 
 class RichToolCallbackHandler(BaseCallbackHandler):
-    """Logs tool start/end so LiveLogBuffer can show it."""
+    """Stream tool start/end/error into the live tool-activity panel."""
 
     def __init__(self, *, show_inputs: bool = True) -> None:
         self.show_inputs = show_inputs
@@ -88,24 +88,208 @@ class RichToolCallbackHandler(BaseCallbackHandler):
         name = (serialized or {}).get("name") or "tool"
         self._tool = str(name)
         self._t0 = time.time()
-        msg = f"TOOL start: {self._tool}"
+        args = ""
         if self.show_inputs and input_str:
-            inp = input_str.strip().replace("\n", " ")
-            if len(inp) > 160:
-                inp = inp[:160] + "…"
-            msg += f" | args: {inp}"
-        logger.info(msg)
+            args = input_str.strip().replace("\n", " ")
+        emit_tool_event("start", self._tool, args=args)
 
     def on_tool_end(self, output: str, **kwargs) -> None:
         tool = self._tool or "tool"
         dt = max(0.0, time.time() - self._t0)
         self._tool = None
-        logger.info(f"TOOL end: {tool} ({dt:0.1f}s)")
+        emit_tool_event("end", tool, duration=dt)
 
     def on_tool_error(self, error: BaseException, **kwargs) -> None:
         tool = self._tool or "tool"
         self._tool = None
-        logger.info(f"TOOL error: {tool} - {error}")
+        emit_tool_event("error", tool, error=str(error))
+
+
+# -----------------------------------------
+# Live tool-activity panel
+# -----------------------------------------
+
+# Glyph + accent palette per tool family, so the panel reads at a glance.
+_TOOL_GLYPHS: dict[str, str] = {
+    "read_file": "📖",
+    "chunk_file": "📖",
+    "write_file": "✍️",
+    "create_file": "✨",
+    "apply_patch": "🩹",
+    "list_files": "🗂️",
+    "ls": "🗂️",
+    "repo_search": "🔍",
+    "semantic_search": "🔍",
+    "search_internet": "🌐",
+    "find_symbols": "🔣",
+    "call_graph": "🕸️",
+    "run_command": "⚙️",
+    "verify_project": "✅",
+    "git_status": "🌱",
+    "git_diff": "🌱",
+    "list_tools": "🧰",
+    "tool_contracts": "🧰",
+}
+
+
+def _tool_glyph(tool: str) -> str:
+    return _TOOL_GLYPHS.get(str(tool or "").strip(), "🔧")
+
+
+class LiveToolActivity:
+    """Render an attractive, self-updating panel of tool calls inside a Live.
+
+    Pass the instance directly to ``rich.live.Live`` — ``__rich__`` is called on
+    every refresh, so mutating state (via :meth:`handle`) animates the spinner
+    and reveals new rows without manual ``live.update`` calls.
+    """
+
+    def __init__(
+        self,
+        *,
+        spinner_text: str = "Working…",
+        show_all_logs: bool = False,
+        max_rows: int = 10,
+    ) -> None:
+        self.spinner_text = spinner_text
+        self.show_all_logs = show_all_logs
+        self.max_rows = max(1, int(max_rows))
+        self._spinner = Spinner("dots", text=Text(spinner_text, style="cyan"))
+        self._rows: deque[dict[str, Any]] = deque(maxlen=200)
+        self._running: dict[str, tuple[float, str]] = {}
+        self._log_lines: deque[str] = deque(maxlen=14)
+        self._ok = 0
+        self._failed = 0
+
+    # -- event ingestion --------------------------------------------------
+    def handle(
+        self,
+        kind: str,
+        tool: str,
+        *,
+        args: str = "",
+        duration: float | None = None,
+        error: str = "",
+    ) -> None:
+        tool = str(tool or "tool")
+        if kind == "start":
+            self._running[tool] = (time.time(), str(args or ""))
+        elif kind == "end":
+            self._finish(tool, duration=duration, ok=True)
+        elif kind == "error":
+            self._finish(tool, duration=duration, ok=False, error=str(error or ""))
+
+    def _finish(self, tool: str, *, duration: float | None, ok: bool, error: str = "") -> None:
+        start = self._running.pop(tool, None)
+        if duration is None and start is not None:
+            duration = max(0.0, time.time() - start[0])
+        args = start[1] if start is not None else ""
+        if ok:
+            self._ok += 1
+        else:
+            self._failed += 1
+        self._rows.append(
+            {"tool": tool, "duration": duration, "ok": ok, "args": args, "error": error}
+        )
+
+    def add_log_line(self, line: str) -> None:
+        text = str(line or "").strip()
+        if text:
+            self._log_lines.append(text)
+
+    # -- rendering --------------------------------------------------------
+    def _status_renderable(self):
+        running = list(self._running.items())
+        if running:
+            tool, (t0, args) = running[-1]
+            elapsed = max(0.0, time.time() - t0)
+            label = Text()
+            label.append(f"{_tool_glyph(tool)} ", style="")
+            label.append(tool, style="bold cyan")
+            if args:
+                label.append("  ")
+                label.append(_summary(args, 70), style="dim")
+            label.append(f"   {elapsed:0.1f}s", style="dim")
+            self._spinner.update(text=label)
+            return self._spinner
+
+        summary = Text()
+        summary.append("✓ ", style="bold green")
+        summary.append(f"{self._ok} ok", style="green")
+        if self._failed:
+            summary.append("   ✗ ", style="bold red")
+            summary.append(f"{self._failed} failed", style="red")
+        summary.append(f"   {self.spinner_text}", style="dim")
+        return summary
+
+    def __rich__(self):
+        parts: list[Any] = [self._status_renderable()]
+
+        if self._rows:
+            table = Table.grid(padding=(0, 1))
+            table.add_column(no_wrap=True)           # glyph
+            table.add_column(no_wrap=True)           # status
+            table.add_column(style="cyan", no_wrap=True)  # tool
+            table.add_column(justify="right", no_wrap=True, style="dim")  # duration
+            table.add_column(overflow="fold", style="dim")  # detail
+            for row in list(self._rows)[-self.max_rows :]:
+                ok = bool(row.get("ok"))
+                status = Text("✓", style="green") if ok else Text("✗", style="red")
+                duration = row.get("duration")
+                dur_text = (
+                    f"{float(duration):0.1f}s"
+                    if isinstance(duration, (int, float))
+                    else "·"
+                )
+                detail = row.get("args") or ""
+                if not ok and row.get("error"):
+                    detail = str(row["error"])
+                table.add_row(
+                    _tool_glyph(str(row.get("tool", ""))),
+                    status,
+                    str(row.get("tool", "")),
+                    dur_text,
+                    _summary(detail, 70) if detail else "",
+                )
+            parts.append(table)
+
+        if self.show_all_logs and self._log_lines:
+            parts.append(Rule(style="bright_black"))
+            parts.append(Text("\n".join(self._log_lines), style="dim"))
+
+        return Panel(
+            Group(*parts),
+            title="🔧 Tool activity",
+            title_align="left",
+            border_style="cyan",
+            box=box.ROUNDED,
+            padding=(0, 1),
+        )
+
+
+# Currently-active activity panel, set while a Live tool run is in progress.
+_ACTIVE_TOOL_ACTIVITY: LiveToolActivity | None = None
+
+
+def set_active_tool_activity(activity: LiveToolActivity | None) -> None:
+    """Register (or clear) the live panel that tool events should stream into."""
+    global _ACTIVE_TOOL_ACTIVITY
+    _ACTIVE_TOOL_ACTIVITY = activity
+
+
+def emit_tool_event(
+    kind: str,
+    tool: str,
+    *,
+    args: str = "",
+    duration: float | None = None,
+    error: str = "",
+) -> None:
+    """Send a tool start/end/error event to the active live panel, if any."""
+    activity = _ACTIVE_TOOL_ACTIVITY
+    if activity is None:
+        return
+    activity.handle(kind, tool, args=args, duration=duration, error=error)
 
 
 # -----------------------------------------
@@ -436,24 +620,26 @@ def _run_with_live_buffer(
     Runs fn() while streaming logs into a Live panel.
     Returns (result, debug_tail_text).
     """
-    spinner = Spinner("dots", text=spinner_text)
-    with Live(spinner, console=console, refresh_per_second=12, transient=True) as live:
-        log_buf = LiveLogBuffer(
-            live,
-            capacity=250,
-            show_lines=14,
-            show_all_logs=show_all_logs,
-        )
-        log_buf.setFormatter(_make_log_formatter())
+    activity = LiveToolActivity(spinner_text=spinner_text, show_all_logs=show_all_logs)
+    log_buf = LiveLogBuffer(
+        activity,
+        capacity=250,
+        show_lines=14,
+        show_all_logs=show_all_logs,
+    )
+    log_buf.setFormatter(_make_log_formatter())
 
-        # capture everything (root) so you see internal debug + tool messages
-        root_logger = logging.getLogger()
-        root_logger.addHandler(log_buf)
+    # capture everything (root) so verbose mode can surface internal debug logs
+    root_logger = logging.getLogger()
+    root_logger.addHandler(log_buf)
+    set_active_tool_activity(activity)
 
-        try:
+    try:
+        with Live(activity, console=console, refresh_per_second=12, transient=True):
             result = fn(callbacks=callbacks or [])
-        finally:
-            root_logger.removeHandler(log_buf)
+    finally:
+        root_logger.removeHandler(log_buf)
+        set_active_tool_activity(None)
 
     return result, log_buf.tail(35).strip()
 
@@ -462,6 +648,31 @@ def _summary(text: str, limit: int = 260) -> str:
     """Return one-line preview text capped at ``limit`` characters."""
     t = (text or "").strip().replace("\n", " ")
     return t if len(t) <= limit else (t[:limit].rstrip() + "…")
+
+
+def _summary_block(text: str, *, limit: int = 520, max_lines: int = 12) -> str:
+    """Return a readable multiline preview capped by character and line count."""
+    raw = (text or "").strip()
+    if not raw:
+        return "-"
+    if len(raw) > limit:
+        raw = raw[:limit].rstrip() + "…"
+    lines = raw.splitlines()
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines.append("…")
+    return "\n".join(lines)
+
+
+def _history_time(timestamp: str) -> str:
+    """Compact ISO timestamps for the current chat session history table."""
+    raw = str(timestamp or "").strip()
+    if "T" not in raw:
+        return raw or "-"
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%H:%M:%S")
+    except ValueError:
+        return raw
 
 
 def _render_turn_summary(
@@ -478,19 +689,54 @@ def _render_turn_summary(
     preview = _summary(answer_text)
     truncated = len(preview) < len(answer_text)
     lines = [
-        "[bold]Summary[/bold]",
-        f"- preview: {preview}",
-        f"- answer_chars: {len(answer_text)}",
-        f"- preview_truncated: {'yes' if truncated else 'no'}",
-        f"- sources: {sources_count}",
-        f"- warnings: {warnings_count}",
-        f"- tool steps: {tool_steps}",
+        "Summary",
+        f"Preview: {preview or '-'}",
+        (
+            "Stats: "
+            f"{len(answer_text)} chars | "
+            f"{sources_count} sources | "
+            f"{warnings_count} warnings | "
+            f"{tool_steps} tool steps"
+        ),
+        f"Preview truncated: {'yes' if truncated else 'no'}",
     ]
     if changed_files_count:
-        lines.append(f"- changed_files: {changed_files_count}")
+        lines.append(f"Changed files: {changed_files_count}")
     if has_diff:
-        lines.append("- diff: yes")
+        lines.append("Diff: yes")
     return "\n".join(lines)
+
+
+def _render_summary_section(
+    console: Console,
+    *,
+    turn: "ChatTurnTelemetry",
+) -> None:
+    """Render a readable per-turn answer summary."""
+    answer_text = (turn.answer_text or "").strip()
+    preview = _summary_block(answer_text)
+    tool_steps = turn.tool_steps_total if isinstance(turn.tool_steps_total, int) else len(turn.trace)
+
+    metrics = Table.grid(expand=True, padding=(0, 1))
+    metrics.add_column(justify="right", ratio=1)
+    metrics.add_column(ratio=1)
+    metrics.add_column(justify="right", ratio=1)
+    metrics.add_column(ratio=1)
+    metrics.add_row("[bold]Answer[/bold]", f"{len(answer_text)} chars", "[bold]Sources[/bold]", str(len(turn.sources)))
+    metrics.add_row("[bold]Tool steps[/bold]", str(tool_steps), "[bold]Warnings[/bold]", str(len(turn.warnings)))
+    if turn.changed_files or turn.has_diff:
+        diff_text = "yes" if turn.has_diff else "no"
+        metrics.add_row("[bold]Changed files[/bold]", str(len(turn.changed_files)), "[bold]Diff[/bold]", diff_text)
+
+    body = Table.grid(padding=(0, 1), expand=True)
+    body.add_column(ratio=1)
+    body.add_row("[bold]Answer preview[/bold]")
+    body.add_row(Markdown(preview))
+    body.add_row("")
+    body.add_row(metrics)
+
+    console.print()
+    console.print(Panel(body, title="Summary", border_style="cyan", box=box.ROUNDED, expand=True))
 
 
 @dataclass(slots=True)
@@ -608,11 +854,10 @@ def _extract_decisions(
 
 def _render_steps_section(console: Console, trace: list[dict[str, Any]]) -> None:
     """Render tool-step trace table for the current turn."""
-    console.print("\n[bold]Steps[/bold]")
     if not trace:
-        console.print("- none")
+        console.print(Panel("No tool steps ran for this answer.", title="Steps", border_style="dim", box=box.ROUNDED))
         return
-    trace_table = Table(title="Steps", show_lines=False)
+    trace_table = Table(show_header=True, header_style="bold", show_lines=False, box=box.SIMPLE, expand=True)
     trace_table.add_column("Tool")
     trace_table.add_column("Status")
     trace_table.add_column("Duration (ms)", justify="right")
@@ -629,49 +874,50 @@ def _render_steps_section(console: Console, trace: list[dict[str, Any]]) -> None
             duration_text,
             str(item.get("args_summary", "-") or "-"),
         )
-    console.print(trace_table)
+    console.print(Panel(trace_table, title="Steps", border_style="blue", box=box.ROUNDED))
 
 
 def _render_decisions_section(console: Console, decisions: list[dict[str, str]]) -> None:
     """Render parsed decision/rationale rows for the current turn."""
-    console.print("\n[bold]Decisions[/bold]")
     if not decisions:
-        console.print("- none")
+        console.print(Panel("No decisions were recorded for this turn.", title="Decisions", border_style="dim", box=box.ROUNDED))
         return
+    decisions_table = Table(show_header=True, header_style="bold", show_lines=False, box=box.SIMPLE, expand=True)
+    decisions_table.add_column("Decision", overflow="fold", ratio=2)
+    decisions_table.add_column("Rationale", overflow="fold", ratio=3)
     for item in decisions:
         decision = str(item.get("decision", "")).strip()
         rationale = str(item.get("rationale", "")).strip()
-        if decision and rationale:
-            console.print(f"- {decision} ({rationale})")
-        elif decision:
-            console.print(f"- {decision}")
+        if decision:
+            decisions_table.add_row(decision, rationale or "-")
+    console.print(Panel(decisions_table, title="Decisions", border_style="magenta", box=box.ROUNDED))
 
 
 def _render_history_section(console: Console, turns: list[ChatTurnTelemetry]) -> None:
     """Render compact session history for transparency/debugging."""
-    console.print("\n[bold]History[/bold]")
     if not turns:
-        console.print("- none")
+        console.print(Panel("No prior turns in this session.", title="History", border_style="dim", box=box.ROUNDED))
         return
-    history_table = Table(title="Session History", show_lines=False)
-    history_table.add_column("Turn", justify="right")
-    history_table.add_column("Time")
-    history_table.add_column("Question", overflow="fold")
-    history_table.add_column("Answer Preview", overflow="fold")
-    history_table.add_column("Steps", justify="right")
-    history_table.add_column("Warnings", justify="right")
-    history_table.add_column("Decisions", justify="right")
+    history_table = Table(title="Session History", show_lines=False, box=box.SIMPLE, expand=True)
+    history_table.add_column("#", justify="right", no_wrap=True)
+    history_table.add_column("Time", no_wrap=True)
+    history_table.add_column("Question", overflow="fold", ratio=2)
+    history_table.add_column("Answer Preview", overflow="fold", ratio=3)
+    history_table.add_column("Signals", overflow="fold", ratio=1)
     for turn in turns:
+        signals = (
+            f"steps {len(turn.trace)} | "
+            f"warn {len(turn.warnings)} | "
+            f"dec {len(turn.decisions)}"
+        )
         history_table.add_row(
             str(turn.turn_index),
-            turn.timestamp,
+            _history_time(turn.timestamp),
             _summary(turn.question, limit=100),
             _summary(turn.answer_text, limit=120),
-            str(len(turn.trace)),
-            str(len(turn.warnings)),
-            str(len(turn.decisions)),
+            signals,
         )
-    console.print(history_table)
+    console.print(Panel(history_table, title="History", border_style="green", box=box.ROUNDED))
 
 
 def _render_turn_transparency(
@@ -681,17 +927,7 @@ def _render_turn_transparency(
     history: list[ChatTurnTelemetry],
 ) -> None:
     """Render summary, steps, decisions, and history blocks for one turn."""
-    console.print(
-        "\n"
-        + _render_turn_summary(
-            answer=turn.answer_text,
-            sources_count=len(turn.sources),
-            warnings_count=len(turn.warnings),
-            tool_steps=turn.tool_steps_total if isinstance(turn.tool_steps_total, int) else len(turn.trace),
-            changed_files_count=len(turn.changed_files),
-            has_diff=turn.has_diff,
-        )
-    )
+    _render_summary_section(console, turn=turn)
     _render_steps_section(console, turn.trace)
     _render_decisions_section(console, turn.decisions)
     _render_history_section(console, history)
@@ -1761,34 +1997,31 @@ def _render_full_auto_checkpoint(
 
 
 class LiveLogBuffer(logging.Handler):
-    """Capture recent log records and stream a tail into Rich Live."""
+    """Capture recent log records and (in verbose mode) feed them to the panel."""
 
     def __init__(
         self,
-        live: Live,
+        activity: LiveToolActivity | None = None,
         capacity: int = 250,
         show_lines: int = 14,
         show_all_logs: bool = False,
     ) -> None:
         super().__init__(level=logging.DEBUG)
-        self.live = live
+        self.activity = activity
         self.records: deque[str] = deque(maxlen=capacity)
         self.show_lines = show_lines
         self.show_all_logs = show_all_logs
 
     def emit(self, record: logging.LogRecord) -> None:
-        message = record.getMessage()
         if not self.show_all_logs:
             return
         try:
             msg = self.format(record)
         except Exception:
-            msg = message
+            msg = record.getMessage()
         self.records.append(msg)
-
-        tail = list(self.records)[-self.show_lines :]
-        body = "\n".join(tail) if tail else ""
-        self.live.update(Panel(body, title="Live events", border_style="dim"))
+        if self.activity is not None:
+            self.activity.add_log_line(msg)
 
     def tail(self, n: int = 35) -> str:
         return "\n".join(list(self.records)[-n:])

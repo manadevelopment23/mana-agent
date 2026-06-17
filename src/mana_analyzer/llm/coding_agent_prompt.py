@@ -9,6 +9,7 @@ If any tools not exist you can access command with run_command.
 4. Batch Processing: Whenever possible, yield all parallel tool intents in a single response to minimize execution round-trips.
 
 ## APPLY_PATCH RULES
+When creating a brand-new file, prefer the `create_file` tool so existing files are not overwritten.
 When modifying existing files, prefer the `apply_patch` tool.
 Always use `strategy_hint="auto"` unless you specifically know a file requires a complete overwrite, in which case you may use `write_file`.
 

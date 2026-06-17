@@ -1748,7 +1748,8 @@ def test_chat_summary_uses_actions_taken_total_when_trace_is_truncated(monkeypat
         input="implement\nquit\n",
     )
     assert result.exit_code == 0
-    assert "- tool steps: 37" in result.stdout
+    assert "Tool steps" in result.stdout
+    assert "37" in result.stdout
 
 
 def test_chat_renders_dynamic_plan_and_diagram_blocks_in_normal_path(monkeypatch, tmp_path: Path) -> None:

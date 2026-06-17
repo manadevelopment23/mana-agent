@@ -843,6 +843,7 @@ def chat(
                     "read_file",
                     "run_command",
                     "apply_patch",
+                    "create_file",
                     "write_file",
                     "search_internet",
                 ],
@@ -1689,7 +1690,7 @@ def chat(
             ):
                 console.print(
                     "[yellow]This chat session is read-only for file edits.[/yellow] "
-                    "Re-run with [bold]--agent-tools --coding-agent[/bold] to allow write_file/apply_patch."
+                    "Re-run with [bold]--agent-tools --coding-agent[/bold] to allow create_file/write_file/apply_patch."
                 )
                 continue
 

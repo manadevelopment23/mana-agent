@@ -79,7 +79,7 @@ The coding agent and tools manager cooperate in this sequence:
 3. Tool execution loop:
    - `ToolsManagerOrchestrator.run(...)` executes planner batches, tracks passes, warnings, and terminal reasons.
    - `AskAgent` records every tool call it executes or blocks.
-   - Mutation tools are gated by read state: existing target files must be read before `apply_patch` or `write_file`.
+   - Mutation tools are gated by read state: existing target files must be read before `apply_patch`, `create_file`, or `write_file`.
 4. Transition and turn persistence:
    - `CodingAgent` records transitions/checklist outcomes.
    - `CodingMemoryService.record_turn(...)` stores turn payloads and task/decision extraction.
@@ -104,7 +104,7 @@ Available coding tools:
 
 - `semantic_search`, `repo_search`, `list_files`, `find_symbols`
 - `read_file`, `chunk_file`
-- `apply_patch`, `write_file`
+- `apply_patch`, `create_file`, `write_file`
 - `run_command`, `verify_project`
 - `git_status`, `git_diff`
 - `tool_contracts`

@@ -2,7 +2,7 @@
 mana_analyzer.llm.coding_agent
 
 Coding agent wrapper with:
-- mutation tools (write_file/apply_patch)
+- mutation tools (create_file/write_file/apply_patch)
 - structured flow/checklist planning
 - anti-loop tool policy (search/read budgets, duplicate search guards)
 - flow-memory continuity integration
@@ -54,7 +54,7 @@ from mana_analyzer.llm.tool_worker_process import (
 )
 
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
-from mana_analyzer.tools import build_write_file_tool,build_apply_patch_tool
+from mana_analyzer.tools import build_create_file_tool, build_write_file_tool, build_apply_patch_tool
 
 logger = logging.getLogger(__name__)
 _as_jsonable = as_jsonable
@@ -344,7 +344,7 @@ class CodingAgent:
                     title="Apply requested change",
                     reason="Implement the user request in repository files",
                     status="pending",
-                    requires_tools=["apply_patch", "write_file"],
+                    requires_tools=["apply_patch", "create_file", "write_file"],
                 ),
                 FlowStep(
                     id="s3",
@@ -402,6 +402,7 @@ class CodingAgent:
             self.ask_agent.tools.extend(
                 [
                     build_write_file_tool(repo_root=self.repo_root, allowed_prefixes=self.allowed_prefixes),
+                    build_create_file_tool(repo_root=self.repo_root, allowed_prefixes=self.allowed_prefixes),
                     build_apply_patch_tool(repo_root=self.repo_root, allowed_prefixes=self.allowed_prefixes),
                 ]
             )
@@ -464,6 +465,10 @@ class CodingAgent:
             self.ask_agent.tools.extend(
                 [
                     build_write_file_tool(
+                        repo_root=self.repo_root,
+                        allowed_prefixes=self.allowed_prefixes
+                    ),
+                    build_create_file_tool(
                         repo_root=self.repo_root,
                         allowed_prefixes=self.allowed_prefixes
                     ),
@@ -926,49 +931,33 @@ class CodingAgent:
 
     @staticmethod
     def _log_worker_event(event: Any) -> None:
+        """Stream worker tool events into the live tool-activity panel."""
+        from mana_analyzer.commands.ui_helpers import emit_tool_event
+
         name = ""
-        message = ""
         data: dict[str, Any] = {}
 
         if isinstance(event, dict):
             name = str(event.get("name", "") or "")
-            message = str(event.get("message", "") or "")
             maybe_data = event.get("data")
             if isinstance(maybe_data, dict):
                 data = maybe_data
         else:
             name = str(getattr(event, "name", "") or "")
-            message = str(getattr(event, "message", "") or "")
             maybe_data = getattr(event, "data", {})
             if isinstance(maybe_data, dict):
                 data = maybe_data
 
-        message = message.strip()
-        if message.startswith("TOOL "):
-            logger.info(message)
-            return
-
         tool = str(data.get("tool", "") or "tool")
         if name == "tool_start":
-            args = str(data.get("args", "") or "").strip()
-            line = f"TOOL start: {tool}"
-            if args:
-                line += f" | args: {args}"
-            logger.info(line)
+            emit_tool_event("start", tool, args=str(data.get("args", "") or "").strip())
             return
         if name == "tool_end":
             dt = data.get("duration_seconds")
-            if isinstance(dt, (int, float)):
-                logger.info(f"TOOL end: {tool} ({float(dt):0.1f}s)")
-            else:
-                logger.info(f"TOOL end: {tool}")
+            emit_tool_event("end", tool, duration=dt if isinstance(dt, (int, float)) else None)
             return
         if name == "tool_error":
-            err = str(data.get("error", "") or "").strip()
-            line = f"TOOL error: {tool}"
-            if err:
-                line += f" - {err}"
-            logger.info(line)
+            emit_tool_event("error", tool, error=str(data.get("error", "") or "").strip())
             return
 
     def _plan_checklist_with_source(

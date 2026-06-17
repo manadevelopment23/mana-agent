@@ -558,7 +558,7 @@ class AskAgent:
         unique_read_files: set[str],
     ) -> list[str]:
         targets: list[str] = []
-        if name == "write_file":
+        if name in {"write_file", "create_file"}:
             raw_path = str(args.get("path", "")).strip()
             if raw_path:
                 try:
@@ -1427,7 +1427,7 @@ class AskAgent:
                         {
                             "error": (
                                 f"duplicate tool call blocked: {name}. "
-                                "Use a different step (read_file/apply_patch/write_file) instead of repeating."
+                                "Use a different step (read_file/apply_patch/create_file/write_file) instead of repeating."
                             )
                         }
                     )
@@ -1513,7 +1513,7 @@ class AskAgent:
                             persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
-                    if name in {"apply_patch", "write_file"} and require_read_files > 0:
+                    if name in {"apply_patch", "create_file", "write_file"} and require_read_files > 0:
                         if len(unique_read_files) < require_read_files:
                             content = json.dumps(
                                 {
@@ -1525,7 +1525,7 @@ class AskAgent:
                             persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
-                    if name in {"apply_patch", "write_file"}:
+                    if name in {"apply_patch", "create_file", "write_file"}:
                         unread_targets = self._mutation_unread_targets(
                             name=name,
                             args=args if isinstance(args, dict) else {},

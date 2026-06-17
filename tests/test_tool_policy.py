@@ -16,9 +16,15 @@ def test_file_system_alias_expands_to_real_tools() -> None:
 
 
 def test_real_tool_names_pass_through_unchanged() -> None:
-    expanded, unknown = expand_tool_aliases(["ls", "read_file"])
+    expanded, unknown = expand_tool_aliases(["ls", "read_file", "create_file"])
     assert unknown == []
-    assert set(expanded) == {"ls", "read_file"}
+    assert set(expanded) == {"ls", "read_file", "create_file"}
+
+
+def test_edit_alias_includes_create_file() -> None:
+    expanded, unknown = expand_tool_aliases(["edit"])
+    assert unknown == []
+    assert {"apply_patch", "create_file", "write_file"} <= set(expanded)
 
 
 def test_unknown_alias_is_reported() -> None:

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mana_analyzer.tools.write_file import build_write_file_tool, safe_finalize_file_parts, safe_write_file_part
+from mana_analyzer.tools.write_file import (
+    build_create_file_tool,
+    build_write_file_tool,
+    safe_create_file,
+    safe_finalize_file_parts,
+    safe_write_file_part,
+)
 
 
 def test_safe_write_file_part_then_finalize(tmp_path: Path) -> None:
@@ -36,3 +42,23 @@ def test_write_file_tool_chunk_then_finalize(tmp_path: Path) -> None:
     assert r3["ok"] is True
     assert (tmp_path / "docs" / "out.md").read_text(encoding="utf-8") == "AB"
 
+
+def test_safe_create_file_refuses_existing_target(tmp_path: Path) -> None:
+    target = tmp_path / "docs" / "note.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("old\n", encoding="utf-8")
+
+    result = safe_create_file(repo_root=tmp_path, path="docs/note.md", content="new\n")
+
+    assert result["ok"] is False
+    assert "already exists" in result["error"]
+    assert target.read_text(encoding="utf-8") == "old\n"
+
+
+def test_create_file_tool_creates_missing_parent_dirs(tmp_path: Path) -> None:
+    tool = build_create_file_tool(repo_root=tmp_path, allowed_prefixes=None)
+
+    result = tool.invoke({"path": "docs/new/note.md", "content": "# Note\n"})
+
+    assert result["ok"] is True
+    assert (tmp_path / "docs" / "new" / "note.md").read_text(encoding="utf-8") == "# Note\n"

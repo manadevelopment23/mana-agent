@@ -201,6 +201,22 @@ def _atomic_write_bytes(target: Path, data: bytes) -> None:
             pass
 
 
+def _atomic_create_bytes(target: Path, data: bytes) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        try:
+            target.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+
+
 def _parts_dir_for_target(target: Path) -> Path:
     return target.parent / f".{target.name}.parts"
 
@@ -331,6 +347,40 @@ def safe_write_file(
         return WriteFileResult(ok=False, path=path, error=f"Error: {exc}").to_dict()
 
 
+def safe_create_file(
+    *,
+    repo_root: Path,
+    path: str,
+    content: str,
+    allowed_prefixes: Optional[Sequence[str]] = DEFAULT_ALLOWED_PREFIXES,
+) -> dict[str, Any]:
+    try:
+        target, rel_posix, err = _resolve_target_path(repo_root=repo_root, path=path, allowed_prefixes=allowed_prefixes)
+        if err or target is None or rel_posix is None:
+            return WriteFileResult(ok=False, path=path, error=err or "Error: invalid path").to_dict()
+        if target.exists():
+            return WriteFileResult(ok=False, path=rel_posix, error="Blocked: target file already exists").to_dict()
+
+        data = content.encode("utf-8")
+        try:
+            _atomic_create_bytes(target, data)
+        except FileExistsError:
+            return WriteFileResult(ok=False, path=rel_posix, error="Blocked: target file already exists").to_dict()
+
+        result = WriteFileResult(
+            ok=True,
+            path=rel_posix,
+            bytes_written=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
+        )
+        logger.info("Created file: %s (%d bytes)", rel_posix, result.bytes_written)
+        return result.to_dict()
+
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("create_file failed for %s", path)
+        return WriteFileResult(ok=False, path=path, error=f"Error: {exc}").to_dict()
+
+
 def build_write_file_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequence[str]] = DEFAULT_ALLOWED_PREFIXES):
     try:
         from langchain_core.tools import StructuredTool  # type: ignore
@@ -399,6 +449,46 @@ def build_write_file_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequenc
             "Performs atomic write (temp + replace). "
             "For large files: send chunks with `part_index` (writes to .<filename>.parts/NNNNNN.part), "
             "then call again with `finalize=true` to atomically assemble the final file. "
+            + PATCH_FORMAT_GUIDANCE
+        ),
+    )
+
+
+def build_create_file_tool(*, repo_root: Path, allowed_prefixes: Optional[Sequence[str]] = DEFAULT_ALLOWED_PREFIXES):
+    try:
+        from langchain_core.tools import StructuredTool  # type: ignore
+    except Exception:  # pragma: no cover
+        from langchain.tools import StructuredTool  # type: ignore
+
+    def _tool(
+        path: str,
+        content: str | None = None,
+        text: str | None = None,
+        body: str | None = None,
+    ) -> dict[str, Any]:
+        # Compatibility: some tool-calling models send `text`/`body` instead of `content`.
+        effective_content = content if content is not None else (text if text is not None else body)
+        if effective_content is None:
+            return WriteFileResult(
+                ok=False,
+                path=path,
+                error="Error: missing file content (expected `content`, `text`, or `body`). "
+                + PATCH_FORMAT_GUIDANCE,
+            ).to_dict()
+        return safe_create_file(
+            repo_root=repo_root,
+            path=path,
+            content=effective_content,
+            allowed_prefixes=allowed_prefixes,
+        )
+
+    return StructuredTool.from_function(
+        func=_tool,
+        name="create_file",
+        description=(
+            "Safely create a new text file under the repository root. "
+            "Refuses absolute paths, path traversal, paths escaping the repository root, and existing targets. "
+            "Creates parent directories as needed and writes atomically. "
             + PATCH_FORMAT_GUIDANCE
         ),
     )

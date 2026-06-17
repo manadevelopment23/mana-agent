@@ -105,6 +105,35 @@ def coding_tool_contracts() -> list[ToolContract]:
             examples=[{"input": {"patch": "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"}}],
         ),
         ToolContract(
+            name="create_file",
+            description="Create a new repository text file without overwriting an existing target.",
+            input_schema=_schema(
+                {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "text": {"type": "string"},
+                    "body": {"type": "string"},
+                },
+                ["path"],
+            ),
+            output_schema=_schema(
+                {
+                    "ok": {"type": "boolean"},
+                    "path": {"type": "string"},
+                    "bytes_written": {"type": "integer"},
+                    "sha256": {"type": "string"},
+                    "error": {"type": "string"},
+                }
+            ),
+            error_format=common_error,
+            safety_rules=[
+                "Reject traversal, absolute paths, paths outside root, and disallowed prefixes.",
+                "Refuse to overwrite an existing target file.",
+                "Create parent directories as needed and write atomically.",
+            ],
+            examples=[{"input": {"path": "docs/new-note.md", "content": "# New note\n"}}],
+        ),
+        ToolContract(
             name="list_files",
             description="List repository files with optional glob filtering.",
             input_schema=_schema({"glob": {"type": "string"}, "limit": {"type": "integer"}}),

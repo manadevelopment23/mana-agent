@@ -50,9 +50,9 @@ def test_render_turn_summary_and_transparency_sections() -> None:
         changed_files_count=2,
         has_diff=True,
     )
-    assert "[bold]Summary[/bold]" in summary
-    assert "changed_files: 2" in summary
-    assert "diff: yes" in summary
+    assert "Summary" in summary
+    assert "Changed files: 2" in summary
+    assert "Diff: yes" in summary
 
     turn = cli.ChatTurnTelemetry(
         turn_index=1,
@@ -82,6 +82,34 @@ def test_render_turn_summary_and_transparency_sections() -> None:
     assert "Decisions" in rendered
     assert "History" in rendered
     assert "Session History" in rendered
+    assert "10:00:00" in rendered
+
+
+def test_render_turn_transparency_preserves_multiline_command_preview() -> None:
+    answer = (
+        "Command surface:\n"
+        "- `mana-analyzer` console script -> `mana_analyzer.commands.cli:app`\n\n"
+        "Detected CLI subcommands:\n"
+        "- `mana-analyzer analyze`\n"
+        "- `mana-analyzer ask`\n"
+        "- `mana-analyzer chat`\n"
+    )
+    turn = cli.ChatTurnTelemetry(
+        turn_index=1,
+        timestamp="2026-06-18T00:34:27",
+        question="all commands of this project?",
+        answer_text=answer,
+        sources=[object()] * 11,
+    )
+
+    console = Console(record=True, width=100)
+    cli._render_turn_transparency(console, turn=turn, history=[turn])
+    rendered = console.export_text()
+    assert "Command surface:" in rendered
+    assert "mana-analyzer analyze" in rendered
+    assert "Sources" in rendered
+    assert "11" in rendered
+    assert "00:34:27" in rendered
 
 
 def test_render_coding_sections_contains_expected_blocks() -> None:
