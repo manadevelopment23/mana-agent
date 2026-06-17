@@ -17,3 +17,4 @@ dist/
 .mana_llm_logs/
 logs/
 .mana/
+.ruff_cache/

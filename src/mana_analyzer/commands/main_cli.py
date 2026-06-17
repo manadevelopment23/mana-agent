@@ -7,7 +7,7 @@ from .output import build_output_sink
 
 @app.callback()
 def main(
-    verbose: bool = typer.Option(False, "--verbose", help="Enable debug logs (console + file)."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logs (console + file)."),
     debug_llm: bool = typer.Option(
         False,
         "--debug-llm/--no-debug-llm",
@@ -19,6 +19,7 @@ def main(
     global OUTPUT_DIR, LLM_DEBUG_MODE
     OUTPUT_DIR = Path(output_dir).resolve() if output_dir else None
     LLM_DEBUG_MODE = debug_llm
+    _set_cli_runtime_flags(verbose=verbose, debug_llm=debug_llm)
     log_file = setup_logging(verbose=verbose, log_dir=log_dir)
     if not debug_llm:
         for noisy_logger in ("openai", "httpx", "httpcore"):

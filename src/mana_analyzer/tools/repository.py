@@ -18,11 +18,15 @@ _SKIP_DIRS = {
     ".mana",
     ".mana_logs",
     ".mypy_cache",
+    ".next",
     ".pytest_cache",
     ".ruff_cache",
     ".venv",
     "__pycache__",
+    "build",
+    "dist",
     "node_modules",
+    "venv",
 }
 
 
@@ -165,7 +169,14 @@ def git_diff(repo_root: Path, *, path: str = "") -> dict[str, Any]:
     if path:
         target, rel = _safe_rel(repo_root.resolve(), path)
         if target is None or rel is None:
-            return {"ok": False, "error": "invalid path"}
+            return {
+                "ok": False,
+                "error_code": "path_outside_repo",
+                "tool": "git_diff",
+                "path": str(path),
+                "error": "invalid path",
+                "message": "Path resolves outside the repository root.",
+            }
         cmd.append(rel)
     completed = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True, check=False)
     return {"ok": completed.returncode == 0, "returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
@@ -215,6 +226,106 @@ def verify_project(repo_root: Path, *, quick: bool = False) -> dict[str, Any]:
             "failed": sum(1 for item in checks if item.status == "failed"),
             "skipped": sum(1 for item in checks if item.status == "skipped"),
         },
+    }
+
+
+def _top_level_dirs(repo_root: Path) -> list[str]:
+    root = repo_root.resolve()
+    dirs: list[str] = []
+    for child in sorted(root.iterdir(), key=lambda item: item.name):
+        if child.is_dir() and child.name not in _SKIP_DIRS:
+            dirs.append(child.name)
+    return dirs
+
+
+def inspect_project_structure(repo_root: Path, *, limit: int = 200) -> dict[str, Any]:
+    """Deterministically inspect the project layout (top-level dirs + files).
+
+    Reliable evidence-gathering for "inspect project structure" style steps so
+    they never depend on an LLM choosing a valid tool. Mirrors ``ls`` +
+    ``list_files`` so the model can summarize the result afterwards.
+    """
+    root = repo_root.resolve()
+    listing = list_files(root, glob="**/*", limit=limit)
+    return {
+        "ok": True,
+        "tool": "inspect_project_structure",
+        "root": str(root),
+        "directories": _top_level_dirs(root),
+        "files": listing["files"],
+        "truncated": listing["truncated"],
+    }
+
+
+def _list_under(repo_root: Path, prefix: str, *, tool: str, limit: int) -> dict[str, Any]:
+    """List files whose repo-relative path is under ``prefix`` (e.g. ``src``)."""
+    root = repo_root.resolve()
+    max_items = max(1, min(int(limit or 500), 5000))
+    needle = prefix.strip("/") + "/"
+    files: list[str] = []
+    for path in sorted(_iter_files(root), key=lambda item: item.relative_to(root).as_posix()):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith(needle):
+            files.append(rel)
+            if len(files) >= max_items:
+                break
+    return {"ok": True, "tool": tool, "files": files, "limit": max_items, "truncated": len(files) >= max_items}
+
+
+def explore_src(repo_root: Path, *, limit: int = 500) -> dict[str, Any]:
+    """List files under ``src/`` deterministically."""
+    return _list_under(repo_root, "src", tool="explore_src", limit=limit)
+
+
+def inspect_tests(repo_root: Path, *, limit: int = 500) -> dict[str, Any]:
+    """List files under ``tests/`` deterministically."""
+    return _list_under(repo_root, "tests", tool="inspect_tests", limit=limit)
+
+
+def verify_file_created(repo_root: Path, *, path: str, max_lines: int = 20) -> dict[str, Any]:
+    """Verify a file exists under the repo root and return its first lines.
+
+    Returns structured errors (with ``error_code``) consistent with the rest of
+    the toolset so verification steps can branch reliably on the outcome.
+    """
+    target, rel = _safe_rel(repo_root.resolve(), path)
+    if target is None or rel is None:
+        return {
+            "ok": False,
+            "error_code": "path_outside_repo",
+            "tool": "verify_file_created",
+            "path": str(path),
+            "message": "Path resolves outside the repository root.",
+        }
+    if not target.exists() or not target.is_file():
+        return {
+            "ok": False,
+            "error_code": "file_not_found",
+            "tool": "verify_file_created",
+            "path": rel,
+            "resolved_path": str(target),
+            "message": "File does not exist under repository root.",
+        }
+    try:
+        lines = target.read_text(encoding="utf-8").splitlines()
+    except (UnicodeDecodeError, OSError) as exc:
+        return {
+            "ok": False,
+            "error_code": "read_failed",
+            "tool": "verify_file_created",
+            "path": rel,
+            "resolved_path": str(target),
+            "message": str(exc),
+        }
+    capped = max(1, int(max_lines or 20))
+    return {
+        "ok": True,
+        "tool": "verify_file_created",
+        "path": rel,
+        "resolved_path": str(target),
+        "exists": True,
+        "line_count": len(lines),
+        "preview": "\n".join(lines[:capped]),
     }
 
 

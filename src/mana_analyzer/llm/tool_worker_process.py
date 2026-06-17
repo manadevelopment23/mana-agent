@@ -25,11 +25,13 @@ from mana_analyzer.tools import build_apply_patch_tool, build_write_file_tool
 from mana_analyzer.tools import safe_apply_patch, safe_write_file
 from mana_analyzer.tools.search_internet import build_search_internet_tool, safe_search_internet
 from mana_analyzer.vector_store.faiss_store import FaissStore
+from mana_analyzer.utils.redaction import redact_json_line, redact_secrets
+from mana_analyzer.utils.tool_policy import expand_tool_aliases
 
 logger = logging.getLogger(__name__)
 
-# Configure logging
-if not logger.handlers:
+def _configure_worker_logging() -> None:
+    """Install fallback logging when this module is run as a worker process."""
     logging.basicConfig(
         level=logging.DEBUG,
         format='%(asctime)s %(levelname)s %(name)s [%(funcName)s:%(lineno)d] %(message)s'
@@ -67,6 +69,11 @@ def _is_banned_param_provider_error(error_message: str) -> bool:
 
 _NON_RETRIABLE_HTTP_STATUS_CODES = frozenset({400, 401, 403, 404, 405, 409, 410, 413, 414, 422})
 _RETRIABLE_HTTP_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+def _redact_debug_line(line: str) -> str:
+    """Backward-compatible wrapper around the shared redaction helper."""
+    return redact_json_line(line)
 
 
 def _extract_http_status_code(exc: BaseException) -> int | None:
@@ -804,40 +811,84 @@ class ToolWorkerClient:
 
         logger.debug(f"[ToolWorkerClient.run_tools] Sanitized payload: {json.dumps(payload_dict, default=str)[:500]}")
 
-        try:
-            response_payload = self._request(
-                "run_tools",
-                payload_dict,
-                expect_event=False,
-                on_event=on_event,
-            )
-            logger.info(f"[ToolWorkerClient.run_tools] Received response with keys: {list(response_payload.keys())}")
-            logger.debug(f"[ToolWorkerClient.run_tools] Response trace count: {len(response_payload.get('trace', []))}")
-            
-        except ToolWorkerProcessError as exc:
-            logger.error(f"[ToolWorkerClient.run_tools] ToolWorkerProcessError: code={exc.code}, message={exc}")
-            
-            if self._is_banned_param_error(exc):
-                logger.warning(
-                    "[ToolWorkerClient.run_tools] Provider rejected a banned parameter — stripping and retrying. "
-                    "Original error: %s",
-                    exc,
+        # Bounded auto-repair loop: an invalid tool policy is repaired in place
+        # (aliases expanded, unknown names dropped) and retried exactly once
+        # before giving up, instead of failing outright or looping uselessly.
+        policy_repaired = False
+        while True:
+            try:
+                response_payload = self._request(
+                    "run_tools",
+                    payload_dict,
+                    expect_event=False,
+                    on_event=on_event,
                 )
-                self._restart()
-                raise
+                logger.info(f"[ToolWorkerClient.run_tools] Received response with keys: {list(response_payload.keys())}")
+                logger.debug(f"[ToolWorkerClient.run_tools] Response trace count: {len(response_payload.get('trace', []))}")
+                break
 
-            if self._can_retry(exc):
-                logger.warning(
-                    "[ToolWorkerClient.run_tools] Retrying run_tools due to worker error: %s. Message: %s",
-                    exc.code,
-                    exc,
-                )
-                self._restart()
-                raise
-            else:
+            except ToolWorkerProcessError as exc:
+                logger.error(f"[ToolWorkerClient.run_tools] ToolWorkerProcessError: code={exc.code}, message={exc}")
+
+                if exc.code == "invalid_tool_policy" and not policy_repaired:
+                    repaired_policy, changed, summary = self._repair_tool_policy(payload_dict.get("tool_policy"))
+                    if changed:
+                        logger.warning(
+                            "[ToolWorkerClient.run_tools] Repairing invalid tool policy and retrying once. %s",
+                            summary,
+                        )
+                        payload_dict = {**payload_dict, "tool_policy": repaired_policy}
+                        policy_repaired = True
+                        continue
+                    # Nothing repairable — surface the structured policy error.
+                    raise
+
+                if self._is_banned_param_error(exc):
+                    logger.warning(
+                        "[ToolWorkerClient.run_tools] Provider rejected a banned parameter — stripping and retrying. "
+                        "Original error: %s",
+                        exc,
+                    )
+                    self._restart()
+                    raise
+
+                if self._can_retry(exc):
+                    logger.warning(
+                        "[ToolWorkerClient.run_tools] Retrying run_tools due to worker error: %s. Message: %s",
+                        exc.code,
+                        exc,
+                    )
+                    self._restart()
+                    raise
                 raise
 
         return ToolRunResponse.model_validate(response_payload)
+
+    @staticmethod
+    def _repair_tool_policy(policy: Any) -> tuple[dict[str, Any] | None, bool, str]:
+        """Expand aliases and drop unknown tool names from a policy.
+
+        Returns ``(repaired_policy, changed, summary)``. When the expanded
+        allow-list is empty (every name was unknown), ``allowed_tools`` is
+        removed so the worker falls back to allowing all tools rather than
+        blocking everything. ``summary`` describes what changed for logging.
+        """
+        if not isinstance(policy, dict):
+            return policy, False, "no tool_policy to repair"
+        raw_allowed = policy.get("allowed_tools")
+        if not raw_allowed:
+            return policy, False, "no allowed_tools to repair"
+        expanded, unknown = expand_tool_aliases(raw_allowed)
+        if not unknown and list(expanded) == list(raw_allowed):
+            return policy, False, "allowed_tools already valid"
+        repaired = dict(policy)
+        if expanded:
+            repaired["allowed_tools"] = expanded
+            summary = f"allowed_tools {list(raw_allowed)} -> {expanded}; dropped unknown {sorted(unknown)}"
+        else:
+            repaired.pop("allowed_tools", None)
+            summary = f"all tools unknown {sorted(unknown)}; cleared allowed_tools (allow all)"
+        return repaired, True, summary
 
     @staticmethod
     def _is_banned_param_error(exc: ToolWorkerProcessError) -> bool:
@@ -1005,9 +1056,27 @@ def _sanitize_trace_for_provider(trace_rows: list[dict[str, Any]]) -> list[dict[
     return _strip_banned_keys(trace_rows)
 
 
+def _should_retry_run_tool_request(exc: BaseException) -> bool:
+    """Decide whether to retry a worker-side tool run.
+
+    Critically, a ``tools_only_violation`` is NOT retried: re-running with the
+    exact same prompt and tool policy when zero tools succeeded changes nothing
+    and only burns API calls. Genuinely transient provider errors (rate limits,
+    timeouts) are still retried.
+    """
+    if isinstance(exc, ToolWorkerProcessError):
+        if exc.code == "tools_only_violation":
+            return False
+        if exc.retriable:
+            return True
+        return exc.code in _CLIENT_RETRYABLE_CODES
+    return _is_likely_retriable_runtime_error(exc)
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception(_should_retry_run_tool_request),
     before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
@@ -1021,6 +1090,24 @@ def _run_tool_request(
     logger.debug("=== EXECUTOR START ===")
     logger.debug("Question: %s", req.question)
     logger.debug("tools_only_strict_default=%s", tools_only_strict_default)
+
+    # Expand tool-policy aliases (e.g. "file_system") into concrete tool names
+    # and reject unresolved names with a structured policy error *before* the
+    # run begins, so an invalid alias never silently blocks every real tool.
+    if req.tool_policy:
+        raw_allowed = req.tool_policy.get("allowed_tools")
+        if raw_allowed:
+            expanded, unknown = expand_tool_aliases(raw_allowed)
+            if unknown:
+                raise ToolWorkerProcessError(
+                    code="invalid_tool_policy",
+                    message=(
+                        "invalid tool policy: unknown tool(s) " + ", ".join(sorted(unknown))
+                    ),
+                    retriable=False,
+                    details={"unknown_tools": sorted(unknown)},
+                )
+            req.tool_policy = {**req.tool_policy, "allowed_tools": expanded}
 
     if req.index_dirs:
         result = ask_agent.run_multi(
@@ -1217,7 +1304,7 @@ class _ToolWorkerServer:
             if not line:
                 continue
             
-            logger.debug(f"[_ToolWorkerServer] Received: {line[:200]}")
+            logger.debug(f"[_ToolWorkerServer] Received: {_redact_debug_line(line)[:200]}")
             
             try:
                 env = WorkerEnvelope.model_validate_json(line)
@@ -1425,6 +1512,7 @@ class _ToolWorkerServer:
 
 def main() -> int:
     """Main entry point for the worker process."""
+    _configure_worker_logging()
     try:
         logger.info("[main] Tool worker process starting...")
         return _ToolWorkerServer().run()

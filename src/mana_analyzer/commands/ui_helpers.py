@@ -37,6 +37,17 @@ logger = logging.getLogger('mana_analyzer.commands.cli')
 UNLIMITED_AGENT_MAX_STEPS = 1_000_000_000
 
 
+def _public_cli_symbol(name: str, default: Any) -> Any:
+    public_cli = sys.modules.get("mana_analyzer.commands.cli")
+    if public_cli is None or not hasattr(public_cli, name):
+        return default
+    public_value = getattr(public_cli, name)
+    original_value = globals().get(name, None)
+    if default is not original_value and public_value is original_value:
+        return default
+    return public_value
+
+
 def _sanitize_full_auto_answer_text(
     text: str,
     *,
@@ -169,6 +180,7 @@ _EDIT_INTENT_TOKENS = (
     "rewrite",
     "refactor",
     "fix",
+    "implement",
     "build",
     "create",
     "add",
@@ -235,8 +247,107 @@ def _looks_like_edit_request(question: str) -> bool:
         "update ",
     )
     return lowered.startswith(directive_prefixes) or any(
-        marker in lowered for marker in ("apply patch", "write file", "edit this", "fix this", "implement this")
+        marker in lowered
+        for marker in (
+            "apply patch",
+            "patch this",
+            "write file",
+            "edit this",
+            "fix this",
+            "implement this",
+            "implement plan",
+        )
     )
+
+
+# Simple health/chat commands answered directly, without FAISS / RAG / CodingAgent.
+_DIRECT_COMMANDS: frozenset[str] = frozenset({"ping", "hello", "hi", "status", "help"})
+
+# Explicit "exact search" requests routed straight to ripgrep/static search.
+_EXACT_SEARCH_PATTERN = re.compile(
+    r"^\s*(?:search(?:\s+for)?|grep|find|locate|where\s+is)\b[:\s]+(.+)$",
+    re.IGNORECASE,
+)
+
+
+def _extract_exact_search_query(question: str) -> str | None:
+    """Return the search term for an explicit exact-search request, else None.
+
+    Matches grep/find-style prompts like ``grep foo``, ``search for "bar"`` and
+    ``where is parse_config``. Returns the stripped (and unquoted) term.
+    """
+    text = str(question or "").strip()
+    if not text:
+        return None
+    match = _EXACT_SEARCH_PATTERN.match(text)
+    if not match:
+        return None
+    term = match.group(1).strip()
+    # Strip a single matching pair of surrounding quotes.
+    if len(term) >= 2 and term[0] == term[-1] and term[0] in "\"'":
+        term = term[1:-1].strip()
+    return term or None
+
+
+def _classify_direct_command(question: str) -> str | None:
+    """Return the direct-command name for trivial health/chat input, else None.
+
+    Matches only when the entire (trimmed) message is a single known token so
+    that real questions like "help me fix the parser" are not intercepted.
+    """
+    text = str(question or "").strip().lower().rstrip("!.?")
+    if text in _DIRECT_COMMANDS:
+        return text
+    return None
+
+
+def _render_direct_command(
+    console: Console,
+    command: str,
+    *,
+    project_root: Path | str,
+    index_available: bool,
+    coding_agent_active: bool,
+    tool_worker_active: bool,
+) -> str:
+    """Answer a direct command without any search/index dependency.
+
+    Returns the plain-text answer (also printed to ``console``).
+    """
+    if command == "ping":
+        answer = "pong"
+    elif command in {"hello", "hi"}:
+        answer = "Hello! Ask me about this project, or request an edit/fix and I'll dig in."
+    elif command == "help":
+        answer = (
+            "mana-analyzer chat commands:\n"
+            "- ping / hello / hi — quick health check\n"
+            "- status — show index, project root, coding-agent and tool-worker status\n"
+            "- help — show this message\n"
+            "- exit / quit — leave chat\n"
+            "\n"
+            "Otherwise just ask: I search the project (semantic index when available,\n"
+            "ripgrep/static search otherwise), read files, and can edit/fix code."
+        )
+    elif command == "status":
+        index_line = (
+            "available (semantic search enabled)"
+            if index_available
+            else "missing (using direct project search fallback; run `mana-analyzer index` to enable)"
+        )
+        answer = (
+            "mana-analyzer chat status\n"
+            f"- project root: {project_root}\n"
+            f"- semantic index: {index_line}\n"
+            f"- coding agent: {'active' if coding_agent_active else 'inactive'}\n"
+            f"- tool worker: {'active' if tool_worker_active else 'inactive'}"
+        )
+    else:  # pragma: no cover - defensive
+        answer = "Unknown command."
+
+    console.print("\n[bold]Answer[/bold]")
+    console.print(answer)
+    return answer
 
 
 def _run_with_live_buffer(
@@ -951,7 +1062,7 @@ def _render_diagram_block(
         return
 
     effective_dir = output_dir or default_diagrams_dir((project_root or Path.cwd()).resolve())
-    artifact_path, error = _render_mermaid_artifact(
+    artifact_path, error = _public_cli_symbol("_render_mermaid_artifact", _render_mermaid_artifact)(
         content,
         output_dir=effective_dir,
         title=title,
@@ -1593,7 +1704,7 @@ class LiveLogBuffer(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         message = record.getMessage()
-        if not self.show_all_logs and not message.startswith("TOOL "):
+        if not self.show_all_logs:
             return
         try:
             msg = self.format(record)

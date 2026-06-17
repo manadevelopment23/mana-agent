@@ -589,6 +589,54 @@ def test_chat_root_dir_applies_to_worker_and_coding_agent_in_classic_mode(monkey
     assert _FakeCodingAgent.init_kwargs.get("repo_root") == tmp_path.resolve()
 
 
+def test_chat_ping_returns_pong_without_faiss_index(monkeypatch, tmp_path: Path) -> None:
+    # ping is a direct command: it must answer without any FAISS index, RAG,
+    # or coding-agent search, even when the project has never been indexed.
+    class _AskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+        def ask_with_tools(self, *_a: object, **_k: object):
+            raise AssertionError("ping must not trigger semantic search")
+
+    class _FakeWorkerClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def start(self) -> None:
+            return None
+
+        def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        def stop(self) -> None:
+            return None
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        def get_active_flow_id(self) -> str | None:
+            return None
+
+        def generate(self, *_a: object, **_k: object) -> dict:
+            raise AssertionError("ping must not invoke the coding agent")
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None, project_root=None: _AskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    # No .mana/index directory exists under tmp_path -> no FAISS index.
+    result = runner.invoke(
+        app,
+        ["chat", "--root-dir", str(tmp_path)],
+        input="ping\nquit\n",
+    )
+    assert result.exit_code == 0
+    assert "pong" in result.stdout
+
+
 def test_chat_root_dir_changes_default_index_dir_in_classic_mode(monkeypatch, tmp_path: Path) -> None:
     class _AskService(FakeAskService):
         def __init__(self) -> None:
@@ -645,7 +693,7 @@ def test_chat_root_dir_changes_default_index_dir_in_classic_mode(monkeypatch, tm
     result = runner.invoke(
         app,
         ["chat", "--root-dir", str(tmp_path)],
-        input="hello\nquit\n",
+        input="tell me about this code\nquit\n",
     )
     assert result.exit_code == 0
     assert _FakeCodingAgent.seen_index_dir == str((tmp_path / ".mana/index").resolve())
@@ -2053,7 +2101,7 @@ def test_chat_ignores_malformed_ui_blocks_and_falls_back_to_answer(monkeypatch, 
     result = runner.invoke(
         app,
         ["chat", "--agent-tools"],
-        input="hello\nquit\n",
+        input="tell me about this code\nquit\n",
     )
     assert result.exit_code == 0
     assert "Fallback answer" in result.stdout
@@ -2120,7 +2168,7 @@ def test_chat_handles_effective_ui_blocks_failure_without_crash(monkeypatch, tmp
     result = runner.invoke(
         app,
         ["chat"],
-        input="hello\nquit\n",
+        input="tell me about this code\nquit\n",
     )
     assert result.exit_code == 0
     assert "Fallback answer" in result.stdout

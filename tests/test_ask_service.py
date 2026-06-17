@@ -97,11 +97,13 @@ def test_ask_service_with_sources() -> None:
     assert response.sources
 
 
-def test_ask_service_without_sources() -> None:
-    service = AskService(store=FakeStore([]), qna_chain=FakeQnA())
+def test_ask_service_without_sources_falls_back(tmp_path) -> None:
+    # With no indexed sources we no longer emit the old dead-end message; we
+    # fall back to direct project search and warn about the missing index.
+    service = AskService(store=FakeStore([]), qna_chain=FakeQnA(), project_root=tmp_path)
     response = service.ask(index_dir="/tmp/index", question="How does add work?", k=4)
-    assert "could not find relevant indexed code context" in response.answer.lower()
-    assert response.sources == []
+    assert "could not find relevant indexed code context" not in response.answer.lower()
+    assert "Semantic index not found; using direct project search fallback." in response.warnings
 
 
 def test_ask_service_dir_mode_groups_sources() -> None:

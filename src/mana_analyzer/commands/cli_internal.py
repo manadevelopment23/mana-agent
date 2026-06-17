@@ -8,6 +8,7 @@ import tempfile
 import hashlib
 from pathlib import Path
 from typing import Any
+import threading
 import traceback
 from datetime import datetime, timezone
 import typer
@@ -53,10 +54,12 @@ from mana_analyzer.llm.analyze_chain import AnalyzeChain
 from mana_analyzer.llm.ask_agent import AskAgent
 from mana_analyzer.llm.qna_chain import QnAChain
 from mana_analyzer.llm.coding_agent import CodingAgent
-from mana_analyzer.llm.tool_worker_process import ToolWorkerClient
+from mana_analyzer.llm.tool_worker_process import ToolWorkerClient, ToolWorkerProcessError
 from mana_analyzer.llm.tools_executor import LocalToolsExecutor, RedisRQToolsExecutor, ToolsExecutionConfig
 from mana_analyzer.llm.tools_manager import ToolsManagerOrchestrator
 from mana_analyzer.llm.run_logger import LlmRunLogger
+from mana_analyzer.tools.search_internet import build_search_internet_tool
+from mana_analyzer.utils.project_search import project_search
 # The deep‐flow LLM chain:
 from mana_analyzer.describe.llm_chains.deep_flow import DeepFlowChain
 from .output import build_output_sink, get_shared_console
@@ -66,6 +69,8 @@ console = get_shared_console()
 app = typer.Typer(help="mana-analyzer CLI")
 
 OUTPUT_DIR: Path | None = None
+CLI_VERBOSE_MODE = False
+LLM_DEBUG_MODE = False
 
 for _name in dir(_ui_helpers):
     if _name.startswith("_") and not _name.startswith("__"):
@@ -75,6 +80,31 @@ for _name in dir(_ui_helpers):
 def _make_ephemeral_index_dir(prefix: str = "mana_index_") -> tuple[tempfile.TemporaryDirectory, Path]:
     tmp = tempfile.TemporaryDirectory(prefix=prefix)
     return tmp, Path(tmp.name).resolve()
+
+
+def _public_symbol(name: str, default: Any) -> Any:
+    public_cli = sys.modules.get("mana_analyzer.commands.cli")
+    if public_cli is None or not hasattr(public_cli, name):
+        return default
+    public_value = getattr(public_cli, name)
+    original_value = globals().get(name, None)
+    if default is not original_value and public_value is original_value:
+        return default
+    return public_value
+
+
+def _set_cli_runtime_flags(*, verbose: bool, debug_llm: bool) -> None:
+    global CLI_VERBOSE_MODE, LLM_DEBUG_MODE
+    CLI_VERBOSE_MODE = bool(verbose)
+    LLM_DEBUG_MODE = bool(debug_llm)
+    public_cli = sys.modules.get("mana_analyzer.commands.cli")
+    if public_cli is not None:
+        setattr(public_cli, "CLI_VERBOSE_MODE", CLI_VERBOSE_MODE)
+        setattr(public_cli, "LLM_DEBUG_MODE", LLM_DEBUG_MODE)
+
+
+def _cli_verbose_enabled() -> bool:
+    return bool(_public_symbol("CLI_VERBOSE_MODE", CLI_VERBOSE_MODE))
 
 
 def _stable_subdir_name(path: str | Path) -> str:
@@ -90,6 +120,94 @@ def _index_has_chunks(index_dir: str | Path) -> bool:
 def _index_has_search_data(index_dir: str | Path) -> bool:
     root = Path(index_dir)
     return (root / "faiss").exists() or (root / "chunks.jsonl").exists()
+
+
+# Loggers whose DEBUG/INFO chatter would flood the interactive chat console
+# (especially while a background index build is running). They stay fully
+# intact in the file log — only the console handler is quieted.
+_NOISY_CHAT_LOG_PREFIXES: tuple[str, ...] = (
+    "mana_analyzer.parsers",
+    "mana_analyzer.analysis",
+    "mana_analyzer.services.index_service",
+    "mana_analyzer.services.describe_service",
+    "mana_analyzer.describe",
+    "mana_analyzer.vector_store",
+)
+
+
+class _QuietChatConsoleFilter(logging.Filter):
+    """Drop sub-WARNING records from noisy indexing loggers on the console."""
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        if record.levelno >= logging.WARNING:
+            return True
+        return not record.name.startswith(_NOISY_CHAT_LOG_PREFIXES)
+
+
+def _install_quiet_chat_console_logging() -> None:
+    """Keep noisy indexing logs off the interactive console (file log unchanged).
+
+    Targets only console stream handlers (stderr/stdout), never FileHandlers, so
+    the prompt is not buried under per-file parse/chunk DEBUG lines while the
+    semantic index builds in the background.
+    """
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if isinstance(handler, logging.FileHandler):
+            continue
+        if not isinstance(handler, logging.StreamHandler):
+            continue
+        if any(isinstance(f, _QuietChatConsoleFilter) for f in handler.filters):
+            continue
+        handler.addFilter(_QuietChatConsoleFilter())
+
+
+def _start_background_index(
+    *,
+    settings: Any,
+    target_root: str | Path,
+    index_dir: str | Path,
+    state: dict[str, Any],
+) -> "threading.Thread":
+    """Build a semantic index in a daemon thread, updating ``state["status"]``.
+
+    Non-blocking: chat stays usable via the direct project-search fallback and
+    semantic search activates automatically once the index files exist. Tries a
+    full vector index first, then a chunks-only index, before giving up.
+    ``state["status"]`` transitions idle -> building -> ready|failed.
+    """
+    state["status"] = "building"
+
+    def _worker() -> None:
+        try:
+            index_service = _public_symbol("build_index_service", build_index_service)(settings)
+            try:
+                _index_service_index_compat(
+                    index_service,
+                    target_path=target_root,
+                    index_dir=index_dir,
+                    rebuild=False,
+                    vectors=True,
+                )
+            except Exception as exc:
+                logger.warning("Background vector index failed (%s); trying chunks-only", exc)
+                _index_service_index_compat(
+                    index_service,
+                    target_path=target_root,
+                    index_dir=index_dir,
+                    rebuild=False,
+                    vectors=False,
+                )
+            state["status"] = "ready"
+            logger.info("Background index ready", extra={"index_dir": str(index_dir)})
+        except Exception as exc:
+            state["status"] = "failed"
+            state["error"] = str(exc)
+            logger.warning("Background indexing failed: %s", exc)
+
+    thread = threading.Thread(target=_worker, name="mana-bg-index", daemon=True)
+    thread.start()
+    return thread
 
 
 def _index_service_index_compat(
@@ -275,22 +393,25 @@ def build_file_agent(llm: Any, *, root_dir: Path | str = ".") -> Any:
 # ---------------------------------------------------------------------------
 
 def build_store(settings: Settings) -> FaissStore:
-    embeddings = OpenAIEmbeddings(
+    embeddings_cls = _public_symbol("OpenAIEmbeddings", OpenAIEmbeddings)
+    store_cls = _public_symbol("FaissStore", FaissStore)
+    embeddings = embeddings_cls(
         api_key=settings.openai_api_key,
         model=settings.openai_embed_model,
         base_url=settings.openai_base_url,
     )
-    return FaissStore(embeddings=embeddings)
+    return store_cls(embeddings=embeddings)
 
 def build_index_service(settings: Settings) -> IndexService:
-    return IndexService(
-        parser=MultiLanguageParser(),
-        chunker=CodeChunker(),
+    index_service_cls = _public_symbol("IndexService", IndexService)
+    return index_service_cls(
+        parser=_public_symbol("MultiLanguageParser", MultiLanguageParser)(),
+        chunker=_public_symbol("CodeChunker", CodeChunker)(),
         store=build_store(settings),
     )
 
 def build_search_service(settings: Settings) -> SearchService:
-    return SearchService(store=build_store(settings))
+    return _public_symbol("SearchService", SearchService)(store=build_store(settings))
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +419,9 @@ def build_search_service(settings: Settings) -> SearchService:
 # ---------------------------------------------------------------------------
 
 def build_analyze_service() -> AnalyzeService:
-    return AnalyzeService(analyzer=PythonStaticAnalyzer())
+    return _public_symbol("AnalyzeService", AnalyzeService)(
+        analyzer=_public_symbol("PythonStaticAnalyzer", PythonStaticAnalyzer)()
+    )
 
 
 def build_llm_analyze_service(
@@ -307,14 +430,16 @@ def build_llm_analyze_service(
 ):
     model_name = model_override or settings.openai_chat_model
 
-    llm = ChatOpenAI(
+    chat_openai_cls = _public_symbol("ChatOpenAI", ChatOpenAI)
+    analyze_chain_cls = _public_symbol("AnalyzeChain", AnalyzeChain)
+    llm = chat_openai_cls(
         api_key=settings.openai_api_key,
         model=model_name,
         base_url=settings.openai_base_url,
         temperature=0,
     )
 
-    chain = AnalyzeChain(
+    chain = analyze_chain_cls(
         api_key=settings.openai_api_key,
         model=model_name,
         base_url=settings.openai_base_url,
@@ -337,33 +462,41 @@ def build_ask_service(
 ) -> AskService:
     model = model_override or settings.openai_chat_model
     root = project_root.resolve() if project_root else Path.cwd().resolve()
+    qna_chain_cls = _public_symbol("QnAChain", QnAChain)
+    chat_openai_cls = _public_symbol("ChatOpenAI", ChatOpenAI)
+    ask_agent_cls = _public_symbol("AskAgent", AskAgent)
+    ask_service_cls = _public_symbol("AskService", AskService)
 
-    qna_chain = QnAChain(
+    qna_chain = qna_chain_cls(
         api_key=settings.openai_api_key,
         model=model,
         base_url=settings.openai_base_url,
     )
 
-    llm = ChatOpenAI(
+    llm = chat_openai_cls(
         api_key=settings.openai_api_key,
         model=model,
         base_url=settings.openai_base_url,
         temperature=0,
     )
 
-    ask_agent = AskAgent(
+    ask_agent = ask_agent_cls(
         api_key=settings.openai_api_key,
         model=model,
         search_service=build_search_service(settings),
         base_url=settings.openai_base_url,
         project_root=root,
     )
+    tools = getattr(ask_agent, "tools", None)
+    if isinstance(tools, list) and not any(getattr(tool, "name", "") == "search_internet" for tool in tools):
+        tools.append(_public_symbol("build_search_internet_tool", build_search_internet_tool)())
 
-    return AskService(
+    return ask_service_cls(
         store=build_store(settings),
         qna_chain=qna_chain,
         ask_agent=ask_agent,
         search_service=build_search_service(settings),
+        project_root=root,
     )
 
 

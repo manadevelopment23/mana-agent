@@ -27,6 +27,7 @@ from mana_analyzer.config.settings import default_index_dir
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
 from mana_analyzer.services.search_service import SearchService
 from mana_analyzer.tools import coding_tool_contracts_payload, extract_patch_touched_files
+from mana_analyzer.utils.tool_policy import resolve_allowed_tools
 from mana_analyzer.tools.repository import (
     dumps_tool_result,
     find_symbols as repo_find_symbols,
@@ -276,6 +277,49 @@ class AskAgent:
         if not resolved.exists():
             raise FileNotFoundError(str(resolved))
         return resolved
+
+    def _structured_read_error(self, *, path: str, exc: BaseException) -> dict[str, Any]:
+        """Build a structured, machine-inspectable error for read_file failures.
+
+        Returns a payload with an explicit ``error_code`` so recovery logic can
+        branch on the failure kind instead of parsing opaque strings (e.g. a
+        bare resolved path). ``error`` is kept for backward compatibility with
+        existing callers/log inspectors.
+        """
+        # Best-effort resolved path, even when resolution itself failed.
+        try:
+            requested = Path(path)
+            resolved = requested if requested.is_absolute() else (self.project_root / requested)
+            resolved_path = str(resolved.resolve())
+        except Exception:
+            resolved_path = str(path)
+
+        message = str(exc).strip()
+        if isinstance(exc, FileNotFoundError):
+            error_code = "file_not_found"
+            # _resolve_read_path raises FileNotFoundError(str(resolved)).
+            if message:
+                resolved_path = message
+            message = "File does not exist under repository root."
+        elif isinstance(exc, PermissionError):
+            error_code = "permission_denied"
+            message = message or "Permission denied reading file."
+        elif isinstance(exc, ValueError) and "outside project root" in message.lower():
+            error_code = "path_outside_repo"
+            message = "Path resolves outside the repository root."
+        else:
+            error_code = "read_failed"
+            message = message or "Failed to read file."
+
+        return {
+            "ok": False,
+            "error_code": error_code,
+            "tool": "read_file",
+            "path": str(path),
+            "resolved_path": resolved_path,
+            "error": message,
+            "message": message,
+        }
 
     @staticmethod
     def _is_binary_path(path: Path) -> bool:
@@ -722,8 +766,10 @@ class AskAgent:
                 return encoded
             except Exception as exc:
                 status = "error"
-                output_preview = str(exc)
-                return json.dumps({"error": str(exc)})
+                payload = self._structured_read_error(path=path, exc=exc)
+                encoded = json.dumps(payload)
+                output_preview = encoded
+                return encoded
             finally:
                 traces.append(
                     ToolInvocationTrace(
@@ -975,7 +1021,11 @@ class AskAgent:
             self._resolved_indexes = [self._resolved_index]
 
         policy = dict(tool_policy or {})
-        allowed_tools = {str(x) for x in (policy.get("allowed_tools") or []) if str(x).strip()}
+        # Expand high-level aliases (e.g. "file_system") into concrete tool
+        # names before enforcement so an unexpanded alias never blocks real
+        # tools like ls/list_files/read_file/repo_search.
+        raw_allowed = [str(x) for x in (policy.get("allowed_tools") or []) if str(x).strip()]
+        allowed_tools = set(resolve_allowed_tools(raw_allowed, strict=False))
         search_budget = int(policy.get("search_budget", 0) or 0)
         read_budget = int(policy.get("read_budget", 0) or 0)
         read_line_window = max(200, min(int(policy.get("read_line_window", 400) or 400), 2000))
@@ -1018,9 +1068,48 @@ class AskAgent:
         unique_read_files: set[str] = set()
         disk_read_count = 0
 
+        # Tool-call metrics: distinguish attempted / successful / failed /
+        # blocked-by-policy so blocked calls are never hidden as "0 tool calls".
+        tool_metrics: dict[str, int] = {
+            "tool_calls_attempted": 0,
+            "tool_calls_successful": 0,
+            "tool_calls_failed": 0,
+            "tool_calls_blocked_by_policy": 0,
+        }
+        tool_errors: list[dict[str, Any]] = []
+        # Repeated-failure guard keyed by (tool, path, mode). A missing file is
+        # attempted at most twice per flow before we stop and force a fallback.
+        REPEATED_FAILURE_LIMIT = 2
+        read_failure_counts: dict[tuple[str, str, str], int] = defaultdict(int)
+
+        def _read_failure_key(args: dict[str, Any]) -> tuple[str, str, str]:
+            return (
+                "read_file",
+                str(args.get("path", "")).strip(),
+                self._normalize_read_mode(args.get("mode")),
+            )
+
+        def record_metrics(tool_name: str, tool_result: Any, status: str) -> None:
+            tool_metrics["tool_calls_attempted"] += 1
+            if status == "blocked":
+                tool_metrics["tool_calls_blocked_by_policy"] += 1
+            elif status == "error":
+                tool_metrics["tool_calls_failed"] += 1
+                payload = self._coerce_tool_payload(tool_result)
+                entry: dict[str, Any] = {"tool": tool_name}
+                if isinstance(payload, dict):
+                    if payload.get("error_code"):
+                        entry["error_code"] = str(payload.get("error_code"))
+                    if payload.get("path"):
+                        entry["path"] = str(payload.get("path"))
+                tool_errors.append(entry)
+            else:
+                tool_metrics["tool_calls_successful"] += 1
+
         final_answer = ""
 
         def persist_tool_call(tool_name: str, tool_args: dict[str, Any], tool_result: Any, status: str) -> None:
+            record_metrics(tool_name, tool_result, status)
             if not flow_id or self.coding_memory_service is None:
                 return
             try:
@@ -1115,6 +1204,25 @@ class AskAgent:
                             continue
                     if name == "read_file":
                         read_args = args if isinstance(args, dict) else {}
+                        failure_key = _read_failure_key(read_args)
+                        if read_failure_counts[failure_key] >= REPEATED_FAILURE_LIMIT:
+                            target = failure_key[1] or "(unknown path)"
+                            content = json.dumps(
+                                {
+                                    "ok": False,
+                                    "error_code": "tool_blocked_by_policy",
+                                    "tool": "read_file",
+                                    "path": target,
+                                    "error": (
+                                        f"read_file({target}) failed {read_failure_counts[failure_key]} times; "
+                                        "stop retrying it. Use list_files or repo_search to discover the correct "
+                                        "path, then move on to the next step."
+                                    ),
+                                }
+                            )
+                            persist_tool_call(name, read_args, content, "blocked")
+                            messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
+                            continue
                         if (
                             read_budget > 0
                             and disk_read_count >= read_budget
@@ -1213,13 +1321,20 @@ class AskAgent:
                 if name == "read_file":
                     payload = self._coerce_tool_payload(content)
                     if payload is not None:
+                        read_failed = (
+                            payload.get("ok") is False
+                            or bool(str(payload.get("error_code", "")).strip())
+                            or bool(str(payload.get("error", "")).strip())
+                        )
+                        if read_failed:
+                            read_failure_counts[_read_failure_key(args if isinstance(args, dict) else {})] += 1
                         file_path = str(payload.get("file_path", "")).strip()
                         if file_path:
                             try:
                                 unique_read_files.add(self._to_project_rel(file_path))
                             except Exception:
                                 unique_read_files.add(file_path)
-                        if not bool(payload.get("cache_hit", False)) and not str(payload.get("error", "")).strip():
+                        if not bool(payload.get("cache_hit", False)) and not read_failed:
                             disk_read_count += 1
                 if name == "search_internet":
                     detail = self._search_error_detail(content)
@@ -1276,6 +1391,11 @@ class AskAgent:
                     "read_full_mode_blocked": int(read_telemetry.get("read_full_mode_blocked", 0)),
                     "read_cache_invalidations": int(read_telemetry.get("read_cache_invalidations", 0)),
                     "tool_calls": len(traces),
+                    "tool_calls_attempted": int(tool_metrics["tool_calls_attempted"]),
+                    "tool_calls_successful": int(tool_metrics["tool_calls_successful"]),
+                    "tool_calls_failed": int(tool_metrics["tool_calls_failed"]),
+                    "tool_calls_blocked_by_policy": int(tool_metrics["tool_calls_blocked_by_policy"]),
+                    "tool_errors": tool_errors,
                     "trace": [item.to_dict() for item in traces],
                     "sources_count": len(result.sources),
                     "sources": [item.to_dict() for item in result.sources],

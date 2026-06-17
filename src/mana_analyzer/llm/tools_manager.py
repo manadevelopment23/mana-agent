@@ -957,8 +957,48 @@ class ToolsManagerOrchestrator:
             "mutation",
             "change file",
             "update file",
+            "create",
+            "generate",
+            "add file",
+            "write a",
+            "write the",
         )
         return any(token in lowered for token in patterns)
+
+    def _is_edit_task(self, plan: "ToolsPlan", request: str) -> bool:
+        """A task is an edit task if the plan has an edit step or the request reads as one."""
+        if any(step.tool_intent == "edit" for step in getattr(plan, "steps", []) or []):
+            return True
+        return self._looks_like_edit_request_text(request)
+
+    def _compute_effective_pass_cap(
+        self,
+        *,
+        configured_pass_cap: int,
+        plan: "ToolsPlan",
+        request: str,
+        max_allowed_passes: int = 12,
+    ) -> int:
+        """Ensure edit tasks reserve enough passes to reach edit + verify.
+
+        Inspect/search steps are compressed into a single pass (they can run as
+        one batch), then at least one edit and one verify pass are reserved so
+        an 8-step checklist with a low configured cap still reaches the
+        create/write/verify stages.
+        """
+        configured = max(1, min(int(configured_pass_cap), max_allowed_passes))
+        if not self._is_edit_task(plan, request):
+            return configured
+
+        intents = [step.tool_intent for step in getattr(plan, "steps", []) or []]
+        edit_steps = sum(1 for intent in intents if intent == "edit")
+        verify_steps = sum(1 for intent in intents if intent == "verify")
+        inspect_like = sum(1 for intent in intents if intent in ("inspect", "search"))
+
+        inspect_passes = 1 if inspect_like else 0
+        # Always reserve >=1 edit and >=1 verify pass for edit tasks.
+        minimum_passes = inspect_passes + max(1, edit_steps) + max(1, verify_steps)
+        return max(configured, min(max_allowed_passes, minimum_passes + 2))
 
     @staticmethod
     def _looks_like_apply_patch_failure_trace(row: dict[str, Any]) -> bool:
@@ -1482,6 +1522,20 @@ class ToolsManagerOrchestrator:
         )
         all_warnings.extend(plan_warnings)
 
+        # Edit/create/verify workflows need enough passes to reach the write and
+        # verify stages; a low configured cap would otherwise terminate early.
+        is_edit_task = self._is_edit_task(plan, request)
+        effective_pass_cap = self._compute_effective_pass_cap(
+            configured_pass_cap=pass_cap,
+            plan=plan,
+            request=request,
+        )
+        if effective_pass_cap != pass_cap:
+            all_warnings.append(
+                f"pass_cap_raised_for_edit_task: {pass_cap} -> {effective_pass_cap}"
+            )
+            pass_cap = effective_pass_cap
+
         before = self._git_status_paths()
         changed_files: list[str] = []
 
@@ -1577,6 +1631,34 @@ class ToolsManagerOrchestrator:
                         previous_plan=plan,
                         reason="conversational_terminal_retry",
                     )
+                    continue
+
+                # Never let an edit task finalize as "success" without file-change
+                # evidence; force another pass to actually write + verify.
+                if (
+                    plan.decision == "finalize"
+                    and is_edit_task
+                    and not changed_files
+                    and not self._is_blocked_terminal_plan(plan)
+                    and pass_index < pass_cap
+                ):
+                    all_warnings.append(
+                        "planner_finalize_edit_without_changed_files; forcing edit/verify pass"
+                    )
+                    plan = self._deterministic_fallback_plan(
+                        request=(
+                            f"{request}\n\n"
+                            "Full-auto continuation directive:\n"
+                            "- This is a file create/edit task but no files have changed yet.\n"
+                            "- Use write_file (full content) or apply_patch to make the change now.\n"
+                            "- Then verify the file exists before any terminal response.\n"
+                            "- Do not claim success without changed_files evidence."
+                        ),
+                        flow_context=flow_context,
+                        previous_plan=plan,
+                        reason="edit_finalize_without_changes",
+                    )
+                    edit_retry_mode_pending = True
                     continue
                 if plan.decision == "stop":
                     if has_hard_blocker:

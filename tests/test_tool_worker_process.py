@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
 import json
+import logging
+import subprocess
+import sys
 from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +12,35 @@ from types import SimpleNamespace
 import pytest
 
 from mana_analyzer.llm import tool_worker_process as twp
+
+
+def test_tool_worker_import_does_not_configure_root_logging() -> None:
+    src_root = Path(__file__).resolve().parents[1] / "src"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(src_root)
+    code = (
+        "import json, logging; "
+        "import mana_analyzer.llm.tool_worker_process; "
+        "root = logging.getLogger(); "
+        "print(json.dumps({'level': root.level, 'handlers': len(root.handlers)}))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    payload = json.loads(result.stdout)
+    assert payload == {"level": logging.WARNING, "handlers": 0}
+
+
+def test_debug_line_redacts_api_keys() -> None:
+    raw = '{"payload":{"api_key":"sk-proj-secret","authorization":"Bearer sk-other"}}'
+    redacted = twp._redact_debug_line(raw)
+    assert "sk-proj-secret" not in redacted
+    assert "sk-other" not in redacted
+    assert redacted.count("***REDACTED***") == 2
 
 
 class _FakeStdout:
@@ -656,6 +689,156 @@ def test_run_tool_request_once_respects_tools_only_override(monkeypatch) -> None
 
     response = twp.run_tool_request_once(init_payload=init_payload, request=req)
     assert response.answer == "ok"
+
+
+def test_run_tools_auto_repairs_invalid_tool_policy_and_retries_once(monkeypatch) -> None:
+    seen_policies: list[list] = []
+
+    def _make_proc(*_args, **_kwargs):
+        def _handle_write(text: str) -> None:
+            req = json.loads(text.strip())
+            rid = req["request_id"]
+            kind = req["type"]
+            if kind == "init":
+                proc.stdout.push({"type": "event", "request_id": rid, "payload": {"name": "initialized"}})
+                proc.stdout.push(_reply_ok(rid, {"status": "ok"}))
+                return
+            if kind == "run_tools":
+                allowed = (req["payload"].get("tool_policy") or {}).get("allowed_tools") or []
+                seen_policies.append(list(allowed))
+                if "definitely_not_a_tool" in allowed:
+                    proc.stdout.push(
+                        {
+                            "type": "error",
+                            "request_id": rid,
+                            "payload": {
+                                "code": "invalid_tool_policy",
+                                "message": "unknown tool(s) definitely_not_a_tool",
+                                "retriable": False,
+                                "details": {"unknown_tools": ["definitely_not_a_tool"]},
+                            },
+                        }
+                    )
+                    return
+                proc.stdout.push(
+                    _reply_ok(
+                        rid,
+                        {
+                            "answer": "ok",
+                            "sources": [],
+                            "mode": "agent-tools",
+                            "trace": [{"tool_name": "read_file", "status": "ok"}],
+                            "warnings": [],
+                        },
+                    )
+                )
+                return
+            if kind == "shutdown":
+                proc.stdout.push(_reply_ok(rid, {"status": "bye"}))
+                proc._alive = False
+
+        proc = _FakeProc(_handle_write)
+        return proc
+
+    monkeypatch.setattr(twp.subprocess, "Popen", _make_proc)
+    client = twp.ToolWorkerClient(
+        api_key="x",
+        model="fake-model",
+        repo_root=Path("/tmp"),
+        project_root=Path("/tmp"),
+    )
+
+    response = client.run_tools(
+        twp.ToolRunRequest(
+            question="q",
+            index_dir="/tmp/.mana/index",
+            tool_policy={"allowed_tools": ["file_system", "definitely_not_a_tool"]},
+        )
+    )
+    assert response.answer == "ok"
+    # First send had the bad name; repaired second send dropped it and expanded the alias.
+    assert len(seen_policies) == 2
+    assert "definitely_not_a_tool" in seen_policies[0]
+    assert "definitely_not_a_tool" not in seen_policies[1]
+    assert "read_file" in seen_policies[1]
+    client.stop()
+
+
+def test_repair_tool_policy_clears_when_all_unknown() -> None:
+    repaired, changed, _summary = twp.ToolWorkerClient._repair_tool_policy(
+        {"allowed_tools": ["nope1", "nope2"], "read_budget": 3}
+    )
+    assert changed is True
+    assert "allowed_tools" not in repaired
+    assert repaired["read_budget"] == 3
+
+
+def test_run_tool_request_expands_file_system_alias() -> None:
+    seen: dict[str, object] = {}
+
+    class _FakeAskAgent:
+        def run(self, **kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(
+                answer="ok",
+                sources=[],
+                mode="agent-tools",
+                trace=[SimpleNamespace(to_dict=lambda: {"tool_name": "ls", "status": "ok"})],
+                warnings=[],
+            )
+
+    twp._run_tool_request(
+        ask_agent=_FakeAskAgent(),  # type: ignore[arg-type]
+        req=twp.ToolRunRequest(
+            question="q",
+            index_dir="/tmp/.mana/index",
+            tool_policy={"allowed_tools": ["file_system"]},
+        ),
+        tools_only_strict_default=False,
+        callbacks=None,
+    )
+    allowed = seen["tool_policy"]["allowed_tools"]  # type: ignore[index]
+    assert set(allowed) == {"ls", "list_files", "read_file", "repo_search"}
+
+
+def test_run_tool_request_rejects_unknown_tool_policy() -> None:
+    class _FakeAskAgent:
+        def run(self, **_kwargs):  # pragma: no cover - should not be reached
+            raise AssertionError("run should not be called for invalid policy")
+
+    with pytest.raises(twp.ToolWorkerProcessError) as excinfo:
+        twp._run_tool_request(
+            ask_agent=_FakeAskAgent(),  # type: ignore[arg-type]
+            req=twp.ToolRunRequest(
+                question="q",
+                index_dir="/tmp/.mana/index",
+                tool_policy={"allowed_tools": ["not_a_real_tool"]},
+            ),
+            tools_only_strict_default=False,
+            callbacks=None,
+        )
+    assert excinfo.value.code == "invalid_tool_policy"
+    assert "not_a_real_tool" in excinfo.value.details.get("unknown_tools", [])
+
+
+def test_run_tool_request_does_not_retry_tools_only_violation() -> None:
+    calls = {"count": 0}
+
+    class _FakeAskAgent:
+        def run(self, **_kwargs):
+            calls["count"] += 1
+            return SimpleNamespace(answer="no tools", sources=[], mode="agent-tools", trace=[], warnings=[])
+
+    with pytest.raises(twp.ToolWorkerProcessError) as excinfo:
+        twp._run_tool_request(
+            ask_agent=_FakeAskAgent(),  # type: ignore[arg-type]
+            req=twp.ToolRunRequest(question="q", index_dir="/tmp/.mana/index"),
+            tools_only_strict_default=True,
+            callbacks=None,
+        )
+    assert excinfo.value.code == "tools_only_violation"
+    # No useless retries with an identical payload.
+    assert calls["count"] == 1
 
 
 def test_run_tool_request_forwards_flow_id_to_ask_agent() -> None:

@@ -19,9 +19,18 @@ from mana_analyzer.analysis.models import (
 from mana_analyzer.llm.ask_agent import AskAgent
 from mana_analyzer.llm.qna_chain import QnAChain
 from mana_analyzer.services.search_service import SearchService
+from mana_analyzer.utils.project_search import project_search
 from mana_analyzer.vector_store.faiss_store import FaissStore
 
 logger = logging.getLogger(__name__)
+
+SEMANTIC_INDEX_MISSING_WARNING = (
+    "Semantic index not found; using direct project search fallback."
+)
+SEMANTIC_INDEX_HINT = (
+    "Semantic index is missing, so I searched the project directly instead. "
+    "To enable semantic search later, run: mana-analyzer index"
+)
 
 
 @runtime_checkable
@@ -37,11 +46,77 @@ class AskService:
         qna_chain: QnAChain,
         ask_agent: AskAgent | None = None,
         search_service: SearchService | None = None,
+        project_root: str | Path | None = None,
     ) -> None:
         self.store = store
         self.qna_chain = qna_chain
         self.ask_agent = ask_agent
         self.search_service = search_service
+        self.project_root = Path(project_root).resolve() if project_root else Path.cwd().resolve()
+
+    @staticmethod
+    def _render_fallback_context(matches: list) -> str:
+        blocks: list[str] = []
+        for match in matches:
+            blocks.append(
+                "\n".join(
+                    [
+                        f"source: {match.file_path}:{match.line_number}",
+                        "snippet:",
+                        match.line_text,
+                    ]
+                )
+            )
+        return "\n\n---\n\n".join(blocks)
+
+    def _project_search_fallback(
+        self,
+        question: str,
+        k: int,
+        *,
+        root: str | Path | None = None,
+    ) -> AskResponse:
+        """Answer a question using direct project search when no index is usable.
+
+        Used when the FAISS semantic index is missing or empty, so chat stays
+        useful before (or without) running indexing.
+        """
+        search_root = Path(root).resolve() if root else self.project_root
+        result = project_search(question, search_root, max_results=max(5, int(k) * 4))
+        warnings = [SEMANTIC_INDEX_MISSING_WARNING]
+        if not result.matches:
+            return AskResponse(
+                answer=(
+                    f"{SEMANTIC_INDEX_HINT}\n\n"
+                    f"No direct matches for that query under {search_root}."
+                ),
+                sources=[],
+                warnings=warnings,
+            )
+
+        sources = [
+            SearchHit(
+                score=0.0,
+                file_path=match.file_path,
+                start_line=match.line_number,
+                end_line=match.line_number,
+                symbol_name="match",
+                snippet=match.line_text[:500],
+            )
+            for match in result.matches
+        ]
+        context = self._render_fallback_context(result.matches)
+        try:
+            answer = self.qna_chain.run(question=question, context=context)
+        except Exception:
+            logger.exception("fallback qna chain failed; returning raw matches")
+            answer = (
+                f"{SEMANTIC_INDEX_HINT}\n\n"
+                + result.format(search_root)
+            )
+        else:
+            answer = f"{SEMANTIC_INDEX_HINT}\n\n{answer}"
+        return AskResponse(answer=answer, sources=sources, warnings=warnings)
 
     @staticmethod
     def _render_context(sources: list[SearchHit]) -> str:
@@ -67,14 +142,15 @@ class AskService:
         resolved_index = Path(index_dir).resolve()
         logger.info("Running ask flow: index_dir=%s k=%d", resolved_index, k)
 
-        sources = self.store.search(resolved_index, query=question, k=k)
+        try:
+            sources = self.store.search(resolved_index, query=question, k=k)
+        except Exception:
+            logger.warning("Semantic search failed for %s; falling back to project search", resolved_index)
+            sources = []
 
         if not sources:
-            message = (
-                "I could not find relevant indexed code context. "
-                "Re-run indexing or provide a narrower question."
-            )
-            return AskResponse(answer=message, sources=[])
+            logger.info("No indexed context; using direct project search fallback")
+            return self._project_search_fallback(question, k)
 
         context = self._render_context(sources)
         answer = self.qna_chain.run(question=question, context=context)
@@ -187,8 +263,10 @@ class AskService:
         )
 
         if not sources:
-            msg = "No relevant indexed code context found."
-            return AskResponse(answer=msg, sources=[], warnings=warnings)
+            logger.info("No multi-index context; using direct project search fallback")
+            fallback = self._project_search_fallback(question, k, root=root_dir)
+            fallback.warnings = [*warnings, *fallback.warnings]
+            return fallback
 
         context = self._render_context(sources)
         answer = self.qna_chain.run(question=question, context=context)

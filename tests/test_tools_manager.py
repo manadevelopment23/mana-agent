@@ -8,6 +8,7 @@ from mana_analyzer.llm.tools_manager import (
     ToolsManagerBatch,
     ToolsManagerOrchestrator,
     ToolsPlan,
+    ToolsPlanStep,
 )
 from mana_analyzer.llm.tools_executor import BatchExecutionResult
 from mana_analyzer.services.coding_memory_service import CodingMemoryService
@@ -1387,7 +1388,82 @@ def test_tools_manager_auto_advances_duplicate_planner_task_to_next_step(tmp_pat
         tool_policy={},
         pass_cap=2,
     )
-    assert len(result.pass_logs) == 2
+    # Edit tasks now reserve enough passes to reach edit + verify, so the cap is
+    # raised above the configured value of 2; the first two passes still cover
+    # the inspect step then the auto-advanced edit step.
+    assert len(result.pass_logs) >= 2
     assert result.pass_logs[0]["planner_step_id"] == "s1"
     assert result.pass_logs[1]["planner_step_id"] == "s2"
     assert any("planner_duplicate_task_advanced" in str(item) for item in result.warnings)
+
+
+def _edit_plan() -> ToolsPlan:
+    return ToolsPlan(
+        objective="create docs/analyze.md",
+        steps=[
+            ToolsPlanStep(id="s1", title="inspect structure", tool_intent="inspect"),
+            ToolsPlanStep(id="s2", title="inspect src", tool_intent="inspect"),
+            ToolsPlanStep(id="s3", title="read tests", tool_intent="search"),
+            ToolsPlanStep(id="s4", title="write analyze.md", tool_intent="edit"),
+            ToolsPlanStep(id="s5", title="verify file", tool_intent="verify"),
+        ],
+        current_step_id="s1",
+        decision="continue",
+    )
+
+
+def _inspect_only_plan() -> ToolsPlan:
+    return ToolsPlan(
+        objective="explain the project",
+        steps=[
+            ToolsPlanStep(id="s1", title="inspect", tool_intent="inspect"),
+            ToolsPlanStep(id="s2", title="answer", tool_intent="answer"),
+        ],
+        current_step_id="s1",
+        decision="continue",
+    )
+
+
+def test_is_edit_task_detects_edit_step(tmp_path: Path) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    assert orchestrator._is_edit_task(_edit_plan(), "do something") is True
+    assert orchestrator._is_edit_task(_inspect_only_plan(), "explain the project") is False
+
+
+def test_is_edit_task_detects_create_request_text(tmp_path: Path) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    # No edit step, but the request reads as a create task.
+    assert orchestrator._is_edit_task(_inspect_only_plan(), "create a analyze.md") is True
+
+
+def test_pass_cap_raised_for_edit_task(tmp_path: Path) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    # Configured cap of 4 is too low: inspect(1) + edit(1) + verify(1) + 2 = 5.
+    effective = orchestrator._compute_effective_pass_cap(
+        configured_pass_cap=4,
+        plan=_edit_plan(),
+        request="analyze fully project and create a analyze.md",
+    )
+    assert effective >= 5
+    assert effective <= 12
+
+
+def test_pass_cap_unchanged_for_non_edit_task(tmp_path: Path) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    effective = orchestrator._compute_effective_pass_cap(
+        configured_pass_cap=4,
+        plan=_inspect_only_plan(),
+        request="explain the project",
+    )
+    assert effective == 4
+
+
+def test_pass_cap_never_exceeds_max_allowed(tmp_path: Path) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    effective = orchestrator._compute_effective_pass_cap(
+        configured_pass_cap=4,
+        plan=_edit_plan(),
+        request="create files",
+        max_allowed_passes=12,
+    )
+    assert effective <= 12

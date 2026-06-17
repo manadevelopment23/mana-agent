@@ -40,7 +40,7 @@ def ask(
         "Ask command started",
         extra={"question": question, "k": k, "model_override": model, "dir_mode": dir_mode, "index_dir": index_dir, "ephemeral_index": ephemeral_index},
     )
-    settings = Settings()
+    settings = _public_symbol("Settings", Settings)()
     root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
     if root.is_file():
         root = root.parent
@@ -74,11 +74,11 @@ def ask(
                 },
             )
 
-            discovered_subprojects = discover_subprojects(root)
-            discovered_indexes = discover_index_dirs(root)
+            discovered_subprojects = _public_symbol("discover_subprojects", discover_subprojects)(root)
+            discovered_indexes = _public_symbol("discover_index_dirs", discover_index_dirs)(root)
             discovered_index_set = {item.resolve() for item in discovered_indexes}
 
-            index_service = build_index_service(settings)
+            index_service = _public_symbol("build_index_service", build_index_service)(settings)
             auto_indexed_count = 0
             skipped_missing_count = 0
             warnings: list[str] = []
@@ -169,7 +169,7 @@ def ask(
                 },
             )
 
-            if agent_tools:
+            if agent_tools and selected_indexes:
                 response = service.ask_with_tools_dir_mode(
                     index_dirs=selected_indexes,
                     question=question,
@@ -186,7 +186,7 @@ def ask(
         else:
             if ephemeral_index and not index_dir:
                 tmp_single, resolved_index_dir = _make_ephemeral_index_dir()
-                index_service = build_index_service(settings)
+                index_service = _public_symbol("build_index_service", build_index_service)(settings)
                 _index_service_index_compat(
                     index_service,
                     target_path=root,

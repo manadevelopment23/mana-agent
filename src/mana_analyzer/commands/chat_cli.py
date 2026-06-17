@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from .cli_internal import *
 
 
@@ -129,6 +131,16 @@ def chat(
     auto_index_missing: bool = typer.Option(
         True,
         "--auto-index-missing/--no-auto-index-missing",
+    ),
+    agent_tools: bool | None = typer.Option(
+        None,
+        "--agent-tools/--no-agent-tools",
+        help="Use agent tool mode for chat answers.",
+    ),
+    coding_agent: bool | None = typer.Option(
+        None,
+        "--coding-agent/--no-coding-agent",
+        help="Allow coding-agent file-edit workflows.",
     ),
     tool_worker_process: bool = typer.Option(
         True,
@@ -282,9 +294,15 @@ def chat(
     as_json: bool = typer.Option(False, "--json", help="Emit responses as JSON objects."),
 ) -> None:
     output_file = _resolve_output_file()
-    agent_tools = True
-    coding_agent = True
-    tool_worker_process = True
+    # Keep noisy indexing/parsing logs off the interactive console (the file log
+    # still captures everything) so the prompt is usable while the index builds.
+    _install_quiet_chat_console_logging()
+    agent_tools_explicit = agent_tools is not None
+    coding_agent_explicit = coding_agent is not None
+    agent_tools = True if agent_tools is None else bool(agent_tools)
+    coding_agent = True if coding_agent is None else bool(coding_agent)
+    if agent_tools_explicit and not coding_agent_explicit:
+        coding_agent = False
     logger.info(
         "Chat command started",
         extra={
@@ -364,7 +382,7 @@ def chat(
 
     if auto_execute_plan:
         pass  # already forced above
-    settings = Settings()
+    settings = _public_symbol("Settings", Settings)()
     resolved_tool_exec_backend = str(
         (tool_exec_backend or getattr(settings, "tool_exec_backend", "local")) or "local"
     ).strip().lower()
@@ -411,7 +429,8 @@ def chat(
         root = root.parent
 
     logger.debug("Resolved chat root", extra={"root": str(root)})
-    run_logger = LlmRunLogger(
+    run_logger_cls = _public_symbol("LlmRunLogger", LlmRunLogger)
+    run_logger = run_logger_cls(
         log_file=(
             default_llm_logs_dir(root)
             / f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}-{(root.name or 'project')}-runs.jsonl"
@@ -433,7 +452,7 @@ def chat(
         dir_mode=dir_mode,
         root_dir=str(root),
         k=resolved_k,
-        agent_tools=agent_tools,
+        agent_tools=bool(agent_tools_explicit and agent_tools),
         agent_max_steps=chat_agent_max_steps,
         agent_timeout_seconds=agent_timeout_seconds,
         max_indexes=max_indexes,
@@ -446,15 +465,17 @@ def chat(
     tool_worker_client: ToolWorkerClient | None = None
     tools_manager_orchestrator: ToolsManagerOrchestrator | None = None
     tools_executor_instance: LocalToolsExecutor | RedisRQToolsExecutor | None = None
+    coding_agent_cls = _public_symbol("CodingAgent", CodingAgent)
+    coding_agent_is_custom = coding_agent_cls is not CodingAgent
     effective_model = model or settings.openai_chat_model
     effective_tool_worker_model = settings.openai_tool_worker_model or effective_model
     effective_base_url = settings.openai_base_url or os.getenv("OPENAI_BASE_URL")
 
     def _build_tools_executor(worker_client: ToolWorkerClient):
         if tools_execution_config.backend != "redis":
-            return LocalToolsExecutor(worker_client=worker_client)
+            return _public_symbol("LocalToolsExecutor", LocalToolsExecutor)(worker_client=worker_client)
         try:
-            return RedisRQToolsExecutor(
+            return _public_symbol("RedisRQToolsExecutor", RedisRQToolsExecutor)(
                 worker_init_payload=worker_client.init_payload_dict(),
                 config=tools_execution_config,
             )
@@ -462,7 +483,7 @@ def chat(
             warning = f"redis executor unavailable; falling back to local backend: {exc}"
             logger.warning(warning)
             tools_execution_boot_warnings.append(warning)
-            return LocalToolsExecutor(worker_client=worker_client)
+            return _public_symbol("LocalToolsExecutor", LocalToolsExecutor)(worker_client=worker_client)
 
     if coding_agent:
         if not agent_tools:
@@ -476,7 +497,8 @@ def chat(
                 max_tasks=settings.coding_flow_max_tasks,
             )
         if tool_worker_process:
-            tool_worker_client = ToolWorkerClient(
+            tool_worker_client_cls = _public_symbol("ToolWorkerClient", ToolWorkerClient)
+            tool_worker_client = tool_worker_client_cls(
                 api_key=settings.openai_api_key,
                 model=effective_tool_worker_model,
                 base_url=effective_base_url,
@@ -487,7 +509,7 @@ def chat(
             )
 
         # ✅ IMPORTANT: allow_prefixes=None => unrestricted under repo_root
-        coding_agent_instance = CodingAgent(
+        coding_agent_instance = coding_agent_cls(
             api_key=settings.openai_api_key,
             base_url=effective_base_url,
             repo_root=root,
@@ -507,7 +529,8 @@ def chat(
 
     if coding_agent_instance is not None and auto_execute_plan and tool_worker_client is not None:
         tools_executor_instance = _build_tools_executor(tool_worker_client)
-        tools_manager_orchestrator = ToolsManagerOrchestrator(
+        tools_manager_orchestrator_cls = _public_symbol("ToolsManagerOrchestrator", ToolsManagerOrchestrator)
+        tools_manager_orchestrator = tools_manager_orchestrator_cls(
             api_key=settings.openai_api_key,
             model=effective_model,
             base_url=settings.openai_base_url,
@@ -522,6 +545,7 @@ def chat(
     tmp_root: tempfile.TemporaryDirectory | None = None
     tmp_base: Path | None = None
     dir_mode_index_dirs: list[Path] = []
+    background_index_state: dict[str, Any] = {"status": "idle", "announced": False, "error": ""}
     try:
         # -----------------------------
         # Resolve indexes (dir-mode vs classic)
@@ -529,14 +553,14 @@ def chat(
         resolved_index_dir: Path | None = None
 
         if dir_mode:
-            discovered_subprojects = discover_subprojects(root)
-            discovered_indexes = discover_index_dirs(root)
+            discovered_subprojects = _public_symbol("discover_subprojects", discover_subprojects)(root)
+            discovered_indexes = _public_symbol("discover_index_dirs", discover_index_dirs)(root)
             discovered_index_set = {item.resolve() for item in discovered_indexes}
 
             if ephemeral_index and not index_dir:
                 tmp_root, tmp_base = _make_ephemeral_index_dir(prefix="mana_chat_indexes_")
 
-            index_service = build_index_service(settings)
+            index_service = _public_symbol("build_index_service", build_index_service)(settings)
             auto_indexed_count = 0
             skipped_missing_count = 0
             warnings: list[str] = []
@@ -654,7 +678,7 @@ def chat(
         else:
             if ephemeral_index and not index_dir:
                 tmp_root, resolved_index_dir = _make_ephemeral_index_dir(prefix="mana_chat_index_")
-                index_service = build_index_service(settings)
+                index_service = _public_symbol("build_index_service", build_index_service)(settings)
                 _index_service_index_compat(
                     index_service,
                     target_path=root,
@@ -665,9 +689,32 @@ def chat(
             else:
                 resolved_index_dir = Path(index_dir).resolve() if index_dir else default_index_dir(root)
 
+            # Build the semantic index in the BACKGROUND when it is missing so chat
+            # is usable immediately (direct project-search fallback) and semantic
+            # search activates automatically once the index is ready. Indexing is
+            # never blocking and never prompts.
+            if (
+                auto_index_missing
+                and not ephemeral_index
+                and resolved_index_dir is not None
+                and not _index_has_search_data(resolved_index_dir)
+            ):
+                _start_background_index(
+                    settings=settings,
+                    target_root=root,
+                    index_dir=resolved_index_dir,
+                    state=background_index_state,
+                )
+
+            if background_index_state["status"] == "building":
+                index_state = "building in background; using direct project search until ready"
+            elif _index_has_search_data(resolved_index_dir):
+                index_state = "ready"
+            else:
+                index_state = "missing (run `mana-analyzer index`; using direct project search fallback)"
             _emit_text(
                 "mana-analyzer chat\n"
-                f"- index: {resolved_index_dir}\n"
+                f"- index: {resolved_index_dir} ({index_state})\n"
                 f"- k: {resolved_k}\n"
                 f"- ephemeral-index: {ephemeral_index}\n"
                 f"- coding-agent: {coding_agent}\n"
@@ -731,9 +778,9 @@ def chat(
         _ca_flow = flow_id or (coding_agent_instance.get_active_flow_id() if coding_agent_instance else None)
         if coding_memory:
             if _ca_flow:
-                console.print(f"[cyan]Flow memory:[/cyan] resuming flow {_ca_flow}")
+                console.print(f"[cyan]Flow memory active:[/cyan] resuming flow {_ca_flow}")
             else:
-                console.print("[cyan]Flow memory:[/cyan] new flow will be created on first request.")
+                console.print("[cyan]Flow memory active:[/cyan] new flow will be created on first request.")
         if True:  # agent_tools always on
             auto_execute_status = "automatic" if auto_execute_plan else "disabled by legacy override"
             console.print(
@@ -819,7 +866,8 @@ def chat(
             if tools_manager_orchestrator is not None:
                 return tools_manager_orchestrator
             if tool_worker_client is None:
-                tool_worker_client = ToolWorkerClient(
+                tool_worker_client_cls = _public_symbol("ToolWorkerClient", ToolWorkerClient)
+                tool_worker_client = tool_worker_client_cls(
                     api_key=settings.openai_api_key,
                     model=settings.openai_tool_worker_model or model or settings.openai_chat_model,
                     base_url=effective_base_url,
@@ -836,7 +884,8 @@ def chat(
                 return None
             if tools_executor_instance is None:
                 tools_executor_instance = _build_tools_executor(tool_worker_client)
-            tools_manager_orchestrator = ToolsManagerOrchestrator(
+            tools_manager_orchestrator_cls = _public_symbol("ToolsManagerOrchestrator", ToolsManagerOrchestrator)
+            tools_manager_orchestrator = tools_manager_orchestrator_cls(
                 api_key=settings.openai_api_key,
                 model=model or settings.openai_chat_model,
                 base_url=effective_base_url,
@@ -996,6 +1045,7 @@ def chat(
                 spinner_text="Auto-executing…",
                 fn=_call,
                 callbacks=[],
+                show_all_logs=_cli_verbose_enabled(),
             )
             if hasattr(result_obj, "model_dump"):
                 payload = result_obj.model_dump()
@@ -1235,7 +1285,7 @@ def chat(
             if warnings_merged:
                 warning_lines = "\n".join(f"- {w}" for w in warnings_merged[:12])
                 console.print(Panel(warning_lines, title="Warnings", border_style="yellow"))
-            if debug_tail:
+            if _cli_verbose_enabled() and debug_tail:
                 console.print("\n[bold]Debug tail[/bold]\n" + debug_tail)
             _log_chat_turn(
                 run_logger,
@@ -1289,12 +1339,125 @@ def chat(
                 logger.info("Chat session ended by user interrupt/EOF")
                 break
 
+            # Announce background-index completion once, so the user knows when
+            # semantic search becomes active.
+            if not background_index_state.get("announced", False):
+                bg_status = background_index_state.get("status")
+                if bg_status == "ready":
+                    console.print("[green]Semantic index ready — semantic search is now active.[/green]")
+                    background_index_state["announced"] = True
+                elif bg_status == "failed":
+                    console.print(
+                        "[yellow]Background indexing failed; continuing with direct project search.[/yellow]"
+                    )
+                    background_index_state["announced"] = True
+
             if not question:
                 continue
             if question.lower() in {"exit", "quit"}:
                 console.print("Goodbye!")
                 logger.info("Chat session ended by user command", extra={"command": question.lower()})
                 break
+
+            # -----------------------------
+            # Direct command fast-path (no FAISS / RAG / CodingAgent).
+            # -----------------------------
+            direct_command = _classify_direct_command(question)
+            if direct_command is not None:
+                if dir_mode:
+                    index_available = any(
+                        _index_has_search_data(item) for item in dir_mode_index_dirs
+                    )
+                else:
+                    index_available = bool(
+                        resolved_index_dir is not None
+                        and _index_has_search_data(resolved_index_dir)
+                    )
+                tool_worker_active = bool(
+                    tool_worker_client is not None
+                    and getattr(tool_worker_client, "_proc", None) is not None
+                    and tool_worker_client._proc is not None
+                    and tool_worker_client._proc.poll() is None
+                )
+                answer_text = _render_direct_command(
+                    console,
+                    direct_command,
+                    project_root=root,
+                    index_available=index_available,
+                    coding_agent_active=coding_agent_instance is not None,
+                    tool_worker_active=tool_worker_active,
+                )
+                turn_record = ChatTurnTelemetry(
+                    turn_index=len(session_turns) + 1,
+                    timestamp=_now_iso(),
+                    question=question,
+                    answer_text=answer_text,
+                    sources=[],
+                    warnings=[],
+                    trace=[],
+                    tool_steps_total=0,
+                    decisions=[],
+                    changed_files=[],
+                    has_diff=False,
+                    coding_state={"flow_id": active_flow_id},
+                )
+                session_turns.append(turn_record)
+                _log_chat_turn(
+                    run_logger,
+                    turn=turn_record,
+                    mode=f"direct-command:{direct_command}",
+                    dir_mode=dir_mode,
+                    coding_agent=False,
+                    flow_id=active_flow_id,
+                    multiline_input=multiline_input,
+                    multiline_terminator=multiline_terminator,
+                )
+                continue
+
+            # -----------------------------
+            # Exact search fast-path (ripgrep / static search, no index needed).
+            # -----------------------------
+            exact_search_query = _extract_exact_search_query(question)
+            if exact_search_query is not None:
+                search_result = project_search(exact_search_query, root)
+                if search_result.matches:
+                    body = search_result.format(root)
+                    if search_result.truncated:
+                        body += "\n… (results truncated)"
+                    answer_text = (
+                        f"Found {len(search_result.matches)} match(es) "
+                        f"for '{exact_search_query}' via {search_result.backend}:\n\n{body}"
+                    )
+                else:
+                    answer_text = f"No matches for '{exact_search_query}' in {root}."
+                console.print("\n[bold]Search results[/bold]")
+                console.print(answer_text)
+                turn_record = ChatTurnTelemetry(
+                    turn_index=len(session_turns) + 1,
+                    timestamp=_now_iso(),
+                    question=question,
+                    answer_text=answer_text,
+                    sources=[],
+                    warnings=[],
+                    trace=[],
+                    tool_steps_total=0,
+                    decisions=[],
+                    changed_files=[],
+                    has_diff=False,
+                    coding_state={"flow_id": active_flow_id},
+                )
+                session_turns.append(turn_record)
+                _log_chat_turn(
+                    run_logger,
+                    turn=turn_record,
+                    mode=f"exact-search:{search_result.backend}",
+                    dir_mode=dir_mode,
+                    coding_agent=False,
+                    flow_id=active_flow_id,
+                    multiline_input=multiline_input,
+                    multiline_terminator=multiline_terminator,
+                )
+                continue
 
             if pending_ui_selection is not None:
                 if execution_profile == "full-auto":
@@ -1396,7 +1559,7 @@ def chat(
             auto_planning_turn = bool(
                 planning_request is not None
                 or planning_mode
-                or (plan_trigger_request and not edit_request)
+                or (coding_agent_instance is not None and plan_trigger_request and not edit_request and not agent_tools_explicit)
             )
             force_plan_only_response = False
             force_auto_execute_edit = bool(
@@ -1567,6 +1730,7 @@ def chat(
                 coding_agent_instance is None
                 and agent_tools
                 and auto_execute_plan
+                and (edit_request or legacy_auto_execute_plan_requested or execution_profile == "full-auto")
                 and _looks_like_plan_trigger_request(question)
             ):
                 auto_payload, auto_debug_tail = _run_auto_execute_pipeline_with_resume(
@@ -1580,6 +1744,91 @@ def chat(
                 )
                 continue
 
+            use_coding_agent_turn = bool(
+                coding_agent_instance is not None
+                and (
+                    edit_request
+                    or plan_trigger_request
+                    or force_plan_only_response
+                    or pending_prechecklist is not None
+                    or coding_agent_is_custom
+                )
+            )
+
+            if not use_coding_agent_turn:
+                try:
+                    response = chat_service.ask(question)
+                except Exception as exc:
+                    _log_exception("chat_service.ask", exc)
+                    console.print("[red]Chat request failed.[/red]")
+                    continue
+                if response is None:
+                    continue
+
+                answer_raw = str(getattr(response, "answer", "") or "")
+                answer_text, parsed_payload = _extract_structured_answer(answer_raw)
+                sources = list(getattr(response, "sources", []) or [])
+                warnings = [str(item).strip() for item in getattr(response, "warnings", []) or [] if str(item).strip()]
+                trace = _coerce_trace_items(list(getattr(response, "trace", []) or []))
+                if isinstance(parsed_payload, dict):
+                    warnings = _merge_warnings(warnings, parsed_payload)
+                    if isinstance(parsed_payload.get("sources"), list) and not sources:
+                        sources = list(parsed_payload.get("sources") or [])
+                    if isinstance(parsed_payload.get("trace"), list) and not trace:
+                        trace = _coerce_trace_items(parsed_payload.get("trace"))
+                try:
+                    ui_blocks = _effective_ui_blocks(answer_text, parsed_payload if isinstance(parsed_payload, dict) else None)
+                except Exception as exc:
+                    _log_exception("chat.effective_ui_blocks.normal", exc)
+                    ui_blocks = []
+                    warnings.append("ui_blocks_render_fallback: failed to process ui_blocks payload")
+                _render_dynamic_blocks(
+                    console,
+                    ui_blocks,
+                    diagram_render_images=diagram_render_images,
+                    diagram_output_dir=resolved_diagram_output_dir,
+                    diagram_format=diagram_format,
+                    diagram_open_artifact=diagram_open,
+                    diagram_timeout_seconds=diagram_timeout_seconds,
+                    project_root=root,
+                )
+                selection_block = _pending_ui_selection_from_blocks(ui_blocks)
+                if selection_block is not None:
+                    pending_ui_selection = selection_block
+                mode_name = str(getattr(response, "mode", "") or "").strip()
+                if not mode_name:
+                    mode_name = "agent-tools" if (agent_tools_explicit and agent_tools) else "classic"
+                turn_record = ChatTurnTelemetry(
+                    turn_index=len(session_turns) + 1,
+                    timestamp=_now_iso(),
+                    question=question,
+                    answer_text=answer_text,
+                    sources=sources,
+                    warnings=warnings,
+                    trace=trace,
+                    tool_steps_total=len(trace),
+                    decisions=_extract_decisions(answer_text=answer_text, warnings=warnings),
+                    changed_files=[],
+                    has_diff=False,
+                    coding_state={"flow_id": active_flow_id},
+                )
+                session_turns.append(turn_record)
+                _render_turn_transparency(console, turn=turn_record, history=session_turns)
+                _log_chat_turn(
+                    run_logger,
+                    turn=turn_record,
+                    mode=mode_name,
+                    dir_mode=dir_mode,
+                    coding_agent=False,
+                    flow_id=active_flow_id,
+                    planning_mode=planning_mode,
+                    planning_question_source=planning_question_source,
+                    planning_question_index=planning_questions_asked_count,
+                    multiline_input=multiline_input,
+                    multiline_terminator=multiline_terminator,
+                )
+                continue
+
             # ==========================================================
             # ✅ CODING AGENT PATH (classic + dir-mode supported)
             # ==========================================================
@@ -1590,6 +1839,7 @@ def chat(
                     and not force_plan_only_response
                     and (plan_trigger_request or force_auto_execute_edit)
                 )
+                auto_execute_available = bool(execute_plan_now and hasattr(coding_agent_instance, "generate_auto_execute"))
                 request_for_generation = question
                 turn_full_auto_resume_cycles = 0
                 turn_full_auto_passes_total = 0
@@ -1604,7 +1854,7 @@ def chat(
                             continue
 
                         def _call(callbacks: list[BaseCallbackHandler]):
-                            if execute_plan_now and hasattr(coding_agent_instance, "generate_auto_execute"):
+                            if auto_execute_available:
                                 return coding_agent_instance.generate_auto_execute(
                                     request_for_generation,
                                     index_dirs=index_dirs,
@@ -1638,7 +1888,7 @@ def chat(
                         assert resolved_index_dir is not None
 
                         def _call(callbacks: list[BaseCallbackHandler]):
-                            if execute_plan_now and hasattr(coding_agent_instance, "generate_auto_execute"):
+                            if auto_execute_available:
                                 return coding_agent_instance.generate_auto_execute(
                                     request_for_generation,
                                     index_dir=resolved_index_dir,
@@ -1675,6 +1925,7 @@ def chat(
                             spinner_text="Coding…",
                             fn=_call,
                             callbacks=[cb],
+                            show_all_logs=_cli_verbose_enabled(),
                         )
                         if not (
                             execution_profile == "full-auto"
@@ -1802,7 +2053,7 @@ def chat(
                     else ""
                 )
                 answer_only_fallback = render_mode == "answer_only" and fallback_reason == "tools_only_violation"
-                answer_only_auto_execute = bool(execute_plan_now)
+                answer_only_auto_execute = bool(auto_execute_available)
                 edit_completed = bool(changed) or bool(diff.strip())
                 answer_only_no_edit = (not answer_only_fallback) and (not edit_completed) and (not answer_only_auto_execute)
 
@@ -1993,7 +2244,7 @@ def chat(
                             trace=[],
                             show_trace=False,
                         )
-                    if debug_tail:
+                    if _cli_verbose_enabled() and debug_tail:
                         console.print("\n[bold]Debug tail[/bold]\n" + debug_tail)
 
                 # Optional: if you want quick diff visibility without full diff spam:
