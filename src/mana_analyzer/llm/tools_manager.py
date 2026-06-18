@@ -2210,6 +2210,19 @@ class ToolsManagerOrchestrator:
             )
             all_warnings.extend(new_plan_warnings)
 
+        if (
+            terminal_reason == "pass_cap_reached"
+            and is_edit_task
+            and not changed_files
+        ):
+            latest_answer = self._synthesize_terminal_answer(
+                terminal_reason=terminal_reason,
+                pass_logs=all_pass_logs,
+                planner_decisions=planner_decisions,
+                toolsmanager_requests_count=toolsmanager_requests_count,
+            )
+            all_warnings.append("edit_task_pass_cap_without_changed_files")
+
         if not str(latest_answer or "").strip():
             latest_answer = self._synthesize_terminal_answer(
                 terminal_reason=terminal_reason,

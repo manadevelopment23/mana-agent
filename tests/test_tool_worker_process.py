@@ -438,6 +438,11 @@ def test_tool_worker_server_emits_tool_events(monkeypatch) -> None:
     assert "tool_start" in event_names
     assert "tool_end" in event_names
     assert emitted[-1].type == "ok"
+    events = [reply.payload for reply in emitted if reply.type == "event"]
+    start_data = next(event["data"] for event in events if event["name"] == "tool_start")
+    end_data = next(event["data"] for event in events if event["name"] == "tool_end")
+    assert start_data["event_id"] == "req-events:1"
+    assert end_data["event_id"] == "req-events:1"
 
 
 def test_tool_worker_server_blocks_duplicate_tool_name_within_turn(monkeypatch) -> None:
@@ -839,6 +844,43 @@ def test_run_tool_request_does_not_retry_tools_only_violation() -> None:
     assert excinfo.value.code == "tools_only_violation"
     # No useless retries with an identical payload.
     assert calls["count"] == 1
+
+
+def test_tool_worker_client_emits_request_events_for_tools_only_violation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = twp.ToolWorkerClient(
+        api_key="test",
+        model="fake",
+        repo_root=tmp_path,
+        project_root=tmp_path,
+    )
+    events: list[twp.WorkerEvent] = []
+
+    monkeypatch.setattr(client, "start", lambda: None)
+
+    def _raise_tools_only(*args, **kwargs):
+        _ = (args, kwargs)
+        raise twp.ToolWorkerProcessError(
+            code="tools_only_violation",
+            message="tools-only mode requires at least one successful tool call",
+        )
+
+    monkeypatch.setattr(client, "_request", _raise_tools_only)
+
+    with pytest.raises(twp.ToolWorkerProcessError):
+        client.run_tools(
+            twp.ToolRunRequest(question="Generate the full content", index_dir="/tmp/.mana/index"),
+            on_event=events.append,
+        )
+
+    assert [event.name for event in events] == ["worker_request_start", "worker_request_error"]
+    assert events[0].data["tool"] == "tool_worker"
+    assert events[1].data["tool"] == "tool_worker"
+    assert str(events[0].data.get("event_id", "")).startswith("worker-request-")
+    assert events[0].data["event_id"] == events[1].data["event_id"]
+    assert "tools_only_violation" in str(events[1].data.get("error", ""))
 
 
 def test_run_tool_request_forwards_flow_id_to_ask_agent() -> None:

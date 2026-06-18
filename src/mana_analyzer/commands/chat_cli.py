@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import threading
 
 from .cli_internal import *
@@ -820,7 +821,7 @@ def chat(
         planning_questions: list[str] = []
         planning_question_source: str = "none"
         planning_questions_asked_count: int = 0
-        active_flow_id: str | None = flow_id
+        active_flow_id: str | None = _ca_flow if isinstance(_ca_flow, str) and _ca_flow.strip() else None
         pending_conflict_question: str | None = None
         pending_ui_selection: dict[str, Any] | None = None
         pending_prechecklist: dict[str, Any] | None = None
@@ -1707,6 +1708,16 @@ def chat(
                     elif choice in {"new", "n", "2"}:
                         active_flow_id = None
                         question = pending_conflict_question
+                    elif _looks_like_edit_request(question):
+                        logger.info(
+                            "Pending flow conflict replaced by new edit request",
+                            extra={
+                                "flow_id": active_flow_id,
+                                "pending_question": pending_conflict_question,
+                                "question": question,
+                            },
+                        )
+                        active_flow_id = None
                     else:
                         console.print("[yellow]Reply 'continue' or 'new'.[/yellow]")
                         continue
@@ -1918,38 +1929,57 @@ def chat(
                                 flow_id=active_flow_id,
                             )
 
-                    while True:
-                        result, debug_tail = _run_with_live_buffer(
-                            console,
-                            spinner_text="Coding…",
-                            fn=_call,
-                            callbacks=[cb],
-                            show_all_logs=_cli_verbose_enabled(),
+                    activity = LiveToolActivity(
+                        spinner_text="Coding…",
+                        show_all_logs=_cli_verbose_enabled(),
+                    )
+                    set_active_tool_activity(activity)
+                    use_live_activity = _use_live_tool_activity(console)
+                    try:
+                        live_context = (
+                            Live(activity, console=console, refresh_per_second=12, transient=False)
+                            if use_live_activity
+                            else nullcontext()
                         )
-                        if not (
-                            execution_profile == "full-auto"
-                            and execute_plan_now
-                            and isinstance(result, dict)
-                        ):
-                            break
-                        turn_full_auto_passes_total += _ingest_full_auto_pass_payload(result)
-                        terminal_reason = str((result or {}).get("auto_execute_terminal_reason", "") or "").strip().lower()
-                        flow_from_cycle = (result or {}).get("flow_id")
-                        if isinstance(flow_from_cycle, str) and flow_from_cycle.strip():
-                            active_flow_id = flow_from_cycle.strip()
-                        if terminal_reason != "pass_cap_reached":
-                            break
-                        turn_resumed_from_pass_cap = True
-                        turn_full_auto_resume_cycles += 1
-                        turn_full_auto_pass_checkpoints_emitted += _emit_full_auto_pass_checkpoints(
-                            resume_cycles=turn_full_auto_resume_cycles
-                        )
-                        request_for_generation = _build_full_auto_resume_request(
-                            original_question=question,
-                            resume_cycle=turn_full_auto_resume_cycles,
-                            terminal_reason=terminal_reason,
-                        )
-                        continue
+                        with live_context:
+                            while True:
+                                result, debug_tail = _run_with_live_buffer(
+                                    console,
+                                    spinner_text="Coding…",
+                                    fn=_call,
+                                    callbacks=[cb],
+                                    show_all_logs=_cli_verbose_enabled(),
+                                    activity=activity,
+                                    manage_live=False,
+                                )
+                                if not (
+                                    execution_profile == "full-auto"
+                                    and execute_plan_now
+                                    and isinstance(result, dict)
+                                ):
+                                    break
+                                turn_full_auto_passes_total += _ingest_full_auto_pass_payload(result)
+                                terminal_reason = str((result or {}).get("auto_execute_terminal_reason", "") or "").strip().lower()
+                                flow_from_cycle = (result or {}).get("flow_id")
+                                if isinstance(flow_from_cycle, str) and flow_from_cycle.strip():
+                                    active_flow_id = flow_from_cycle.strip()
+                                if terminal_reason != "pass_cap_reached":
+                                    break
+                                turn_resumed_from_pass_cap = True
+                                turn_full_auto_resume_cycles += 1
+                                turn_full_auto_pass_checkpoints_emitted += _emit_full_auto_pass_checkpoints(
+                                    resume_cycles=turn_full_auto_resume_cycles
+                                )
+                                request_for_generation = _build_full_auto_resume_request(
+                                    original_question=question,
+                                    resume_cycle=turn_full_auto_resume_cycles,
+                                    terminal_reason=terminal_reason,
+                                )
+                                continue
+                    finally:
+                        set_active_tool_activity(None)
+                        if not use_live_activity:
+                            console.print(activity)
 
                 except ToolWorkerProcessError as exc:
                     _log_exception("coding_agent.generate.worker", exc)

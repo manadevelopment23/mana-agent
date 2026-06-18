@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mana_analyzer.tools.apply_patch import safe_apply_patch
+from mana_analyzer.tools.apply_patch import extract_patch_touched_files, safe_apply_patch
 
 
 def test_apply_patch_accepts_git_unified_diff_payload(tmp_path: Path) -> None:
@@ -57,3 +57,24 @@ def test_apply_patch_auto_applies_json_patch_with_py_strategy(tmp_path: Path) ->
     assert result["ok"] is True
     assert result["strategy"] == "py"
     assert target.read_text(encoding="utf-8") == "new\n"
+
+
+def test_extract_patch_touched_files_accepts_structured_payloads() -> None:
+    patch_payload = [
+        {
+            "path": "src/example.py",
+            "hunks": [
+                {
+                    "old_start": 1,
+                    "old_lines": ["old"],
+                    "new_lines": ["new"],
+                }
+            ],
+        }
+    ]
+
+    from_list = extract_patch_touched_files(patch_payload)
+    from_nested = extract_patch_touched_files({"patch": patch_payload})
+
+    assert from_list == {"ok": True, "touched_files": ["src/example.py"]}
+    assert from_nested == {"ok": True, "touched_files": ["src/example.py"]}

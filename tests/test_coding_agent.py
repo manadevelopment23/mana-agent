@@ -353,6 +353,27 @@ def test_coding_agent_tool_policy_includes_full_read_preferences(tmp_path: Path,
     assert policy["read_full_file_max_lines"] == 5000
     assert policy["read_full_file_max_chars"] == 250000
     assert policy["read_cache_scope"] == "flow"
+    assert "create_file" in policy["allowed_tools"]
+
+
+def test_coding_agent_tool_policy_treats_dotgitignore_as_single_file_edit(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload, full_auto_mode=True)
+    monkeypatch.setattr(
+        agent,
+        "_dynamic_read_policy_for_request",
+        lambda request, flow_context=None: {
+            "read_budget": 4,
+            "read_line_window": 700,
+            "dynamic_read_budget_used": True,
+            "dynamic_read_budget_fallback_used": False,
+            "dynamic_read_budget_reason": "focused file inspection",
+        },
+    )
+
+    policy = agent._tool_policy_for_request("update .gitignore add .mana")
+
+    assert policy["require_read_files"] == 1
 
 
 def test_coding_agent_progress_budgets_use_cache_aware_read_metrics(tmp_path: Path, monkeypatch) -> None:

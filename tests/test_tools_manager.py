@@ -1397,6 +1397,83 @@ def test_tools_manager_auto_advances_duplicate_planner_task_to_next_step(tmp_pat
     assert any("planner_duplicate_task_advanced" in str(item) for item in result.warnings)
 
 
+def test_tools_manager_pass_cap_unfinished_edit_does_not_surface_incidental_answer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    orchestrator = _build_orchestrator(tmp_path)
+    monkeypatch.setattr(orchestrator, "_git_status_paths", lambda: set())
+    monkeypatch.setattr(orchestrator, "_compute_effective_pass_cap", lambda **_kwargs: 1)
+
+    continue_plan = ToolsPlan(
+        objective="Update .gitignore",
+        steps=[
+            ToolsPlanStep(
+                id="s1",
+                title="Append .mana to .gitignore",
+                tool_intent="edit",
+                status="in_progress",
+            )
+        ],
+        current_step_id="s1",
+        decision="continue",
+        stop_conditions=["done"],
+        finalize_action="done",
+    )
+    monkeypatch.setattr(orchestrator, "_plan_with_source", lambda **_kwargs: (continue_plan, [], "planner"))
+    monkeypatch.setattr(
+        orchestrator,
+        "_build_batch",
+        lambda **_kwargs: (
+            ToolsManagerBatch(
+                planner_step_id="s1",
+                batch_reason="read irrelevant missing file",
+                requests=[{"question": "Read .mana/analyze.json"}],
+                continue_after=True,
+                expected_progress="inspect",
+            ),
+            [],
+        ),
+    )
+
+    class _Executor:
+        def run_batch(self, *, run_id: str, requests, on_event=None):  # noqa: ANN001
+            _ = (run_id, requests, on_event)
+            return [
+                BatchExecutionResult(
+                    request_index=0,
+                    ok=True,
+                    response={
+                        "answer": "The file .mana/analyze.json is not present in the repository.",
+                        "sources": [],
+                        "mode": "agent-tools",
+                        "trace": [{"tool_name": "read_file", "status": "error"}],
+                        "warnings": [],
+                    },
+                    backend="local",
+                )
+            ]
+
+    orchestrator.executor = _Executor()
+    result = orchestrator.run(
+        request="update .gitignore add .mana",
+        flow_context=None,
+        flow_id="flow-unfinished-edit",
+        index_dir=tmp_path / ".mana/index",
+        index_dirs=None,
+        k=8,
+        max_steps=6,
+        timeout_seconds=30,
+        tool_policy={},
+        pass_cap=1,
+    )
+
+    assert result.terminal_reason == "pass_cap_reached"
+    assert "Auto-execute ended without a direct answer" in result.answer
+    assert ".mana/analyze.json is not present" not in result.answer
+    assert any("edit_task_pass_cap_without_changed_files" in str(item) for item in result.warnings)
+
+
 def _edit_plan() -> ToolsPlan:
     return ToolsPlan(
         objective="create docs/analyze.md",

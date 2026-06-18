@@ -7,7 +7,16 @@ from typer.testing import CliRunner
 
 from mana_analyzer.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
 from mana_analyzer.commands import cli
-from mana_analyzer.commands.ui_helpers import _looks_like_edit_request, _looks_like_plan_trigger_request
+from mana_analyzer.commands.ui_helpers import (
+    LiveToolActivity,
+    _looks_like_edit_request,
+    _looks_like_plan_trigger_request,
+    _run_with_live_buffer,
+    _use_live_tool_activity,
+    emit_tool_event,
+    set_active_tool_activity,
+)
+from mana_analyzer.llm.coding_agent import CodingAgent
 
 runner = CliRunner()
 
@@ -83,6 +92,222 @@ def test_render_turn_summary_and_transparency_sections() -> None:
     assert "History" in rendered
     assert "Session History" in rendered
     assert "10:00:00" in rendered
+
+
+def test_tool_activity_buffer_renders_one_box_for_managed_request() -> None:
+    console = Console(record=True)
+
+    def _call(callbacks):
+        _ = callbacks
+        for tool_name in ("list_tools", "read_file"):
+            emit_tool_event("start", tool_name, args="{}")
+            emit_tool_event("end", tool_name, duration=0.0)
+        return {"ok": True}
+
+    result, debug_tail = _run_with_live_buffer(
+        console,
+        spinner_text="Coding…",
+        fn=_call,
+        callbacks=[],
+    )
+
+    assert result == {"ok": True}
+    assert debug_tail == ""
+    rendered = console.export_text()
+    assert rendered.count("Tool activity") == 1
+    assert "list_tools" in rendered
+    assert "read_file" in rendered
+
+
+def test_tool_activity_live_is_disabled_for_recorded_output() -> None:
+    console = Console(record=True)
+
+    assert _use_live_tool_activity(console) is False
+
+
+def test_tool_activity_can_use_live_without_fallback_duplicate(monkeypatch) -> None:
+    live_entries = 0
+
+    class _FakeLive:
+        def __init__(self, *args, **kwargs) -> None:
+            _ = (args, kwargs)
+
+        def __enter__(self):
+            nonlocal live_entries
+            live_entries += 1
+            return self
+
+        def __exit__(self, *exc_info) -> None:
+            _ = exc_info
+
+    monkeypatch.setenv("MANA_LIVE_TOOL_ACTIVITY", "1")
+    monkeypatch.setattr("mana_analyzer.commands.ui_helpers.Live", _FakeLive)
+
+    console = Console(record=True)
+
+    def _call(callbacks):
+        _ = callbacks
+        emit_tool_event("start", "list_tools", args="{}")
+        emit_tool_event("end", "list_tools", duration=0.0)
+        return {"ok": True}
+
+    result, _debug_tail = _run_with_live_buffer(
+        console,
+        spinner_text="Coding…",
+        fn=_call,
+        callbacks=[],
+    )
+
+    assert result == {"ok": True}
+    assert live_entries == 1
+    assert console.export_text().count("Tool activity") == 0
+
+
+def test_tool_activity_can_share_one_box_across_request_cycles() -> None:
+    console = Console(record=True)
+    activity = LiveToolActivity(spinner_text="Coding…")
+    set_active_tool_activity(activity)
+    try:
+        for tool_name in ("list_tools", "read_file"):
+
+            def _call(callbacks, tool_name=tool_name):
+                _ = callbacks
+                emit_tool_event("start", tool_name, args="{}")
+                emit_tool_event("end", tool_name, duration=0.0)
+                return {"tool": tool_name}
+
+            _run_with_live_buffer(
+                console,
+                spinner_text="Coding…",
+                fn=_call,
+                callbacks=[],
+                activity=activity,
+                manage_live=False,
+            )
+    finally:
+        set_active_tool_activity(None)
+        console.print(activity)
+
+    rendered = console.export_text()
+    assert rendered.count("Tool activity") == 1
+    assert "list_tools" in rendered
+    assert "read_file" in rendered
+
+
+def test_worker_request_error_renders_one_tool_activity_box_without_tool_call() -> None:
+    console = Console(record=True)
+
+    def _call(callbacks):
+        _ = callbacks
+        CodingAgent._log_worker_event(
+            {
+                "name": "worker_request_start",
+                "data": {
+                    "tool": "tool_worker",
+                    "args": "Generate the full content for a new .gitignore file",
+                },
+            }
+        )
+        CodingAgent._log_worker_event(
+            {
+                "name": "worker_request_error",
+                "data": {
+                    "tool": "tool_worker",
+                    "duration_seconds": 0.1,
+                    "error": "tools_only_violation: tools-only mode requires at least one successful tool call",
+                },
+            }
+        )
+        return {"status": "warning"}
+
+    result, _debug_tail = _run_with_live_buffer(
+        console,
+        spinner_text="Coding…",
+        fn=_call,
+        callbacks=[],
+    )
+
+    assert result == {"status": "warning"}
+    rendered = console.export_text()
+    assert rendered.count("Tool activity") == 1
+    assert "tool_worker" in rendered
+    assert "tools_only_violation" in rendered
+
+
+def test_tool_activity_collapses_duplicate_tool_worker_rows() -> None:
+    console = Console(record=True)
+
+    def _call(callbacks):
+        _ = callbacks
+        for _index in range(3):
+            emit_tool_event(
+                "start",
+                "tool_worker",
+                args="Read the content of Front/.gitignore",
+            )
+            emit_tool_event("end", "tool_worker", duration=0.1)
+        return {"ok": True}
+
+    _run_with_live_buffer(
+        console,
+        spinner_text="Coding…",
+        fn=_call,
+        callbacks=[],
+    )
+
+    rendered = console.export_text()
+    assert rendered.count("Tool activity") == 1
+    assert rendered.count("tool_worker") == 1
+    assert "3 ok" in rendered
+    assert "Read the content of Front/.gitignore" in rendered
+
+
+def test_tool_activity_keeps_repeated_inner_tool_rows_visible() -> None:
+    console = Console(record=True)
+
+    def _call(callbacks):
+        _ = callbacks
+        for event_id in ("read-1", "read-2"):
+            emit_tool_event("start", "read_file", args='{"path":"Front/.gitignore"}', event_id=event_id)
+            emit_tool_event("end", "read_file", duration=0.0, event_id=event_id)
+        return {"ok": True}
+
+    _run_with_live_buffer(
+        console,
+        spinner_text="Coding…",
+        fn=_call,
+        callbacks=[],
+    )
+
+    rendered = console.export_text()
+    assert rendered.count("read_file") == 2
+
+
+def test_tool_activity_failed_tool_error_is_not_summarized() -> None:
+    console = Console(record=True, width=100)
+    long_error = (
+        "1 validation error for apply_patch patch\n"
+        "Input should be a valid string, got dict instead\n"
+        "See https://errors.pydantic.dev/ for details"
+    )
+
+    def _call(callbacks):
+        _ = callbacks
+        emit_tool_event("start", "apply_patch", args="{}")
+        emit_tool_event("error", "apply_patch", error=long_error)
+        return {"status": "warning"}
+
+    _run_with_live_buffer(
+        console,
+        spinner_text="Coding…",
+        fn=_call,
+        callbacks=[],
+    )
+
+    rendered = console.export_text()
+    assert "apply_patch" in rendered
+    assert "Input should be a valid string, got dict instead" in rendered
+    assert "See https://errors.pydantic.dev/ for details" in rendered
 
 
 def test_render_turn_transparency_preserves_multiline_command_preview() -> None:

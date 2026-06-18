@@ -801,6 +801,27 @@ class ToolWorkerClient:
     ) -> ToolRunResponse:
         logger.info(f"[ToolWorkerClient.run_tools] Starting with question: {request.question[:100]}...")
         logger.debug(f"[ToolWorkerClient.run_tools] Full request: {request.model_dump()}")
+        request_started = time.time()
+        request_event_id = f"worker-request-{uuid.uuid4().hex}"
+
+        def _emit_request_event(name: str, data: dict[str, Any] | None = None) -> None:
+            if on_event is None:
+                return
+            try:
+                on_event(
+                    WorkerEvent(
+                        name=name,
+                        message=name.replace("_", " "),
+                        data={"tool": "tool_worker", "event_id": request_event_id, **(data or {})},
+                    )
+                )
+            except Exception:
+                logger.debug("Failed to process worker request event", exc_info=True)
+
+        _emit_request_event(
+            "worker_request_start",
+            {"args": request.question[:160]},
+        )
         
         self.start()
         payload_dict = _strip_banned_keys(request.model_dump())
@@ -824,6 +845,10 @@ class ToolWorkerClient:
                 )
                 logger.info(f"[ToolWorkerClient.run_tools] Received response with keys: {list(response_payload.keys())}")
                 logger.debug(f"[ToolWorkerClient.run_tools] Response trace count: {len(response_payload.get('trace', []))}")
+                _emit_request_event(
+                    "worker_request_end",
+                    {"duration_seconds": round(max(0.0, time.time() - request_started), 3)},
+                )
                 break
 
             except ToolWorkerProcessError as exc:
@@ -840,6 +865,13 @@ class ToolWorkerClient:
                         policy_repaired = True
                         continue
                     # Nothing repairable — surface the structured policy error.
+                    _emit_request_event(
+                        "worker_request_error",
+                        {
+                            "duration_seconds": round(max(0.0, time.time() - request_started), 3),
+                            "error": f"{exc.code}: {exc}",
+                        },
+                    )
                     raise
 
                 if self._is_banned_param_error(exc):
@@ -849,6 +881,13 @@ class ToolWorkerClient:
                         exc,
                     )
                     self._restart()
+                    _emit_request_event(
+                        "worker_request_error",
+                        {
+                            "duration_seconds": round(max(0.0, time.time() - request_started), 3),
+                            "error": f"{exc.code}: {exc}",
+                        },
+                    )
                     raise
 
                 if self._can_retry(exc):
@@ -858,7 +897,21 @@ class ToolWorkerClient:
                         exc,
                     )
                     self._restart()
+                    _emit_request_event(
+                        "worker_request_error",
+                        {
+                            "duration_seconds": round(max(0.0, time.time() - request_started), 3),
+                            "error": f"{exc.code}: {exc}",
+                        },
+                    )
                     raise
+                _emit_request_event(
+                    "worker_request_error",
+                    {
+                        "duration_seconds": round(max(0.0, time.time() - request_started), 3),
+                        "error": f"{exc.code}: {exc}",
+                    },
+                )
                 raise
 
         return ToolRunResponse.model_validate(response_payload)
@@ -1224,6 +1277,8 @@ class _WorkerToolEventCallback(BaseCallbackHandler):
         self._emit_reply = emit_reply
         self._tool: str | None = None
         self._t0: float = 0.0
+        self._event_id: str | None = None
+        self._event_counter = 0
         logger.debug(f"[_WorkerToolEventCallback] Initialized for request {request_id}")
 
     def _emit(self, *, name: str, message: str, data: dict[str, Any] | None = None) -> None:
@@ -1241,32 +1296,46 @@ class _WorkerToolEventCallback(BaseCallbackHandler):
         tool = str((serialized or {}).get("name") or "tool")
         self._tool = tool
         self._t0 = time.time()
+        self._event_counter += 1
+        self._event_id = f"{self._request_id}:{self._event_counter}"
         args = (input_str or "").strip().replace("\n", " ")
         if len(args) > 160:
             args = args[:160] + "…"
         msg = f"TOOL start: {tool}"
         if args:
             msg += f" | args: {args}"
-        self._emit(name="tool_start", message=msg, data={"tool": tool, "args": args})
+        self._emit(
+            name="tool_start",
+            message=msg,
+            data={"tool": tool, "args": args, "event_id": self._event_id},
+        )
 
     def on_tool_end(self, output: str, **kwargs: Any) -> None:
         _ = (output, kwargs)
         tool = self._tool or "tool"
+        event_id = self._event_id
         dt = max(0.0, time.time() - self._t0)
         self._tool = None
+        self._event_id = None
         self._emit(
             name="tool_end",
             message=f"TOOL end: {tool} ({dt:0.1f}s)",
-            data={"tool": tool, "duration_seconds": round(dt, 3)},
+            data={"tool": tool, "duration_seconds": round(dt, 3), "event_id": event_id},
         )
 
     def on_tool_error(self, error: BaseException, **kwargs: Any) -> None:
         _ = kwargs
         tool = self._tool or "tool"
+        event_id = self._event_id
         self._tool = None
+        self._event_id = None
         err = str(error).strip()
         msg = f"TOOL error: {tool}" + (f" - {err}" if err else "")
-        self._emit(name="tool_error", message=msg, data={"tool": tool, "error": err})
+        self._emit(
+            name="tool_error",
+            message=msg,
+            data={"tool": tool, "error": err, "event_id": event_id},
+        )
 
 
 # ---------------------------------------------------------------------------

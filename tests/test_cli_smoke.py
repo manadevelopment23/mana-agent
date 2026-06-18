@@ -2789,6 +2789,67 @@ def test_chat_full_auto_conflict_is_auto_continued(monkeypatch, tmp_path: Path) 
     assert "This request appears to diverge from the active flow." not in result.stdout
 
 
+def test_chat_conflict_followup_edit_request_starts_new_flow(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        calls: list[dict[str, object]] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-existing"
+            _FakeCodingAgent.calls = []
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = request
+            return flow_id == "flow-existing"
+
+        def generate(self, question: str, **kwargs: object) -> dict:
+            _FakeCodingAgent.calls.append(
+                {
+                    "question": question,
+                    "flow_id": kwargs.get("flow_id"),
+                }
+            )
+            self.active = "flow-new"
+            return {
+                "answer": "updated",
+                "changed_files": [],
+                "warnings": [],
+                "diff": "",
+                "flow_id": self.active,
+                "plan": {"objective": "new request", "steps": []},
+                "progress": {"phase": "answer", "why": "done", "tool_call_allowed": False},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+        def generate_dir_mode(self, *args: object, **kwargs: object) -> dict:
+            return self.generate(*args, **kwargs)
+
+    monkeypatch.setattr("mana_analyzer.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_analyzer.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_analyzer.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    request = "add .mana to .gitignore"
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input=f"{request}\n{request}\nquit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "This request appears to diverge from the active flow." in result.stdout
+    assert "Reply 'continue' or 'new'." not in result.stdout
+    assert _FakeCodingAgent.calls == [{"question": request, "flow_id": None}]
+
+
 def test_chat_full_auto_pass_cap_auto_resumes_until_completion(monkeypatch, tmp_path: Path) -> None:
     class _FakeAskService(FakeAskService):
         def __init__(self) -> None:

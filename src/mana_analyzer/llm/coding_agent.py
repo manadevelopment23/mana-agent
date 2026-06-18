@@ -82,6 +82,11 @@ class CodingAgent:
     )
     _WEB_INTENT_TOKENS = ("latest", "internet", "online", "web", "news", "search web")
     _EXPLICIT_FILE_RE = re.compile(r"(?i)\b([A-Za-z0-9_\-./]+\.[A-Za-z0-9_]+)\b")
+    _EXPLICIT_DOTFILE_RE = re.compile(
+        r"(?i)(?<![\w/.-])"
+        r"(\.(?:gitignore|dockerignore|env|env\.[A-Za-z0-9_-]+|npmrc|yarnrc|prettierrc|eslintrc|flake8))"
+        r"(?![\w/.-])"
+    )
     _AMBIGUOUS_FOLLOWUP_RE = re.compile(
         r"(?i)^\s*(yes|yep|ok|okay|sure|continue|go|proceed|begin|start|do it|done|next)\s*[/!.]?\s*$"
     )
@@ -949,15 +954,16 @@ class CodingAgent:
                 data = maybe_data
 
         tool = str(data.get("tool", "") or "tool")
-        if name == "tool_start":
-            emit_tool_event("start", tool, args=str(data.get("args", "") or "").strip())
+        event_id = str(data.get("event_id", "") or "").strip() or None
+        if name in {"tool_start", "worker_request_start"}:
+            emit_tool_event("start", tool, args=str(data.get("args", "") or "").strip(), event_id=event_id)
             return
-        if name == "tool_end":
+        if name in {"tool_end", "worker_request_end"}:
             dt = data.get("duration_seconds")
-            emit_tool_event("end", tool, duration=dt if isinstance(dt, (int, float)) else None)
+            emit_tool_event("end", tool, duration=dt if isinstance(dt, (int, float)) else None, event_id=event_id)
             return
-        if name == "tool_error":
-            emit_tool_event("error", tool, error=str(data.get("error", "") or "").strip())
+        if name in {"tool_error", "worker_request_error"}:
+            emit_tool_event("error", tool, error=str(data.get("error", "") or "").strip(), event_id=event_id)
             return
 
     def _plan_checklist_with_source(
@@ -1351,6 +1357,11 @@ class CodingAgent:
             for match in self._EXPLICIT_FILE_RE.finditer(request or "")
             if match.group(1).strip()
         }
+        explicit_files.update(
+            match.group(1).strip()
+            for match in self._EXPLICIT_DOTFILE_RE.finditer(request or "")
+            if match.group(1).strip()
+        )
         # Single-target file edits (e.g. README.md) should not be blocked by a 2-file gate.
         if len(explicit_files) == 1:
             require_read_files = 1
@@ -1375,6 +1386,7 @@ class CodingAgent:
                 "verify_project",
                 "tool_contracts",
                 "apply_patch",
+                "create_file",
                 "write_file",
                 "search_internet",
             ],

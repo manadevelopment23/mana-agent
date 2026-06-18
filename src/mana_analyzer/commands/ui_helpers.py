@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -83,30 +84,36 @@ class RichToolCallbackHandler(BaseCallbackHandler):
         self.show_inputs = show_inputs
         self._tool: str | None = None
         self._t0: float = 0.0
+        self._event_id: str | None = None
 
     def on_tool_start(self, serialized, input_str: str, **kwargs) -> None:
         name = (serialized or {}).get("name") or "tool"
         self._tool = str(name)
         self._t0 = time.time()
+        self._event_id = f"callback-{uuid.uuid4().hex}"
         args = ""
         if self.show_inputs and input_str:
             args = input_str.strip().replace("\n", " ")
-        emit_tool_event("start", self._tool, args=args)
+        emit_tool_event("start", self._tool, args=args, event_id=self._event_id)
 
     def on_tool_end(self, output: str, **kwargs) -> None:
         tool = self._tool or "tool"
         dt = max(0.0, time.time() - self._t0)
+        event_id = self._event_id
         self._tool = None
-        emit_tool_event("end", tool, duration=dt)
+        self._event_id = None
+        emit_tool_event("end", tool, duration=dt, event_id=event_id)
 
     def on_tool_error(self, error: BaseException, **kwargs) -> None:
         tool = self._tool or "tool"
+        event_id = self._event_id
         self._tool = None
-        emit_tool_event("error", tool, error=str(error))
+        self._event_id = None
+        emit_tool_event("error", tool, error=str(error), event_id=event_id)
 
 
 # -----------------------------------------
-# Live tool-activity panel
+# Tool-activity panel
 # -----------------------------------------
 
 # Glyph + accent palette per tool family, so the panel reads at a glance.
@@ -137,12 +144,7 @@ def _tool_glyph(tool: str) -> str:
 
 
 class LiveToolActivity:
-    """Render an attractive, self-updating panel of tool calls inside a Live.
-
-    Pass the instance directly to ``rich.live.Live`` — ``__rich__`` is called on
-    every refresh, so mutating state (via :meth:`handle`) animates the spinner
-    and reveals new rows without manual ``live.update`` calls.
-    """
+    """Collect tool calls and render the tool-activity panel."""
 
     def __init__(
         self,
@@ -156,7 +158,8 @@ class LiveToolActivity:
         self.max_rows = max(1, int(max_rows))
         self._spinner = Spinner("dots", text=Text(spinner_text, style="cyan"))
         self._rows: deque[dict[str, Any]] = deque(maxlen=200)
-        self._running: dict[str, tuple[float, str]] = {}
+        self._running: dict[str, dict[str, Any]] = {}
+        self._deduped_rows: dict[str, dict[str, Any]] = {}
         self._log_lines: deque[str] = deque(maxlen=14)
         self._ok = 0
         self._failed = 0
@@ -170,27 +173,78 @@ class LiveToolActivity:
         args: str = "",
         duration: float | None = None,
         error: str = "",
+        event_id: str | None = None,
     ) -> None:
         tool = str(tool or "tool")
+        args = str(args or "")
+        key = self._event_key(tool, args, event_id)
         if kind == "start":
-            self._running[tool] = (time.time(), str(args or ""))
+            self._running[key] = {"tool": tool, "started": time.time(), "args": args}
         elif kind == "end":
-            self._finish(tool, duration=duration, ok=True)
+            key = self._matching_running_key(key, tool, args, event_id)
+            self._finish(key, tool, duration=duration, ok=True)
         elif kind == "error":
-            self._finish(tool, duration=duration, ok=False, error=str(error or ""))
+            key = self._matching_running_key(key, tool, args, event_id)
+            self._finish(key, tool, duration=duration, ok=False, error=str(error or ""))
 
-    def _finish(self, tool: str, *, duration: float | None, ok: bool, error: str = "") -> None:
-        start = self._running.pop(tool, None)
+    @staticmethod
+    def _event_key(tool: str, args: str, event_id: str | None) -> str:
+        explicit_id = str(event_id or "").strip()
+        if explicit_id:
+            return explicit_id
+        return f"{str(tool or 'tool').strip()}:{str(args or '').strip()}"
+
+    @staticmethod
+    def _row_dedup_key(tool: str, args: str, ok: bool, error: str = "") -> str | None:
+        if str(tool or "").strip() != "tool_worker":
+            return None
+        detail = str(error if not ok and error else args or "").strip()
+        if not detail:
+            detail = str(tool or "tool_worker").strip()
+        return f"tool_worker:{ok}:{detail}"
+
+    def _matching_running_key(
+        self,
+        key: str,
+        tool: str,
+        args: str,
+        event_id: str | None,
+    ) -> str:
+        if key in self._running or event_id or args:
+            return key
+        for running_key, running in reversed(list(self._running.items())):
+            if str(running.get("tool", "") or "") == tool:
+                return running_key
+        return key
+
+    def _finish(
+        self,
+        key: str,
+        tool: str,
+        *,
+        duration: float | None,
+        ok: bool,
+        error: str = "",
+    ) -> None:
+        start = self._running.pop(key, None)
         if duration is None and start is not None:
-            duration = max(0.0, time.time() - start[0])
-        args = start[1] if start is not None else ""
+            duration = max(0.0, time.time() - float(start["started"]))
+        args = str(start.get("args", "")) if start is not None else ""
         if ok:
             self._ok += 1
         else:
             self._failed += 1
-        self._rows.append(
-            {"tool": tool, "duration": duration, "ok": ok, "args": args, "error": error}
-        )
+        row = {"tool": tool, "duration": duration, "ok": ok, "args": args, "error": error, "count": 1}
+        dedup_key = self._row_dedup_key(tool, args, ok, error)
+        if dedup_key is not None:
+            existing = self._deduped_rows.get(dedup_key)
+            if existing is not None and any(existing is item for item in self._rows):
+                count = int(existing.get("count", 1) or 1) + 1
+                existing.update(row)
+                existing["count"] = count
+                return
+            self._deduped_rows[dedup_key] = row
+        self._rows.append(row)
 
     def add_log_line(self, line: str) -> None:
         text = str(line or "").strip()
@@ -199,10 +253,12 @@ class LiveToolActivity:
 
     # -- rendering --------------------------------------------------------
     def _status_renderable(self):
-        running = list(self._running.items())
+        running = list(self._running.values())
         if running:
-            tool, (t0, args) = running[-1]
-            elapsed = max(0.0, time.time() - t0)
+            current = running[-1]
+            tool = str(current.get("tool", "") or "tool")
+            args = str(current.get("args", "") or "")
+            elapsed = max(0.0, time.time() - float(current.get("started", time.time())))
             label = Text()
             label.append(f"{_tool_glyph(tool)} ", style="")
             label.append(tool, style="bold cyan")
@@ -241,15 +297,30 @@ class LiveToolActivity:
                     if isinstance(duration, (int, float))
                     else "·"
                 )
-                detail = row.get("args") or ""
+                detail = str(row.get("args") or "")
                 if not ok and row.get("error"):
                     detail = str(row["error"])
+                detail_renderable: str | Text = ""
+                if detail:
+                    if ok:
+                        detail_renderable = _summary(detail, 70)
+                    else:
+                        detail_renderable = Text(detail, style="red")
+                count = int(row.get("count", 1) or 1)
+                if count > 1:
+                    if detail_renderable:
+                        if isinstance(detail_renderable, Text):
+                            detail_renderable.append(f"  ×{count}", style="dim")
+                        else:
+                            detail_renderable = f"{detail_renderable}  ×{count}"
+                    else:
+                        detail_renderable = f"×{count}"
                 table.add_row(
                     _tool_glyph(str(row.get("tool", ""))),
                     status,
                     str(row.get("tool", "")),
                     dur_text,
-                    _summary(detail, 70) if detail else "",
+                    detail_renderable,
                 )
             parts.append(table)
 
@@ -267,8 +338,37 @@ class LiveToolActivity:
         )
 
 
-# Currently-active activity panel, set while a Live tool run is in progress.
+# Currently-active activity panel, set while a tool run is in progress.
 _ACTIVE_TOOL_ACTIVITY: LiveToolActivity | None = None
+
+
+def _env_flag(name: str) -> bool | None:
+    value = str(os.getenv(name, "") or "").strip().lower()
+    if not value:
+        return None
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _use_live_tool_activity(console: Console) -> bool:
+    """Return true when Rich Live can update one terminal region cleanly."""
+    override = _env_flag("MANA_LIVE_TOOL_ACTIVITY")
+    if override is not None:
+        return override
+    if os.getenv("CI"):
+        return False
+    if str(os.getenv("TERM", "") or "").strip().lower() in {"", "dumb"}:
+        return False
+    if bool(getattr(console, "record", False)):
+        return False
+    if bool(getattr(console, "is_jupyter", False)):
+        return False
+    return bool(getattr(console, "is_terminal", False)) and bool(
+        getattr(console, "is_interactive", False)
+    )
 
 
 def set_active_tool_activity(activity: LiveToolActivity | None) -> None:
@@ -284,12 +384,13 @@ def emit_tool_event(
     args: str = "",
     duration: float | None = None,
     error: str = "",
+    event_id: str | None = None,
 ) -> None:
     """Send a tool start/end/error event to the active live panel, if any."""
     activity = _ACTIVE_TOOL_ACTIVITY
     if activity is None:
         return
-    activity.handle(kind, tool, args=args, duration=duration, error=error)
+    activity.handle(kind, tool, args=args, duration=duration, error=error, event_id=event_id)
 
 
 # -----------------------------------------
@@ -615,14 +716,16 @@ def _run_with_live_buffer(
     fn,  # callable
     callbacks: list[BaseCallbackHandler] | None = None,
     show_all_logs: bool = False,
+    activity: LiveToolActivity | None = None,
+    manage_live: bool = True,
 ) -> tuple[object, str]:
     """
-    Runs fn() while streaming logs into a Live panel.
+    Runs fn() while collecting logs into one tool-activity panel.
     Returns (result, debug_tail_text).
     """
-    activity = LiveToolActivity(spinner_text=spinner_text, show_all_logs=show_all_logs)
+    live_activity = activity or LiveToolActivity(spinner_text=spinner_text, show_all_logs=show_all_logs)
     log_buf = LiveLogBuffer(
-        activity,
+        live_activity,
         capacity=250,
         show_lines=14,
         show_all_logs=show_all_logs,
@@ -632,14 +735,24 @@ def _run_with_live_buffer(
     # capture everything (root) so verbose mode can surface internal debug logs
     root_logger = logging.getLogger()
     root_logger.addHandler(log_buf)
-    set_active_tool_activity(activity)
+    if manage_live:
+        set_active_tool_activity(live_activity)
 
     try:
-        with Live(activity, console=console, refresh_per_second=12, transient=True):
+        if manage_live:
+            if _use_live_tool_activity(console):
+                with Live(live_activity, console=console, refresh_per_second=12, transient=False):
+                    result = fn(callbacks=callbacks or [])
+            else:
+                result = fn(callbacks=callbacks or [])
+        else:
             result = fn(callbacks=callbacks or [])
     finally:
         root_logger.removeHandler(log_buf)
-        set_active_tool_activity(None)
+        if manage_live:
+            set_active_tool_activity(None)
+            if not _use_live_tool_activity(console):
+                console.print(live_activity)
 
     return result, log_buf.tail(35).strip()
 

@@ -351,6 +351,38 @@ def _parse_json_patch(text: str) -> tuple[list[dict[str, Any]], list[_PatchFile]
     return data, parsed, err
 
 
+def _normalise_patch_payload(payload: Any) -> tuple[str, str]:
+    """Convert common tool-call patch shapes into patch text."""
+
+    if payload is None:
+        return "", "Error: missing patch content (expected `patch` parameter)."
+
+    if isinstance(payload, str):
+        return payload, ""
+
+    if isinstance(payload, bytes):
+        try:
+            return payload.decode("utf-8"), ""
+        except UnicodeDecodeError as exc:
+            return "", f"Error: invalid patch bytes: {exc}"
+
+    if isinstance(payload, dict):
+        for key in ("patch", "diff", "input"):
+            if key in payload and payload[key] is not None:
+                return _normalise_patch_payload(payload[key])
+        return json.dumps(payload)
+
+    if isinstance(payload, list):
+        return json.dumps(payload), ""
+
+    return (
+        "",
+        "Error: invalid patch content type "
+        f"{type(payload).__name__} (expected string, JSON patch list/dict, "
+        "or wrapper with `patch`, `diff`, or `input`).",
+    )
+
+
 def _parse_unified_range(value: str) -> tuple[int, int]:
     raw = value.strip()
     if "," in raw:
@@ -450,10 +482,13 @@ def _parsed_touched_files(parsed_files: Sequence[_PatchFile]) -> list[str]:
     return out
 
 
-def extract_patch_touched_files(patch: str) -> dict[str, Any]:
+def extract_patch_touched_files(patch: Any) -> dict[str, Any]:
     """Return touched files for JSON or unified diff patch text without writing."""
 
-    patch = _strip_markdown_fences(str(patch or ""))
+    patch, normalise_err = _normalise_patch_payload(patch)
+    if normalise_err:
+        return {"ok": False, "touched_files": [], "error": normalise_err}
+    patch = _strip_markdown_fences(patch)
     parsed_files: list[_PatchFile] = []
     error = ""
     if _looks_like_unified_diff_payload(patch):
@@ -1190,22 +1225,26 @@ def build_apply_patch_tool(
         from langchain.tools import StructuredTool  # type: ignore[import-untyped]
 
     def _tool(
-        patch: str | None = None,
+        patch: Any | None = None,
+        diff: Any | None = None,
+        input: Any | None = None,  # noqa: A002 - tool-call compatibility alias
         check_only: bool = False,
         strategy_hint: str = "auto",
         strict_strategy: bool = False,
     ) -> dict[str, Any]:
-        if patch is None:
+        raw_patch = patch if patch is not None else (diff if diff is not None else input)
+        patch_text, normalise_err = _normalise_patch_payload(raw_patch)
+        if normalise_err:
             return ApplyPatchResult(
                 ok=False,
                 touched_files=[],
                 check_only=check_only,
                 strategy_requested=str(strategy_hint or "auto"),
-                error="Error: missing patch content (expected `patch` parameter).",
+                error=normalise_err,
             ).to_dict()
         return safe_apply_patch(
             repo_root=repo_root,
-            patch=patch,
+            patch=patch_text,
             allowed_prefixes=allowed_prefixes,
             check_only=check_only,
             strategy_hint=str(strategy_hint or "auto"),
