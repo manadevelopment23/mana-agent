@@ -116,6 +116,28 @@ def _fixed_checklist() -> FlowChecklist:
     )
 
 
+def test_checklist_requires_edit_recognizes_mutation_tools() -> None:
+    # Edit intent is recognized from the planner's planned tools, not the text.
+    edit_plan = FlowChecklist(
+        objective="add docs",
+        steps=[
+            FlowStep(id="s1", title="Discover", reason="r", requires_tools=["semantic_search", "read_file"]),
+            FlowStep(id="s2", title="Apply", reason="r", requires_tools=["create_file", "write_file"]),
+        ],
+    )
+    readonly_plan = FlowChecklist(
+        objective="explain config",
+        steps=[
+            FlowStep(id="s1", title="Discover", reason="r", requires_tools=["semantic_search"]),
+            FlowStep(id="s2", title="Read", reason="r", requires_tools=["read_file"]),
+        ],
+    )
+    assert CodingAgent._checklist_requires_edit(edit_plan) is True
+    assert CodingAgent._checklist_requires_edit(readonly_plan) is False
+    # No checklist (planner unavailable): err toward acting.
+    assert CodingAgent._checklist_requires_edit(None) is True
+
+
 def _build_agent(
     tmp_path: Path,
     monkeypatch,

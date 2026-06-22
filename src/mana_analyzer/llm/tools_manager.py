@@ -1773,6 +1773,7 @@ class QueueManager:
         flow_id: str | None = None,
         run_id: str | None = None,
         max_no_progress_passes: int = 2,
+        requires_edit: bool | None = None,
     ) -> AutoExecuteResult:
         from mana_analyzer.llm.agent_work_queue import (
             AgentWorkQueue,
@@ -1830,7 +1831,14 @@ class QueueManager:
             trace.extend(result.trace)
             return result
 
-        sniffer = CodingAgentSniffer(repo_root=self.repo_root, relevant=_relevant)
+        # Whether to finalize with an edit + verify is recognized upstream by the
+        # coding agent's planner (the LLM checklist) and passed in as requires_edit.
+        sniffer = CodingAgentSniffer(
+            repo_root=self.repo_root,
+            request=request,
+            emit_edit=requires_edit,
+            relevant=_relevant,
+        )
         runner = WorkQueueRunner(
             queue=queue,
             execute=execute,

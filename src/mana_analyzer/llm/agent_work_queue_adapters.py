@@ -201,13 +201,17 @@ class CodingAgentSniffer:
         *,
         repo_root: Path,
         request: str = "",
-        emit_edit: bool = False,
+        emit_edit: bool | None = None,
         max_reads: int = 40,
         max_follow_per_read: int = 4,
         relevant: Callable[[str], bool] | None = None,
     ) -> None:
         self._repo_root = Path(repo_root).resolve()
         self._request = str(request or "").strip()
+        # Whether this run should end in an edit + verify is *recognized* by the
+        # coding agent's planner (the LLM checklist), not guessed from keywords
+        # in the request. The caller passes that decision down as ``emit_edit``;
+        # when it is unknown (no planner signal) we do not force a mutation.
         self._emit_edit = bool(emit_edit)
         self._max_reads = int(max_reads)
         self._max_follow_per_read = int(max_follow_per_read)

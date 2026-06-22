@@ -187,6 +187,60 @@ def test_sniffer_emits_edit_and_verify_after_discovery(tmp_path: Path):
     assert all(it.kind != "edit" for it in again)
 
 
+def test_sniffer_without_edit_signal_does_not_finalize(tmp_path: Path):
+    # No emit_edit signal from the planner: never invent an edit from request text.
+    sniffer = CodingAgentSniffer(repo_root=tmp_path, request="add a docs folder and describe the project")
+    board = TaskBoard(queue=AgentWorkQueue())
+    search = WorkItem(kind="search", tool_name="repo_search", tool_args={"query": "x"})
+    new_items = sniffer.on_result(search, WorkResult(ok=True, files_discovered=[]), board=board)
+    assert all(it.kind not in {"edit", "verify"} for it in new_items)
+
+
+def test_queue_manager_runs_edit_and_verify_for_mutating_request(tmp_path: Path):
+    """End-to-end through the LIVE path (QueueManager.run), with a fake worker."""
+    from mana_analyzer.llm.tool_worker_process import ToolRunResponse
+    from mana_analyzer.llm.tools_manager import QueueManager
+
+    (tmp_path / "found.py").write_text("x = 1\n")
+
+    class _FakeWorker:
+        def __init__(self) -> None:
+            self.questions: list[str] = []
+
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            self.questions.append(request.question)
+            if (request.tool_name or "") == "repo_search":
+                # Surface a real candidate file so the sniffer emits a read.
+                return ToolRunResponse(
+                    answer="candidate: found.py",
+                    sources=[],
+                    mode="agent-tools",
+                    trace=[{"tool_name": "repo_search", "status": "ok"}],
+                    warnings=[],
+                )
+            return ToolRunResponse(
+                answer="ok",
+                sources=[],
+                mode="agent-tools",
+                trace=[{"tool_name": request.tool_name or "tool", "status": "ok"}],
+                warnings=[],
+            )
+
+    worker = _FakeWorker()
+    mgr = QueueManager(worker_client=worker, repo_root=tmp_path)
+    # requires_edit is the planner-recognized signal threaded down from CodingAgent.
+    result = mgr.run(
+        request="add a docs folder and describe the project",
+        index_dir=str(tmp_path),
+        requires_edit=True,
+    )
+
+    joined = "\n".join(worker.questions)
+    assert "Apply concrete changes" in joined  # the edit job ran
+    assert "Verify the changes" in joined       # the verify job ran (after edit)
+    assert result.execution_backend == "work_queue"
+
+
 def test_sniffer_skips_edit_for_non_mutating_request(tmp_path: Path):
     (tmp_path / "found.py").write_text("x = 1\n")
     sniffer = CodingAgentSniffer(repo_root=tmp_path, request="how does x work?", emit_edit=False)

@@ -571,10 +571,11 @@ class CodingAgent:
             index_dir=index_dir,
             flow_id=flow_id,
         )
+        planned_checklist, _plan_warnings = self._plan_checklist(request, flow_context=flow_id)
         sniffer = CodingAgentSniffer(
             repo_root=self.repo_root,
             request=request,
-            emit_edit=self._looks_like_edit_request(request),
+            emit_edit=self._checklist_requires_edit(planned_checklist),
             max_reads=int(max_reads),
             relevant=_relevant,
         )
@@ -647,6 +648,7 @@ class CodingAgent:
                 "prechecklist": {"objective": "", "steps": [], "source": "deterministic_fallback"},
                 "prechecklist_source": "deterministic_fallback",
                 "prechecklist_warning": "Planner failed to produce a preview checklist.",
+                "requires_edit": True,
                 "warnings": warnings,
             }
 
@@ -677,6 +679,7 @@ class CodingAgent:
             "prechecklist": prechecklist,
             "prechecklist_source": source,
             "prechecklist_warning": prechecklist_warning,
+            "requires_edit": self._checklist_requires_edit(checklist),
             "warnings": warnings,
         }
 
@@ -759,6 +762,7 @@ class CodingAgent:
             except Exception as exc:
                 warnings.append(f"coding memory setup failed: {exc}")
 
+        requires_edit = bool(preview_payload.get("requires_edit", True))
         tool_policy = self._tool_policy_for_request(request, flow_context=effective_flow_context)
         try:
             _ = callbacks
@@ -772,6 +776,7 @@ class CodingAgent:
                 timeout_seconds=int(timeout_seconds),
                 tool_policy=tool_policy,
                 pass_cap=max(1, int(pass_cap)),
+                requires_edit=requires_edit,
                 on_event=self._log_worker_event,
                 flow_id=active_flow_id,
                 run_id=run_id,
@@ -1144,6 +1149,27 @@ class CodingAgent:
     def _plan_checklist(self, request: str, *, flow_context: str | None = None) -> tuple[FlowChecklist | None, list[str]]:
         checklist, warnings, _source = self._plan_checklist_with_source(request, flow_context=flow_context)
         return checklist, warnings
+
+    # Mutation tools whose presence in a planned step means the run must end in
+    # an actual edit (and verify), not just discovery/reads.
+    _MUTATION_TOOLS = frozenset({"apply_patch", "create_file", "write_file"})
+
+    @classmethod
+    def _checklist_requires_edit(cls, checklist: "FlowChecklist | None") -> bool:
+        """Recognize edit intent from the planner's checklist, not request text.
+
+        The planner LLM decides whether the request needs changes by listing the
+        tools each step needs; if any step plans a mutation tool, this run should
+        finalize with an edit + verify. When no checklist is available we err
+        toward acting rather than silently refusing to edit.
+        """
+        if checklist is None:
+            return True
+        for step in checklist.steps:
+            tools = {str(tool).strip().lower() for tool in (step.requires_tools or [])}
+            if tools & cls._MUTATION_TOOLS:
+                return True
+        return False
 
     @staticmethod
     def _extract_payload(text: str) -> dict[str, Any] | None:

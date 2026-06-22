@@ -237,10 +237,6 @@ mana-analyzer chat --help
 The GitHub Actions workflow currently installs the package on Python 3.12 and
 runs `pytest -q`.
 
-## Documentation
-
-
-
 ## License
 
 MIT License. See [LICENSE](./LICENSE).
