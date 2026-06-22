@@ -1369,6 +1369,7 @@ class _ToolWorkerServer:
         self._ask_agent: AskAgent | None = None
         self._tools_only_strict = True
         self._turn_tool_state = TurnToolExecutionState()
+        self._current_turn_id: str | None = None
 
     def run(self) -> int:
         logger.info("[_ToolWorkerServer] Starting worker server...")
@@ -1487,6 +1488,15 @@ class _ToolWorkerServer:
             tool_name = str(req.tool_name or "").strip()
             if tool_name:
                 retry_attempt = max(0, int(req.retry_attempt or 0))
+                # Scope duplicate-detection to a single turn (request_id). A new
+                # turn resets the guard; otherwise the first read_file/etc. would
+                # claim the tool name for the whole worker-process lifetime and
+                # every later work item with the same tool_name would be wrongly
+                # rejected as a duplicate. Per-fingerprint dedup already happens
+                # in the queue; this only catches a tool repeated within one turn.
+                if env.request_id != self._current_turn_id:
+                    self._current_turn_id = env.request_id
+                    self._turn_tool_state.reset()
                 if retry_attempt == 0 and not self._turn_tool_state.claim(tool_name):
                     logger.warning(
                         "Blocking duplicate tool execution within turn: tool=%s turn=%s",

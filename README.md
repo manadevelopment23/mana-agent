@@ -239,11 +239,7 @@ runs `pytest -q`.
 
 ## Documentation
 
-- [Coding flows](./docs/coding-flows.md)
-- [Coding-agent language tooling](./docs/coding-agent-language-tooling.md)
-- [Debugging guide](./docs/debugging.md)
-- [Optional dependencies notes](./docs/optional-deps.md)
-- [Generated project structure analysis](./docs/project_structure_analysis.md)
+
 
 ## License
 

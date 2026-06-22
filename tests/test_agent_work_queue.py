@@ -161,6 +161,41 @@ def test_end_to_end_search_then_sniffed_reads(tmp_path: Path):
     assert report.terminal_reason == "drained"
 
 
+def test_sniffer_emits_edit_and_verify_after_discovery(tmp_path: Path):
+    (tmp_path / "found.py").write_text("x = 1\n")
+    q = AgentWorkQueue()
+    board = TaskBoard(queue=q)
+    sniffer = CodingAgentSniffer(
+        repo_root=tmp_path, request="create docs/analyze.md and link it", emit_edit=True
+    )
+
+    search = WorkItem(kind="search", tool_name="repo_search", tool_args={"query": "x"})
+    result = WorkResult(ok=True, files_discovered=["found.py"])
+    new_items = sniffer.on_result(search, result, board=board)
+
+    kinds = [it.kind for it in new_items]
+    assert kinds == ["read", "edit", "verify"]
+    edit = next(it for it in new_items if it.kind == "edit")
+    verify = next(it for it in new_items if it.kind == "verify")
+    # Edit/verify run after reads (higher priority number) and verify waits on edit.
+    read = next(it for it in new_items if it.kind == "read")
+    assert edit.priority > read.priority
+    assert verify.dependencies == [edit.id]
+
+    # Finalization is emitted exactly once even across multiple discoveries.
+    again = sniffer.on_result(search, result, board=board)
+    assert all(it.kind != "edit" for it in again)
+
+
+def test_sniffer_skips_edit_for_non_mutating_request(tmp_path: Path):
+    (tmp_path / "found.py").write_text("x = 1\n")
+    sniffer = CodingAgentSniffer(repo_root=tmp_path, request="how does x work?", emit_edit=False)
+    board = TaskBoard(queue=AgentWorkQueue())
+    search = WorkItem(kind="search", tool_name="repo_search", tool_args={"query": "x"})
+    new_items = sniffer.on_result(search, WorkResult(ok=True, files_discovered=["found.py"]), board=board)
+    assert all(it.kind not in {"edit", "verify"} for it in new_items)
+
+
 # --------------------------------------------------------------------------- #
 # EventBus / TaskBoard
 # --------------------------------------------------------------------------- #

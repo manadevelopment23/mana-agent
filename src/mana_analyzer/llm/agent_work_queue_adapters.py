@@ -187,32 +187,85 @@ class CodingAgentSniffer:
       job per file (capped) that the eventual edit depends on;
     * a **read** job whose content references sibling local modules -> emit
       reads for those modules (one hop, capped), so the agent follows the code;
-    * never re-emits a path already read or queued.
+    * once discovery has run, for a **mutating** request, emit the ``edit`` +
+      ``verify`` jobs that actually fulfil it. They are queued at a high priority
+      number so every read (priority ~30) is claimed first: the edit only runs
+      once the evidence-gathering reads have drained. This is the transition
+      from "read forever" to "act", and it keeps all next-step control in the
+      coding-agent layer (the sniffer) rather than the worker.
+    * never re-emits a path already read or queued, and emits finalization once.
     """
 
     def __init__(
         self,
         *,
         repo_root: Path,
+        request: str = "",
+        emit_edit: bool = False,
         max_reads: int = 40,
         max_follow_per_read: int = 4,
         relevant: Callable[[str], bool] | None = None,
     ) -> None:
         self._repo_root = Path(repo_root).resolve()
+        self._request = str(request or "").strip()
+        self._emit_edit = bool(emit_edit)
         self._max_reads = int(max_reads)
         self._max_follow_per_read = int(max_follow_per_read)
         self._relevant = relevant or (lambda _path: True)
         self._reads_emitted = 0
+        self._finalization_emitted = False
 
     def on_result(self, item: WorkItem, result: WorkResult, *, board: TaskBoard) -> list[WorkItem]:
         if not result.ok:
             return []
         kind = item.kind
         if kind in {"search", "discover"}:
-            return self._reads_from_discovery(result.files_discovered, parent=item)
+            out = self._reads_from_discovery(result.files_discovered, parent=item)
+            # Discovery has produced candidates (or none): schedule the edit +
+            # verify now so they sit behind the reads and run once evidence is in.
+            out.extend(self._finalization_jobs())
+            return out
         if kind == "read":
             return self._follow_local_imports(result, parent=item)
         return []
+
+    def _finalization_jobs(self) -> list[WorkItem]:
+        """Emit the edit + verify jobs for a mutating request, exactly once.
+
+        They depend on nothing but carry a high priority *number*, so the runner
+        (which claims lowest priority first) drains every read/discovery job
+        before claiming the edit, and the verify only runs after the edit
+        succeeds.
+        """
+        if self._finalization_emitted or not self._emit_edit or not self._request:
+            return []
+        self._finalization_emitted = True
+        edit = WorkItem(
+            kind="edit",
+            tool_name="write_file",
+            question=(
+                "Using the file evidence already gathered in this run, carry out "
+                f"the user's request: {self._request}. Apply concrete changes with "
+                "create_file/write_file/apply_patch and report the changed files."
+            ),
+            gate="apply_edit",
+            priority=80,
+            created_by="coding_agent_sniffer",
+        )
+        verify = WorkItem(
+            kind="verify",
+            tool_name="verify",
+            question=(
+                "Verify the changes made for the request: "
+                f"{self._request}. Confirm the new or edited files exist and are "
+                "well-formed, and run any available checks."
+            ),
+            gate="verify_changes",
+            priority=90,
+            created_by="coding_agent_sniffer",
+            dependencies=[edit.id],
+        )
+        return [edit, verify]
 
     def _reads_from_discovery(self, paths: list[str], *, parent: WorkItem) -> list[WorkItem]:
         out: list[WorkItem] = []

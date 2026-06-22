@@ -517,8 +517,9 @@ def test_tool_worker_server_allows_same_tool_name_in_new_turn(monkeypatch) -> No
         tool_name="read_file",
     ).model_dump()
 
+    # No manual reset between turns: the server must scope the duplicate guard
+    # to request_id on its own, so a new turn re-runs the same tool name.
     server._handle_run_tools(twp.WorkerEnvelope(type="run_tools", request_id="turn-a", payload=payload))
-    server._turn_tool_state.reset()
     server._handle_run_tools(twp.WorkerEnvelope(type="run_tools", request_id="turn-b", payload=payload))
 
     assert len(calls) == 2

@@ -573,6 +573,8 @@ class CodingAgent:
         )
         sniffer = CodingAgentSniffer(
             repo_root=self.repo_root,
+            request=request,
+            emit_edit=self._looks_like_edit_request(request),
             max_reads=int(max_reads),
             relevant=_relevant,
         )
