@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mana_analyzer.services.dependency_service import DependencyService
-from mana_analyzer.services.describe_service import DescribeService
+from mana_agent.services.dependency_service import DependencyService
+from mana_agent.services.describe_service import DescribeService
 
 
 class _FailingArchitectureChain:

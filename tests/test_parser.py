@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mana_analyzer.parsers.python_parser import PythonParser
+from mana_agent.parsers.python_parser import PythonParser
 
 
 def test_parser_extracts_symbols_and_lines() -> None:

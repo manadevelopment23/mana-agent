@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from mana_analyzer.commands import cli_internal
+from mana_agent.commands import cli_internal
 
 
 def test_quiet_filter_drops_noisy_debug_keeps_warnings() -> None:

@@ -29,7 +29,7 @@ See `src/mana_analyzer/commands/analyze_cli.py` for the exact ordering.
 ## CLI usage
 
 ```bash
-mana-analyzer analyze PATH [--query TEXT] [options]
+mana-agent analyze PATH [--query TEXT] [options]
 ```
 
 Common options:
@@ -50,7 +50,7 @@ Common options:
 ### Example
 
 ```bash
-mana-analyzer analyze . \
+mana-agent analyze . \
   --query "authentication" \
   --output-format all \
   --fail-on warning

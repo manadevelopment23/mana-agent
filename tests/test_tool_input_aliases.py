@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mana_analyzer.tools.apply_patch import build_apply_patch_tool
-from mana_analyzer.tools.write_file import build_create_file_tool, build_write_file_tool
+from mana_agent.tools.apply_patch import build_apply_patch_tool
+from mana_agent.tools.write_file import build_create_file_tool, build_write_file_tool
 
 
 def test_apply_patch_tool_accepts_patch_alias(monkeypatch, tmp_path: Path) -> None:

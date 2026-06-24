@@ -1,5 +1,5 @@
-from mana_analyzer.analysis.chunker import CodeChunker
-from mana_analyzer.analysis.models import CodeSymbol
+from mana_agent.analysis.chunker import CodeChunker
+from mana_agent.analysis.models import CodeSymbol
 
 
 def test_chunker_splits_with_overlap() -> None:

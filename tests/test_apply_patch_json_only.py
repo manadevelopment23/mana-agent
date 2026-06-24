@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mana_analyzer.tools.apply_patch import extract_patch_touched_files, safe_apply_patch
+from mana_agent.tools.apply_patch import extract_patch_touched_files, safe_apply_patch
 
 
 def test_apply_patch_accepts_git_unified_diff_payload(tmp_path: Path) -> None:

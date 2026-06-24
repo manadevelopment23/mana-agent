@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from mana_analyzer.analysis.models import AskResponseWithTrace, SearchHit
-from mana_analyzer.services.ask_service import AskService
+from mana_agent.analysis.models import AskResponseWithTrace, SearchHit
+from mana_agent.services.ask_service import AskService
 
 
 class FakeStore:

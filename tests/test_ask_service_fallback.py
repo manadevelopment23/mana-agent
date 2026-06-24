@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from mana_analyzer.analysis.models import SearchHit
-from mana_analyzer.services.ask_service import (
+from mana_agent.analysis.models import SearchHit
+from mana_agent.services.ask_service import (
     SEMANTIC_INDEX_MISSING_WARNING,
     AskService,
 )
-from mana_analyzer.vector_store.faiss_store import FaissStore
+from mana_agent.vector_store.faiss_store import FaissStore
 
 
 class _EmptyStore:
@@ -55,7 +55,7 @@ def test_ask_falls_back_to_project_search_when_index_missing(tmp_path: Path) -> 
     assert any("mod.py" in src.file_path for src in response.sources)
     # The fallback ran the QnA chain over the project-search context.
     assert qna.last_context is not None and "mod.py" in qna.last_context
-    assert "mana-analyzer index" in response.answer
+    assert "mana-agent index" in response.answer
 
 
 def test_ask_does_not_emit_dead_end_message(tmp_path: Path) -> None:

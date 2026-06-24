@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from mana_analyzer.utils.tool_policy import (
+from mana_agent.utils.tool_policy import (
     InvalidToolPolicyError,
     expand_tool_aliases,
     resolve_allowed_tools,

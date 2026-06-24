@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mana_analyzer.analysis.models import Finding
-from mana_analyzer.services.llm_analyze_service import LlmAnalyzeService
+from mana_agent.analysis.models import Finding
+from mana_agent.services.llm_analyze_service import LlmAnalyzeService
 
 
 class FakeAnalyzeChain:

@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from mana_analyzer.llm.ask_agent import AskAgent
-from mana_analyzer.llm.coding_agent_models import CodingAgentStateMachine
-from mana_analyzer.tools.contracts import coding_tool_contracts
-from mana_analyzer.tools.apply_patch import safe_apply_patch
-from mana_analyzer.tools.repository import _run_check, call_graph
+from mana_agent.llm.ask_agent import AskAgent
+from mana_agent.llm.coding_agent_models import CodingAgentStateMachine
+from mana_agent.tools.contracts import coding_tool_contracts
+from mana_agent.tools.apply_patch import safe_apply_patch
+from mana_agent.tools.repository import _run_check, call_graph
 
 
 def test_tool_contracts_are_machine_readable() -> None:

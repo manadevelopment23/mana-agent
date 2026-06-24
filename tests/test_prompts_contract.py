@@ -1,6 +1,6 @@
 from importlib import import_module
 
-from mana_analyzer.llm import prompts
+from mana_agent.llm import prompts
 
 
 _REQUIRED_PROMPTS = [

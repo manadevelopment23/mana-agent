@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mana_analyzer.llm.agent_work_queue import (
+from mana_agent.llm.agent_work_queue import (
     AgentWorkQueue,
     EventBus,
     TaskBoard,
@@ -11,12 +11,12 @@ from mana_analyzer.llm.agent_work_queue import (
     WorkResult,
     compute_fingerprint,
 )
-from mana_analyzer.llm.agent_work_queue_adapters import (
+from mana_agent.llm.agent_work_queue_adapters import (
     CodingAgentSniffer,
     classify_result,
     make_worker_executor,
 )
-from mana_analyzer.llm.tool_worker_process import ToolRunResponse
+from mana_agent.llm.tool_worker_process import ToolRunResponse
 
 
 # --------------------------------------------------------------------------- #
@@ -84,6 +84,16 @@ def test_read_failure_when_worker_errors():
     response = ToolRunResponse(answer="", trace=[{"tool": "read_file", "status": "error", "error": "missing"}])
     result = classify_result(item, response, repo_root=Path("/nonexistent"))
     assert result.ok is False
+
+
+def test_mutation_result_requires_changed_files():
+    item = WorkItem(kind="edit", tool_name="apply_patch", tool_args={"path": "docs/overview.md"})
+    response = ToolRunResponse(answer="patched", trace=[{"tool_name": "apply_patch", "status": "ok", "changed_files": []}])
+
+    result = classify_result(item, response, repo_root=Path("/nonexistent"))
+
+    assert result.ok is False
+    assert result.error == "mutation_no_modified_files"
 
 
 # --------------------------------------------------------------------------- #
@@ -198,8 +208,8 @@ def test_sniffer_without_edit_signal_does_not_finalize(tmp_path: Path):
 
 def test_queue_manager_runs_edit_and_verify_for_mutating_request(tmp_path: Path):
     """End-to-end through the LIVE path (QueueManager.run), with a fake worker."""
-    from mana_analyzer.llm.tool_worker_process import ToolRunResponse
-    from mana_analyzer.llm.tools_manager import QueueManager
+    from mana_agent.llm.tool_worker_process import ToolRunResponse
+    from mana_agent.llm.tools_manager import QueueManager
 
     (tmp_path / "found.py").write_text("x = 1\n")
 
@@ -222,7 +232,13 @@ def test_queue_manager_runs_edit_and_verify_for_mutating_request(tmp_path: Path)
                 answer="ok",
                 sources=[],
                 mode="agent-tools",
-                trace=[{"tool_name": request.tool_name or "tool", "status": "ok"}],
+                trace=[
+                    {
+                        "tool_name": request.tool_name or "tool",
+                        "status": "ok",
+                        "changed_files": ["docs/overview.md"] if (request.tool_name or "") == "write_file" else [],
+                    }
+                ],
                 warnings=[],
             )
 
@@ -241,6 +257,97 @@ def test_queue_manager_runs_edit_and_verify_for_mutating_request(tmp_path: Path)
     assert "Target file: docs/overview.md" in joined
     assert "Verify the changes" in joined       # the verify job ran (after edit)
     assert result.execution_backend == "work_queue"
+    assert result.run_status == "completed"
+    assert result.changed_files == ["docs/overview.md"]
+
+
+def test_queue_manager_blocks_edit_when_no_mutation_tool_attempted(tmp_path: Path):
+    from mana_agent.llm.tools_manager import QueueManager
+
+    class _FakeWorker:
+        def __init__(self) -> None:
+            self.policies: list[dict] = []
+
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            self.policies.append(dict(request.tool_policy or {}))
+            return ToolRunResponse(
+                answer="only prose",
+                sources=[],
+                mode="agent-tools",
+                trace=[],
+                warnings=[],
+            )
+
+    worker = _FakeWorker()
+    result = QueueManager(worker_client=worker, repo_root=tmp_path).run(
+        request="update docs/overview.md",
+        index_dir=str(tmp_path),
+        requires_edit=True,
+        target_files=["docs/overview.md"],
+    )
+
+    assert result.run_status == "blocked"
+    assert result.terminal_reason == "mutation_required_but_no_mutation_tool_attempted"
+    assert "forced_mutation_retry_no_mutation_tool_attempted" in result.warnings
+    assert worker.policies[-1]["allowed_tools"] == ["apply_patch", "write_file", "create_file"]
+
+
+def test_queue_manager_blocks_edit_when_mutation_has_no_changed_files(tmp_path: Path):
+    from mana_agent.llm.tools_manager import QueueManager
+
+    class _FakeWorker:
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            return ToolRunResponse(
+                answer="mutation attempted",
+                sources=[],
+                mode="agent-tools",
+                trace=[{"tool_name": "apply_patch", "status": "ok", "changed_files": []}],
+                warnings=[],
+            )
+
+    result = QueueManager(worker_client=_FakeWorker(), repo_root=tmp_path).run(
+        request="update docs/overview.md",
+        index_dir=str(tmp_path),
+        tool_policy={"mutation_required": True},
+        target_files=["docs/overview.md"],
+    )
+
+    assert result.run_status == "blocked"
+    assert result.terminal_reason == "mutation_required_but_no_changed_files"
+    assert "forced_mutation_retry_no_changed_files" in result.warnings
+
+
+def test_queue_manager_uses_latest_useful_answer_only_for_edit_success(tmp_path: Path):
+    from mana_agent.llm.tools_manager import QueueManager
+
+    class _FakeWorker:
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            if (request.tool_name or "") == "repo_search":
+                return ToolRunResponse(
+                    answer="intermediate search answer",
+                    sources=[],
+                    mode="agent-tools",
+                    trace=[{"tool_name": "repo_search", "status": "ok"}],
+                    warnings=[],
+                )
+            return ToolRunResponse(
+                answer="final mutation answer",
+                sources=[],
+                mode="agent-tools",
+                trace=[{"tool_name": "write_file", "status": "ok", "changed_files": ["docs/overview.md"]}],
+                warnings=[],
+            )
+
+    result = QueueManager(worker_client=_FakeWorker(), repo_root=tmp_path).run(
+        request="update docs/overview.md",
+        index_dir=str(tmp_path),
+        requires_edit=True,
+        target_files=["docs/overview.md"],
+    )
+
+    assert result.run_status == "completed"
+    assert result.answer == "final mutation answer"
+    assert "intermediate search answer" not in result.answer
 
 
 def test_sniffer_uses_planner_target_file_for_edit_job(tmp_path: Path):

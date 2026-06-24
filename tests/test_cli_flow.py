@@ -3,9 +3,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from mana_analyzer.commands.cli import app
-from mana_analyzer.services.coding_memory_service import CodingMemoryService
-from mana_analyzer.analysis.models import Finding
+from mana_agent.commands.cli import app
+from mana_agent.services.coding_memory_service import CodingMemoryService
+from mana_agent.analysis.models import Finding
 
 runner = CliRunner()
 

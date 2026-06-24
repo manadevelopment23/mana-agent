@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mana_analyzer.renderers.html_report import (
+from mana_agent.renderers.html_report import (
     render_analyze_html,
     render_describe_html,
     render_report_html,

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from mana_analyzer.services.parsers.dart_parser import parse_dart_module
-from mana_analyzer.services.parsers.js_ts_parser import parse_js_ts_module
-from mana_analyzer.services.parsers.python_parser import parse_python_module
+from mana_agent.services.parsers.dart_parser import parse_dart_module
+from mana_agent.services.parsers.js_ts_parser import parse_js_ts_module
+from mana_agent.services.parsers.python_parser import parse_python_module
 
 
 def test_parse_python_module_extracts_symbols(tmp_path) -> None:

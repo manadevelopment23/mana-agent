@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0,<70.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mana-analyzer"
+name = "mana-agent"
 version = "0.0.5"
 description = "LLM-powered static analysis and repository understanding tool"
 readme = "README.md"
@@ -48,4 +48,4 @@ dev = [
 ]
 
 [project.scripts]
-mana-analyzer = "mana_analyzer.commands.cli:app"
+mana-agent = "mana_agent.commands.cli:app"

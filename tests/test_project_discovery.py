@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mana_analyzer.utils.project_discovery import discover_subprojects
+from mana_agent.utils.project_discovery import discover_subprojects
 
 
 def test_discover_subprojects_finds_nested_manifests(tmp_path: Path) -> None:

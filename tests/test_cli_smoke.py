@@ -4,9 +4,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from mana_analyzer.analysis.models import AskResponse, AskResponseWithTrace, Finding, SearchHit
-from mana_analyzer.commands.cli import _render_coding_sections, _sanitize_full_auto_answer_text, app
-from mana_analyzer.commands.ui_helpers import emit_tool_event
+from mana_agent.analysis.models import AskResponse, AskResponseWithTrace, Finding, SearchHit
+from mana_agent.commands.cli import _render_coding_sections, _sanitize_full_auto_answer_text, app
+from mana_agent.commands.ui_helpers import emit_tool_event
 
 runner = CliRunner()
 
@@ -206,6 +206,27 @@ class DummySettings:
     coding_search_budget = 4
     coding_read_budget = 6
     coding_require_read_files = 2
+
+
+def test_pyproject_exposes_mana_agent_primary_script() -> None:
+    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+
+    assert 'name = "mana-agent"' in pyproject
+    assert 'mana-agent = "mana_analyzer.commands.cli:app"' in pyproject
+
+
+def test_root_command_defaults_to_chat(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def _fake_chat(**_kwargs: object) -> None:
+        calls.append("chat")
+
+    monkeypatch.setattr("mana_analyzer.commands.chat_cli.chat", _fake_chat)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 0
+    assert calls == ["chat"]
 
 
 class FakeStructureService:
@@ -548,7 +569,7 @@ def test_ask_dir_mode_no_auto_index_missing(monkeypatch, tmp_path: Path) -> None
 
 
 def test_build_ask_service_registers_search_internet_tool_without_duplicates(monkeypatch, tmp_path: Path) -> None:
-    from mana_analyzer.commands import cli
+    from mana_agent.commands import cli
 
     class _Tool:
         def __init__(self, name: str) -> None:

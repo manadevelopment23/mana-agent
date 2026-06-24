@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mana_analyzer.llm.repo_chain import RepositoryMultiChain
+from mana_agent.llm.repo_chain import RepositoryMultiChain
 
 
 def test_compact_dependency_report_limits_large_lists() -> None:

@@ -2,6 +2,12 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-06-24
+
+- Renamed the public CLI/package branding to `mana-agent`, added the primary `mana-agent` console script while keeping `mana-analyzer` as a compatibility alias, and made the bare root command route to chat.
+- Hardened work-queue mutation enforcement so edit-required runs block unless a mutation tool is attempted and changed files are detected, forced retries are mutation-only, verify is blocked before mutation success, worker non-progress statuses are failures, and final answers use the latest useful result instead of concatenating intermediate worker output.
+- Verification: `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_analyzer/llm/tools_manager.py src/mana_analyzer/llm/agent_work_queue_adapters.py src/mana_analyzer/llm/tool_worker_process.py src/mana_analyzer/commands/cli_internal.py src/mana_analyzer/commands/main_cli.py tests/test_agent_work_queue.py tests/test_tool_worker_process.py tests/test_cli_smoke.py` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py tests/test_tool_worker_process.py tests/test_cli_smoke.py::test_pyproject_exposes_mana_agent_primary_script tests/test_cli_smoke.py::test_root_command_defaults_to_chat tests/test_cli_smoke.py::test_chat_help_hides_manual_plan_execute_flags tests/test_cli_smoke.py::test_continue_help_accepts_root_dir_option -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_tools_manager.py -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_cli_ux_helpers.py tests/test_ask_service_fallback.py tests/test_search_internet_tool.py -q` passed.
+
 ## 2026-06-23
 
 - Fixed chat auto-execute orchestration so edit intent and target files come from structured planner output (`requires_edit`, `target_files`) instead of keyword heuristics, with planner-provided targets passed into work-queue edit jobs.

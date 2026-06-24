@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mana_analyzer.llm.coding_agent import CodingAgent, FlowChecklist, FlowStep
-from mana_analyzer.llm.tool_worker_process import ToolWorkerProcessError
-from mana_analyzer.llm.tools_manager import AutoExecuteResult
-from mana_analyzer.services.coding_memory_service import CodingMemoryService
+from mana_agent.llm.coding_agent import CodingAgent, FlowChecklist, FlowStep
+from mana_agent.llm.tool_worker_process import ToolWorkerProcessError
+from mana_agent.llm.tools_manager import AutoExecuteResult
+from mana_agent.services.coding_memory_service import CodingMemoryService
 
 
 class _Tool:

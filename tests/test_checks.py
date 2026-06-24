@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mana_analyzer.analysis.checks import PythonStaticAnalyzer
+from mana_agent.analysis.checks import PythonStaticAnalyzer
 
 
 def test_static_checks_find_core_issues() -> None:

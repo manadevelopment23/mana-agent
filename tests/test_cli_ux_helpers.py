@@ -5,10 +5,10 @@ from pathlib import Path
 from rich.console import Console
 from typer.testing import CliRunner
 
-from mana_analyzer.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
-from mana_analyzer.commands import cli
-from mana_analyzer.commands.chat_cli import _should_use_coding_agent_turn
-from mana_analyzer.commands.ui_helpers import (
+from mana_agent.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
+from mana_agent.commands import cli
+from mana_agent.commands.chat_cli import _should_use_coding_agent_turn
+from mana_agent.commands.ui_helpers import (
     LiveToolActivity,
     _looks_like_edit_request,
     _looks_like_plan_trigger_request,
@@ -17,7 +17,7 @@ from mana_analyzer.commands.ui_helpers import (
     emit_tool_event,
     set_active_tool_activity,
 )
-from mana_analyzer.llm.coding_agent import CodingAgent
+from mana_agent.llm.coding_agent import CodingAgent
 
 runner = CliRunner()
 
@@ -338,11 +338,11 @@ def test_tool_activity_failed_tool_error_is_not_summarized() -> None:
 def test_render_turn_transparency_preserves_multiline_command_preview() -> None:
     answer = (
         "Command surface:\n"
-        "- `mana-analyzer` console script -> `mana_analyzer.commands.cli:app`\n\n"
+        "- `mana-agent` console script -> `mana_analyzer.commands.cli:app`\n\n"
         "Detected CLI subcommands:\n"
-        "- `mana-analyzer analyze`\n"
-        "- `mana-analyzer ask`\n"
-        "- `mana-analyzer chat`\n"
+        "- `mana-agent analyze`\n"
+        "- `mana-agent ask`\n"
+        "- `mana-agent chat`\n"
     )
     turn = cli.ChatTurnTelemetry(
         turn_index=1,
@@ -356,7 +356,7 @@ def test_render_turn_transparency_preserves_multiline_command_preview() -> None:
     cli._render_turn_transparency(console, turn=turn, history=[turn])
     rendered = console.export_text()
     assert "Command surface:" in rendered
-    assert "mana-analyzer analyze" in rendered
+    assert "mana-agent analyze" in rendered
     assert "Sources" in rendered
     assert "11" in rendered
     assert "00:34:27" in rendered

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mana_analyzer.analysis.chunker import CodeChunker
-from mana_analyzer.analysis.models import CodeChunk
-from mana_analyzer.parsers.multi_parser import MultiLanguageParser
-from mana_analyzer.services.index_service import IndexService
+from mana_agent.analysis.chunker import CodeChunker
+from mana_agent.analysis.models import CodeChunk
+from mana_agent.parsers.multi_parser import MultiLanguageParser
+from mana_agent.services.index_service import IndexService
 
 
 class FakeStore:

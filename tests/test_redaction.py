@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mana_analyzer.utils.redaction import REDACTED, redact_json_line, redact_secrets
+from mana_agent.utils.redaction import REDACTED, redact_json_line, redact_secrets
 
 
 def test_redact_secrets_recurses_into_nested_dicts_and_lists() -> None:

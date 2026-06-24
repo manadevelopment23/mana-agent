@@ -1,0 +1,190 @@
+"""Machine-readable contracts for coding-agent tools."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class ToolContract(BaseModel):
+    """Strict contract metadata exposed to agents and tests."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
+    error_format: dict[str, Any]
+    safety_rules: list[str] = Field(default_factory=list)
+    examples: list[dict[str, Any]] = Field(default_factory=list)
+
+
+def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required or [],
+        "additionalProperties": False,
+    }
+
+
+def coding_tool_contracts() -> list[ToolContract]:
+    """Return contracts for the built-in coding-agent tool surface."""
+
+    common_error = {
+        "ok": False,
+        "error": {"code": "string", "message": "string", "details": "object"},
+    }
+    return [
+        ToolContract(
+            name="semantic_search",
+            description="Search indexed code chunks semantically using the local vector index when available.",
+            input_schema=_schema({"query": {"type": "string"}, "k": {"type": "integer"}}, ["query"]),
+            output_schema=_schema({"results": {"type": "array"}, "warnings": {"type": "array"}}),
+            error_format=common_error,
+            safety_rules=[
+                "Read matching files before editing them.",
+                "Do not repeat the same query indefinitely.",
+                "Use repo_search, read_file, find_symbols, call_graph, or verify_project when they fit better than semantic retrieval.",
+            ],
+            examples=[{"input": {"query": "safe_apply_patch path validation", "k": 8}}],
+        ),
+        ToolContract(
+            name="repo_search",
+            description="Search repository text with regex or literal matching.",
+            input_schema=_schema(
+                {
+                    "query": {"type": "string"},
+                    "glob": {"type": "string"},
+                    "regex": {"type": "boolean"},
+                    "limit": {"type": "integer"},
+                },
+                ["query"],
+            ),
+            output_schema=_schema({"matches": {"type": "array"}, "truncated": {"type": "boolean"}}),
+            error_format=common_error,
+            safety_rules=["Search is read-only.", "Binary files and ignored metadata directories are skipped."],
+            examples=[{"input": {"query": "class CodingAgent", "glob": "*.py", "regex": False}}],
+        ),
+        ToolContract(
+            name="read_file",
+            description="Safely read a repository file by full file or line range.",
+            input_schema=_schema(
+                {
+                    "path": {"type": "string"},
+                    "mode": {"enum": ["line", "full"]},
+                    "start_line": {"type": "integer"},
+                    "end_line": {"type": "integer"},
+                },
+                ["path"],
+            ),
+            output_schema=_schema({"file_path": {"type": "string"}, "content": {"type": "string"}}),
+            error_format=common_error,
+            safety_rules=["Reject paths outside the project root.", "Reject binary files.", "Cache successful reads for flow safety."],
+            examples=[{"input": {"path": "src/mana_agent/llm/ask_agent.py", "mode": "full"}}],
+        ),
+        ToolContract(
+            name="apply_patch",
+            description="Apply a JSON or unified diff patch inside the repository.",
+            input_schema=_schema(
+                {
+                    "patch": {"type": "string"},
+                    "check_only": {"type": "boolean"},
+                    "strategy_hint": {"enum": ["auto", "py", "perl"]},
+                    "strict_strategy": {"type": "boolean"},
+                },
+                ["patch"],
+            ),
+            output_schema=_schema({"ok": {"type": "boolean"}, "touched_files": {"type": "array"}}),
+            error_format=common_error,
+            safety_rules=[
+                "Reject unread existing target files when read tracking is supplied.",
+                "Reject traversal, absolute paths, paths outside root, binary files, and file deletes.",
+                "Store patch preview and result under .mana/logs/ before returning.",
+            ],
+            examples=[{"input": {"patch": "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"}}],
+        ),
+        ToolContract(
+            name="create_file",
+            description="Create a new repository text file without overwriting an existing target.",
+            input_schema=_schema(
+                {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "text": {"type": "string"},
+                    "body": {"type": "string"},
+                },
+                ["path"],
+            ),
+            output_schema=_schema(
+                {
+                    "ok": {"type": "boolean"},
+                    "path": {"type": "string"},
+                    "bytes_written": {"type": "integer"},
+                    "sha256": {"type": "string"},
+                    "error": {"type": "string"},
+                }
+            ),
+            error_format=common_error,
+            safety_rules=[
+                "Reject traversal, absolute paths, paths outside root, and disallowed prefixes.",
+                "Refuse to overwrite an existing target file.",
+                "Create parent directories as needed and write atomically.",
+            ],
+            examples=[{"input": {"path": "docs/new-note.md", "content": "# New note\n"}}],
+        ),
+        ToolContract(
+            name="list_files",
+            description="List repository files with optional glob filtering.",
+            input_schema=_schema({"glob": {"type": "string"}, "limit": {"type": "integer"}}),
+            output_schema=_schema({"files": {"type": "array"}, "truncated": {"type": "boolean"}}),
+            error_format=common_error,
+            safety_rules=["Read-only.", "Skip VCS, cache, virtualenv, and binary-like metadata directories."],
+            examples=[{"input": {"glob": "src/**/*.py", "limit": 100}}],
+        ),
+        ToolContract(
+            name="find_symbols",
+            description="Find Python functions, classes, and methods by name.",
+            input_schema=_schema({"query": {"type": "string"}, "limit": {"type": "integer"}}),
+            output_schema=_schema({"symbols": {"type": "array"}, "truncated": {"type": "boolean"}}),
+            error_format=common_error,
+            safety_rules=["Read-only.", "Parse Python with ast instead of regular expressions where possible."],
+            examples=[{"input": {"query": "CodingAgent", "limit": 20}}],
+        ),
+        ToolContract(
+            name="call_graph",
+            description="Inspect Python AST call edges by caller, callee, or file path.",
+            input_schema=_schema({"query": {"type": "string"}, "limit": {"type": "integer"}}),
+            output_schema=_schema({"edges": {"type": "array"}, "truncated": {"type": "boolean"}}),
+            error_format=common_error,
+            safety_rules=[
+                "Read-only.",
+                "Use for control-flow/call-site questions; it reports syntactic calls, not runtime dispatch.",
+            ],
+            examples=[{"input": {"query": "run_tools", "limit": 50}}],
+        ),
+        ToolContract(
+            name="run_command",
+            description="Run a non-destructive command in the project root.",
+            input_schema=_schema({"cmd": {"type": "string"}}, ["cmd"]),
+            output_schema=_schema({"returncode": {"type": "integer"}, "stdout": {"type": "string"}, "stderr": {"type": "string"}}),
+            error_format=common_error,
+            safety_rules=["Block destructive shell patterns.", "Use project root as cwd.", "Return stdout/stderr and exit code."],
+            examples=[{"input": {"cmd": "pytest -q"}}],
+        ),
+        ToolContract(
+            name="verify_project",
+            description="Auto-detect and run pytest, ruff, mypy, import, CLI, and git checks.",
+            input_schema=_schema({"quick": {"type": "boolean"}}),
+            output_schema=_schema({"checks": {"type": "array"}, "ok": {"type": "boolean"}}),
+            error_format=common_error,
+            safety_rules=["Verification is read-only except normal test caches.", "Missing commands are reported as skipped."],
+            examples=[{"input": {"quick": False}}],
+        ),
+    ]
+
+
+def coding_tool_contracts_payload() -> dict[str, Any]:
+    """JSON-friendly contract payload."""
+
+    return {"tools": [item.model_dump() for item in coding_tool_contracts()]}

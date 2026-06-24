@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 import sys
 
-from mana_analyzer.utils.logging import setup_logging
+from mana_agent.utils.logging import setup_logging
 
 
 def test_setup_logging_writes_file_only(tmp_path: Path, monkeypatch) -> None:

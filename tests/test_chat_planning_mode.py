@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from mana_analyzer.analysis.models import AskResponse, SearchHit
-from mana_analyzer.commands import cli
+from mana_agent.analysis.models import AskResponse, SearchHit
+from mana_agent.commands import cli
 
 runner = CliRunner()
 

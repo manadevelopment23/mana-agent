@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mana_analyzer.llm import tool_worker_process as twp
+from mana_agent.llm import tool_worker_process as twp
 
 
 def test_tool_worker_import_does_not_configure_root_logging() -> None:
@@ -100,6 +100,28 @@ def _reply_error(request_id: str, code: str, message: str, retriable: bool = Fal
         "request_id": request_id,
         "payload": {"code": code, "message": message, "retriable": retriable, "details": {}},
     }
+
+
+def test_trace_row_success_rejects_non_progress_statuses() -> None:
+    assert twp._infer_trace_row_success({"tool_name": "read_file", "status": "blocked"}) is False
+    assert twp._infer_trace_row_success({"tool_name": "read_file", "status": "skipped"}) is False
+    assert twp._infer_trace_row_success({"tool_name": "read_file", "status": "not_allowed"}) is False
+    assert (
+        twp._infer_trace_row_success(
+            {"tool_name": "verify_project", "status": "verify_project_blocked_until_mutation"}
+        )
+        is False
+    )
+
+
+def test_trace_row_success_rejects_mutation_without_changed_files() -> None:
+    assert twp._infer_trace_row_success({"tool_name": "apply_patch", "status": "ok", "changed_files": []}) is False
+    assert (
+        twp._infer_trace_row_success(
+            {"tool_name": "write_file", "status": "ok", "proof": {"modified_files": ["docs/overview.md"]}}
+        )
+        is True
+    )
 
 
 def test_tool_worker_client_init_health_shutdown(monkeypatch) -> None:

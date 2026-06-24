@@ -4,7 +4,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from mana_analyzer.commands.ui_helpers import (
+from mana_agent.commands.ui_helpers import (
     _classify_direct_command,
     _extract_exact_search_query,
     _render_direct_command,

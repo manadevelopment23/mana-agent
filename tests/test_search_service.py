@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from mana_analyzer.analysis.models import SearchHit
-from mana_analyzer.services.search_service import SearchService
+from mana_agent.analysis.models import SearchHit
+from mana_agent.services.search_service import SearchService
 
 
 class FakeStore:

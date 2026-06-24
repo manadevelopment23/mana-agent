@@ -6,9 +6,9 @@ from pathlib import Path
 
 from langchain_core.tools import StructuredTool
 
-from mana_analyzer.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
-from mana_analyzer.llm.ask_agent import AskAgent
-from mana_analyzer.services.coding_memory_service import CodingMemoryService
+from mana_agent.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
+from mana_agent.llm.ask_agent import AskAgent
+from mana_agent.services.coding_memory_service import CodingMemoryService
 
 
 class _FakeSearchService:

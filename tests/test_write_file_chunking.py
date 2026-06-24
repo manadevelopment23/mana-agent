@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mana_analyzer.tools.write_file import (
+from mana_agent.tools.write_file import (
     build_create_file_tool,
     build_write_file_tool,
     safe_create_file,

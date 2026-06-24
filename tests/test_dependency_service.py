@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mana_analyzer.services.dependency_service import DependencyService
+from mana_agent.services.dependency_service import DependencyService
 
 
 def _write_repo(root: Path) -> None:

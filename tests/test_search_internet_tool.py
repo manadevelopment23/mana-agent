@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from urllib.error import HTTPError
 
-from mana_analyzer.tools.search_internet import safe_search_internet
+from mana_agent.tools.search_internet import safe_search_internet
 
 
 def test_safe_search_internet_uses_duckduckgo_when_api_key_missing(monkeypatch) -> None:
@@ -32,7 +32,7 @@ def test_safe_search_internet_success(monkeypatch) -> None:
                 {
                     "results": [
                         {
-                            "title": "Mana Analyzer",
+                            "title": "Mana Agent",
                             "url": "https://example.com/mana",
                             "content": "release notes",
                             "score": 0.88,
@@ -44,11 +44,11 @@ def test_safe_search_internet_success(monkeypatch) -> None:
     monkeypatch.setenv("TAVILY_API_KEY", "test-key")
     monkeypatch.setattr("mana_analyzer.tools.search_internet.request.urlopen", lambda *a, **k: _Response())
 
-    payload = safe_search_internet("mana analyzer latest")
+    payload = safe_search_internet("mana agent latest")
     assert payload["ok"] is True
-    assert payload["query"] == "mana analyzer latest"
+    assert payload["query"] == "mana agent latest"
     assert len(payload["results"]) == 1
-    assert payload["results"][0]["title"] == "Mana Analyzer"
+    assert payload["results"][0]["title"] == "Mana Agent"
     assert payload["results"][0]["url"] == "https://example.com/mana"
 
 

@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mana_analyzer.llm.tool_worker_process import ToolRunResponse
-from mana_analyzer.llm.goal_profiles import ModelDocsGoalProfile, active_goal_profile
-from mana_analyzer.llm.tools_manager import (
+from mana_agent.llm.tool_worker_process import ToolRunResponse
+from mana_agent.llm.goal_profiles import ModelDocsGoalProfile, active_goal_profile
+from mana_agent.llm.tools_manager import (
     AutoExecuteResult,
     RunStateStore,
     ToolsManagerBatch,
@@ -13,8 +13,8 @@ from mana_analyzer.llm.tools_manager import (
     ToolsPlan,
     ToolsPlanStep,
 )
-from mana_analyzer.llm.tools_executor import BatchExecutionResult
-from mana_analyzer.services.coding_memory_service import CodingMemoryService
+from mana_agent.llm.tools_executor import BatchExecutionResult
+from mana_agent.services.coding_memory_service import CodingMemoryService
 
 
 class _NoopWorker:

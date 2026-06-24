@@ -1,8 +1,8 @@
-# mana-analyzer (v0.0.5)
+# mana-agent (v0.0.5)
 
 LLM-powered repository analysis and coding-agent automation for local codebases.
 
-`mana-analyzer` is an installable Python CLI that indexes a project, runs static
+`mana-agent` is an installable Python CLI that indexes a project, runs static
 and dependency analysis, builds reports, answers questions with repository
 context, and runs a tool-aware coding agent that can inspect, patch, and verify
 code.
@@ -65,39 +65,39 @@ See [.env.example](./.env.example) for the local template used by this repo.
 Analyze a repository and write artifacts into its `.mana/` directory:
 
 ```bash
-mana-analyzer analyze /path/to/project
+mana-agent analyze /path/to/project
 ```
 
 Include semantic search results in the same report:
 
 ```bash
-mana-analyzer analyze /path/to/project --query "authentication flow"
+mana-agent analyze /path/to/project --query "authentication flow"
 ```
 
 Emit strict machine-readable output:
 
 ```bash
-mana-analyzer analyze /path/to/project --json
+mana-agent analyze /path/to/project --json
 ```
 
 Ask a repository question:
 
 ```bash
-mana-analyzer ask "How is configuration loaded?" --root-dir /path/to/project
+mana-agent ask "How is configuration loaded?" --root-dir /path/to/project
 ```
 
 Start the interactive coding-agent chat:
 
 ```bash
-mana-analyzer chat --root-dir /path/to/project
+mana-agent chat --root-dir /path/to/project
 ```
 
 Useful global flags:
 
 ```bash
-mana-analyzer --verbose analyze .
-mana-analyzer --log-dir .mana/logs ask "summarize the parser"
-mana-analyzer --output-dir .mana/output chat
+mana-agent --verbose analyze .
+mana-agent --log-dir .mana/logs ask "summarize the parser"
+mana-agent --output-dir .mana/output chat
 ```
 
 ## CLI Commands
@@ -228,10 +228,10 @@ Run local quality checks:
 ruff check src tests
 mypy src tests
 python -c "import mana_analyzer; print('ok')"
-mana-analyzer --help
-mana-analyzer analyze --help
-mana-analyzer ask --help
-mana-analyzer chat --help
+mana-agent --help
+mana-agent analyze --help
+mana-agent ask --help
+mana-agent chat --help
 ```
 
 The GitHub Actions workflow currently installs the package on Python 3.12 and

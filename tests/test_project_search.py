@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import mana_analyzer.utils.project_search as ps
-from mana_analyzer.utils.project_search import project_search
+import mana_agent.utils.project_search as ps
+from mana_agent.utils.project_search import project_search
 
 
 def _make_repo(tmp_path: Path) -> Path:

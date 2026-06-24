@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mana_analyzer.tools.repository import (
+from mana_agent.tools.repository import (
     explore_src,
     inspect_project_structure,
     inspect_tests,

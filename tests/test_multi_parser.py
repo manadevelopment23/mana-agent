@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mana_analyzer.parsers.multi_parser import MultiLanguageParser
+from mana_agent.parsers.multi_parser import MultiLanguageParser
 
 
 def test_multi_parser_extracts_js_ts_symbols(tmp_path: Path) -> None:

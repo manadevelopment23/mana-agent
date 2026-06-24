@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from mana_analyzer.analysis.models import Finding
-from mana_analyzer.llm.analyze_chain import AnalyzeChain
+from mana_agent.analysis.models import Finding
+from mana_agent.llm.analyze_chain import AnalyzeChain
 
 
 @dataclass

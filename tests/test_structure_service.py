@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mana_analyzer.services.structure_service import StructureService
+from mana_agent.services.structure_service import StructureService
 
 
 def _write_sample_project(root: Path) -> None:

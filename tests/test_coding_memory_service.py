@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from mana_analyzer.services.coding_memory_service import CodingMemoryService
+from mana_agent.services.coding_memory_service import CodingMemoryService
 
 
 @pytest.fixture

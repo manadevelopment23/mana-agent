@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mana_analyzer.analysis.models import SearchHit
-from mana_analyzer.llm.analyze_chain import AnalyzeChain
-from mana_analyzer.llm.ask_agent import AskAgent
-from mana_analyzer.llm.qna_chain import QnAChain
-from mana_analyzer.llm.run_logger import LlmRunLogger
+from mana_agent.analysis.models import SearchHit
+from mana_agent.llm.analyze_chain import AnalyzeChain
+from mana_agent.llm.ask_agent import AskAgent
+from mana_agent.llm.qna_chain import QnAChain
+from mana_agent.llm.run_logger import LlmRunLogger
 
 
 class _FakeResponse:

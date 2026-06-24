@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from mana_analyzer.utils.index_discovery import discover_index_dirs
+from mana_agent.utils.index_discovery import discover_index_dirs
 
 
 def test_discover_index_dirs_finds_and_sorts(tmp_path: Path) -> None:

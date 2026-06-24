@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mana_analyzer.commands import cli_internal
+from mana_agent.commands import cli_internal
 
 
 class _FakeIndexService:

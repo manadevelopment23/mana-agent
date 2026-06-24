@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from mana_analyzer.llm.tool_worker_process import ToolRunRequest
-from mana_analyzer.llm.tools_executor import (
+from mana_agent.llm.tool_worker_process import ToolRunRequest
+from mana_agent.llm.tools_executor import (
     BatchToolRequest,
     RedisRQToolsExecutor,
     ToolsExecutionConfig,
