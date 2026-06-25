@@ -7,6 +7,31 @@ and dependency analysis, builds reports, answers questions with repository
 context, and runs a tool-aware coding agent that can inspect, patch, and verify
 code.
 
+## Docs
+
+- [Overview](./docs/01-overview.md)
+- [Installation](./docs/02-installation.md)
+- [Quick Start](./docs/03-quick-start.md)
+- [Commands](./docs/04-commands.md)
+- [Configuration](./docs/05-configuration.md)
+- [Workflows](./docs/06-workflows.md)
+- [Project Diagram](./docs/07-diagram.md)
+
+## Project Diagram
+
+```mermaid
+flowchart TD
+    A[Repository] --> B[Analyze]
+    B --> C[Ask]
+    B --> D[Chat]
+    D --> E[Continue]
+    B --> F[Reports in .mana/]
+    C --> G[Evidence-backed answers]
+    D --> H[Coding workflows]
+```
+
+See the dedicated diagram doc for a standalone version: [Project Diagram](./docs/07-diagram.md).
+
 ## What It Does
 
 - Builds an incremental semantic index for source files.
