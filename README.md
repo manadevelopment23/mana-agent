@@ -1,4 +1,4 @@
-# mana-agent (v0.0.5)
+# mana-agent (v0.0.6)
 
 LLM-powered repository analysis and coding-agent automation for local codebases.
 
