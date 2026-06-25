@@ -1936,23 +1936,33 @@ def _required_file_satisfied(
     min_size: int = _MIN_DELIVERABLE_SIZE,
     changed: Container[str] = (),
 ) -> bool:
-    """True when ``rel`` is a real deliverable.
+    """True when ``rel`` is a real, substantive deliverable.
 
-    A deliverable is satisfied when the file exists under ``repo_root`` with at
-    least ``min_size`` bytes, or when an authoritative mutation already reported
-    it in ``changed`` (the trace-proven changed-files set). The on-disk check is
-    the strong signal that catches partial writes and wrong-directory artifacts;
-    ``changed`` honors mutations the worker proved happened.
+    The file must exist on disk with at least ``min_size`` bytes AND not be a
+    placeholder stub. Being in ``changed`` (the trace-proven changed-files set)
+    is necessary but not sufficient: a successful-but-empty/stub write still
+    fails here, because there is no template fallback to rescue it — the worker
+    must author genuine content. This is the on-disk truth the verification gate
+    relies on to surface honest failure.
     """
     if not rel:
         return False
-    if rel in changed:
-        return True
     target = (repo_root / rel)
     try:
-        return target.is_file() and target.stat().st_size >= int(min_size)
+        if not (target.is_file() and target.stat().st_size >= int(min_size)):
+            return False
     except OSError:
         return False
+    try:
+        if _looks_like_stub(target.read_text(encoding="utf-8", errors="replace")):
+            return False
+    except OSError:
+        return False
+    # A non-stub file that exists on disk is satisfied. The ``changed`` set is
+    # retained for callers that pass it but is no longer a bypass of the on-disk
+    # content check above.
+    _ = changed
+    return True
 
 
 def _missing_required_files(
@@ -1988,13 +1998,32 @@ def _mutation_tool_stats(trace: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _forced_mutation_prompt(request: str, target_file: str) -> str:
-    """The MUTATION_REQUIRED retry prompt that forbids natural-language answers."""
+    """The MUTATION_REQUIRED prompt: analyze the project, then author the file.
+
+    This drives an agentic pass, not a one-shot write. The worker is expected to
+    inspect the repository (README, packaging metadata, source layout) so the
+    file it produces is specific to *this* project, then finish with a single
+    mutation tool call. Placeholder/stub content is explicitly forbidden — there
+    is no template fallback behind this, so a stub is a failed deliverable.
+    """
     lines = [
-        "Your previous response failed because no mutation tool was called.",
-        "You are in MUTATION_REQUIRED mode.",
-        "You must call exactly one mutation tool now.",
-        "Allowed tools: create_file, write_file, apply_patch.",
-        "Do not answer in natural language.",
+        "You must create the requested file by ANALYZING THIS PROJECT, then writing it.",
+        "",
+        "Work like an agent:",
+        "1. Inspect the repository to understand it — read the README, packaging "
+        "metadata (pyproject.toml/setup.py/package.json), and the relevant source "
+        "files/directories. Use read_file, repo_search, list_files, and ls.",
+        "2. Decide what THIS specific file should contain from its name/path "
+        "(e.g. an overview summarizes the project; an installation guide gives the "
+        "real setup and install commands; usage/commands document the actual CLI).",
+        "3. Finish by writing real, project-specific content with exactly one "
+        "mutation tool (create_file, write_file, or apply_patch).",
+        "",
+        "Hard requirements:",
+        "- Ground every claim in what you actually found in the repository.",
+        "- Do NOT write placeholders, 'TBD', 'TODO', or generic filler. If you do "
+        "not know something, inspect the repo to find it.",
+        "- The run is not complete until the target file exists with substantive content.",
     ]
     if target_file:
         lines.append(f"Target file: {target_file}")
@@ -2013,205 +2042,120 @@ def _mutation_fallback_tool_allowed(tool_name: str, *, target_exists: bool, prio
     return False
 
 
-def _can_run_deterministic_artifact_fallback(request: str, repo_root: Path, target_path: str) -> bool:
-    if not target_path.lower().endswith(_DETERMINISTIC_ARTIFACT_SUFFIXES):
-        return False
-    text = str(request or "")
-    target = repo_root / target_path
-    if not target.exists():
-        return bool(_CREATE_ARTIFACT_INTENT_RE.search(text) or _ANALYSIS_ARTIFACT_INTENT_RE.search(text))
-    if Path(target_path).name.lower() == "readme.md" and _ANALYSIS_ARTIFACT_INTENT_RE.search(text):
+def _looks_like_stub(content: str) -> bool:
+    """True if ``content`` is a placeholder the agent left behind (TODO/empty)."""
+    text = str(content or "").strip()
+    if len(text) < 120:
         return True
-    return bool(_CREATE_ARTIFACT_INTENT_RE.search(text))
+    lowered = text.lower()
+    return "todo: add" in lowered or "todo: write" in lowered or lowered.count("todo") >= 2
 
 
-def _fallback_trace_text(trace: Sequence[dict[str, Any]], *, limit: int = 4000) -> str:
-    parts: list[str] = []
-    for row in trace:
-        if not isinstance(row, dict):
-            continue
-        for key in ("answer", "output_preview", "result", "output"):
-            value = row.get(key)
-            if isinstance(value, str) and value.strip():
-                parts.append(value.strip())
-    text = "\n".join(parts)
-    return text[:limit]
+def _stray_misplacements(deliverable: str, changed_files: Sequence[str]) -> list[str]:
+    """Top-level files matching a sub-directory deliverable's basename.
 
-
-def _repo_files_snapshot(repo_root: Path, *, limit: int = 80) -> list[str]:
-    skip = {".git", ".mana", ".venv", "venv", "__pycache__", ".pytest_cache", "node_modules", "build", "dist"}
-    files: list[str] = []
-    try:
-        for path in sorted(repo_root.rglob("*"), key=lambda item: item.relative_to(repo_root).as_posix()):
-            rel_parts = path.relative_to(repo_root).parts
-            if any(part in skip for part in rel_parts):
-                continue
-            if path.is_file():
-                files.append(path.relative_to(repo_root).as_posix())
-                if len(files) >= limit:
-                    break
-    except OSError:
-        return files
-    return files
-
-
-def _readme_summary(repo_root: Path) -> str:
-    readme = repo_root / "README.md"
-    if not readme.is_file():
-        return "No README.md was found during fallback generation."
-    try:
-        lines = readme.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return "README.md exists but could not be read during fallback generation."
-    useful = [line.strip() for line in lines if line.strip()][:8]
-    if not useful:
-        return "README.md is present but empty."
-    return "\n".join(f"- {line}" for line in useful)
-
-
-def _project_entry_points(repo_root: Path) -> list[str]:
-    pyproject = repo_root / "pyproject.toml"
-    if not pyproject.is_file():
+    When the user asks for ``docs/01-overview.md`` but the worker writes
+    ``01-overview.md`` at the repository root, the root file is a misplacement
+    of that deliverable. We only treat *top-level* same-basename files as strays
+    so unrelated files in other directories are never touched.
+    """
+    if "/" not in deliverable:
         return []
-    try:
-        lines = pyproject.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
-
-    entries: list[str] = []
-    in_scripts = False
-    for raw_line in lines:
-        line = raw_line.strip()
-        if line.startswith("[") and line.endswith("]"):
-            in_scripts = line == "[project.scripts]"
+    base = Path(deliverable).name
+    strays: list[str] = []
+    for path in dict.fromkeys(changed_files):
+        if path == deliverable or "/" in path:
             continue
-        if not in_scripts or not line or line.startswith("#") or "=" not in line:
-            continue
-        name, target = line.split("=", 1)
-        name = name.strip().strip('"\'')
-        target = target.strip().strip('"\'')
-        if name and target:
-            entries.append(f"- `{name}` -> `{target}`")
-    return entries
+        if Path(path).name == base and path not in strays:
+            strays.append(path)
+    return strays
 
 
-def _top_level_modules(files: Sequence[str]) -> list[str]:
-    modules: list[str] = []
-    for path in files:
-        parts = path.split("/")
-        if len(parts) >= 3 and parts[0] == "src":
-            module = "/".join(parts[:2])
-            if module not in modules:
-                modules.append(module)
-    return modules
-
-
-def _build_minimal_artifact_from_evidence(task: str, repo_root: Path, trace: Sequence[dict[str, Any]]) -> str:
-    files = _repo_files_snapshot(repo_root)
-    dirs = sorted({path.split("/", 1)[0] for path in files if "/" in path})
-    modules = _top_level_modules(files)
-    entry_points = _project_entry_points(repo_root)
-    evidence_text = _fallback_trace_text(trace)
-    evidence_note = "Discovery/read tool output was available and used as supporting context." if evidence_text else (
-        "Only repository-local fallback evidence was available."
-    )
-    structure_lines = "\n".join(f"- `{path}`" for path in files[:40]) or "- No repository files were listed."
-    directory_lines = "\n".join(f"- `{name}/`" for name in dirs[:20]) or "- No top-level directories were listed."
-    module_lines = "\n".join(f"- `{name}/`" for name in modules[:20]) or "- No `src/` modules were listed."
-    entry_lines = "\n".join(entry_points[:20]) or "- No `[project.scripts]` entry points were found."
-    diagram_nodes = ["repo[Repository]"]
-    if (repo_root / "README.md").exists():
-        diagram_nodes.append("repo --> readme[README.md]")
-    for name in dirs[:8]:
-        node = re.sub(r"[^A-Za-z0-9_]", "_", name).strip("_") or "dir"
-        diagram_nodes.append(f"repo --> {node}[{name}/]")
-    diagram = "\n".join(diagram_nodes)
-    return (
-        "# Project Analysis\n\n"
-        "## Overview\n"
-        f"This document was generated for the request: `{task}`.\n\n"
-        f"{_readme_summary(repo_root)}\n\n"
-        "## Diagram\n"
-        "```mermaid\n"
-        "flowchart TD\n"
-        f"{diagram}\n"
-        "```\n\n"
-        "## Structure\n"
-        f"{directory_lines}\n\n"
-        "Primary source modules:\n"
-        f"{module_lines}\n\n"
-        "Important files observed:\n"
-        f"{structure_lines}\n\n"
-        "## CLI / Commands\n"
-        f"{entry_lines}\n\n"
-        "## Notes\n"
-        f"- {evidence_note}\n"
-        "- Areas needing deeper review: runtime configuration, test coverage, and command behavior.\n"
-    )
-
-
-def _run_deterministic_create_file_fallback(
-    *,
+def _salvage_misplaced_deliverables(
     repo_root: Path,
-    request: str,
-    target_path: str,
-    trace: Sequence[dict[str, Any]],
-) -> dict[str, Any]:
-    target = (repo_root / target_path).resolve()
-    try:
-        target.relative_to(repo_root.resolve())
-    except ValueError:
-        return {
-            "ok": False,
-            "tool_name": "create_file",
-            "status": "error",
-            "error": "target path escapes repository",
-        }
-    content = _build_minimal_artifact_from_evidence(request, repo_root, trace)
-    if target.exists():
-        tool = "write_file"
-        result = safe_write_file(repo_root=repo_root, path=target_path, content=content, allowed_prefixes=None)
-    else:
-        tool = "create_file"
-        result = safe_create_file(repo_root=repo_root, path=target_path, content=content, allowed_prefixes=None)
-    ok = bool(result.get("ok"))
-    changed = [target_path] if ok else []
-    if ok and target_path != "README.md" and _README_ATTACH_RE.search(str(request or "")):
-        readme_link = f"- [Project analysis]({target_path})"
-        readme = repo_root / "README.md"
-        if readme.exists():
-            existing = readme.read_text(encoding="utf-8", errors="replace")
-            if readme_link not in existing:
-                separator = "\n" if existing.endswith("\n") else "\n\n"
-                readme_result = safe_write_file(
-                    repo_root=repo_root,
-                    path="README.md",
-                    content=f"{existing}{separator}## Analysis\n\n{readme_link}\n",
-                    allowed_prefixes=None,
-                )
-                if bool(readme_result.get("ok")):
-                    changed.append("README.md")
-        else:
-            readme_result = safe_create_file(
-                repo_root=repo_root,
-                path="README.md",
-                content=f"# Project\n\n## Analysis\n\n{readme_link}\n",
-                allowed_prefixes=None,
+    deliverables: Sequence[str],
+    changed_files: list[str],
+    trace: list[dict[str, Any]],
+) -> list[str]:
+    """Move substantial content written to the wrong path into the required path.
+
+    Returns the stray paths that were relocated (and removed from disk) so the
+    caller can drop them from the reported ``changed_files``.
+    """
+    relocated: list[str] = []
+    for deliverable in deliverables:
+        target_abs = repo_root / deliverable
+        if target_abs.is_file():
+            try:
+                if not _looks_like_stub(target_abs.read_text(encoding="utf-8", errors="replace")):
+                    continue
+            except OSError:
+                continue
+        for stray in _stray_misplacements(deliverable, changed_files):
+            stray_abs = repo_root / stray
+            if not stray_abs.is_file():
+                continue
+            try:
+                content = stray_abs.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if _looks_like_stub(content):
+                continue  # not worth keeping; deterministic generation will replace it
+            if target_abs.exists():
+                result = safe_write_file(repo_root=repo_root, path=deliverable, content=content, allowed_prefixes=None)
+            else:
+                result = safe_create_file(repo_root=repo_root, path=deliverable, content=content, allowed_prefixes=None)
+            if not bool(result.get("ok")):
+                continue
+            try:
+                stray_abs.unlink()
+            except OSError:
+                pass
+            trace.append(
+                {
+                    "tool_name": "write_file",
+                    "status": "ok",
+                    "path": deliverable,
+                    "changed_files": [deliverable],
+                    "files_changed": [deliverable],
+                    "created_by": "deliverable_relocation",
+                }
             )
-            if bool(readme_result.get("ok")):
-                changed.append("README.md")
-    row = {
-        "tool_name": tool,
-        "status": "ok" if ok else "error",
-        "path": target_path,
-        "changed_files": sorted(dict.fromkeys(changed)),
-        "files_changed": sorted(dict.fromkeys(changed)),
-        "result": result,
-        "created_by": "deterministic_mutation_fallback",
-    }
-    if not ok:
-        row["error"] = str(result.get("error") or "mutation fallback failed")
-    return row
+            changed_files.append(deliverable)
+            relocated.append(stray)
+            break
+    return relocated
+
+
+def _cleanup_stray_deliverables(
+    repo_root: Path,
+    deliverables: Sequence[str],
+    changed_files: Sequence[str],
+    trace: list[dict[str, Any]],
+) -> list[str]:
+    """Delete leftover wrong-path duplicates once the real deliverable exists."""
+    removed: list[str] = []
+    for deliverable in deliverables:
+        if not _required_file_satisfied(repo_root, deliverable):
+            continue
+        for stray in _stray_misplacements(deliverable, changed_files):
+            stray_abs = repo_root / stray
+            if not stray_abs.is_file():
+                continue
+            try:
+                stray_abs.unlink()
+            except OSError:
+                continue
+            trace.append(
+                {
+                    "tool_name": "cleanup",
+                    "status": "ok",
+                    "path": stray,
+                    "created_by": "stray_deliverable_cleanup",
+                }
+            )
+            removed.append(stray)
+    return removed
 
 
 def _no_op_reason_from_trace(trace: Sequence[dict[str, Any]]) -> str:
@@ -2656,8 +2600,6 @@ class QueueManager:
         forced_retry_ran = False
         forced_retry_mutation_attempted = False
         forced_retry_changed_files = False
-        deterministic_fallback_ran = False
-        deterministic_fallback_changed_files = False
         warnings: list[str] = []
 
         def _refresh_mutation_state() -> None:
@@ -2671,37 +2613,11 @@ class QueueManager:
         # request named no explicit files (e.g. generic "fix the bug").
         deliverables = list(required_files) or ([resolved_target_path] if resolved_target_path else [])
 
-        # --- Deterministic fallback: create each required file directly. ---
-        # We do not depend on the LLM deciding to call a tool: every deliverable
-        # the worker did not already mutate is written here when it qualifies as a
-        # generatable artifact. This also handles partial success (one file made,
-        # another missing) by only acting on the not-yet-changed files.
-        if mutation_required and not mutation_state.get("no_op_reason") and deliverables:
-            already_changed = set(mutation_state.get("changed_files") or [])
-            for path in deliverables:
-                if path in already_changed:
-                    continue
-                if not _can_run_deterministic_artifact_fallback(request, self.repo_root, path):
-                    continue
-                deterministic_fallback_ran = True
-                fallback_row = _run_deterministic_create_file_fallback(
-                    repo_root=self.repo_root,
-                    request=request,
-                    target_path=path,
-                    trace=trace,
-                )
-                trace.append(fallback_row)
-                changed_files.extend(_extract_changed_files_from_value(fallback_row))
-                _refresh_mutation_state()
-                already_changed = set(mutation_state.get("changed_files") or [])
-                if path in already_changed:
-                    answers.append(f"Created or updated {path}.")
-            deterministic_fallback_changed_files = bool(mutation_state.get("changed_files"))
-            if deterministic_fallback_ran and not deterministic_fallback_changed_files:
-                warnings.append("deterministic_mutation_fallback_failed")
-
         # --- Forced mutation retry: one file at a time, mutation tool required. ---
-        # For any deliverable still missing after the fallback (or, when no files
+        # This is the AGENTIC content path and runs *before* the deterministic
+        # template fallback so the worker authors real, file-specific content
+        # (a genuine overview vs. a genuine installation guide), not boilerplate.
+        # For any deliverable still missing after the main pass (or, when no files
         # were named, when nothing was mutated) re-run the worker under a strict
         # MUTATION_REQUIRED prompt that forbids natural-language-only answers.
         if mutation_required and not mutation_state.get("no_op_reason"):
@@ -2719,7 +2635,22 @@ class QueueManager:
                     **resolved_tool_policy,
                     "mutation_required": True,
                     "mutation_strict": True,
-                    "allowed_tools": ["apply_patch", "write_file", "create_file", "git_diff", "git_status"],
+                    # Agentic authoring: the worker may inspect the repo to ground
+                    # the file, then must end with a mutation. The executor's edit
+                    # branch enforces the same toolset; this keeps them aligned.
+                    "allowed_tools": [
+                        "read_file",
+                        "repo_search",
+                        "semantic_search",
+                        "list_files",
+                        "ls",
+                        "find_symbols",
+                        "apply_patch",
+                        "write_file",
+                        "create_file",
+                        "git_diff",
+                        "git_status",
+                    ],
                     "verify_requires_mutation": True,
                 }
                 forced_execute = make_worker_executor(
@@ -2759,6 +2690,43 @@ class QueueManager:
                 elif not forced_retry_changed_files:
                     warnings.append("forced_mutation_retry_no_changed_files")
 
+        # --- Path reconciliation: salvage content written to the wrong path. ---
+        # The worker sometimes writes "01-overview.md" at the repo root instead of
+        # the requested "docs/01-overview.md". Move substantial misplaced content
+        # into the required path before deciding what still needs generating.
+        removed_strays: list[str] = []
+        if mutation_required and not mutation_state.get("no_op_reason") and deliverables:
+            relocated = _salvage_misplaced_deliverables(self.repo_root, deliverables, changed_files, trace)
+            removed_strays.extend(relocated)
+            if relocated:
+                _refresh_mutation_state()
+
+        # --- Honest-failure accounting: NO fabricated content. ---
+        # There is deliberately no template/boilerplate generator behind the
+        # agentic pass. Deliverable content must be authored by the worker after
+        # it analyzes the project; if a deliverable is still missing or is only a
+        # placeholder stub the worker left behind, we surface that as a failure
+        # (the verification gate below blocks the run) rather than inventing
+        # content. This keeps every produced file genuinely project-grounded.
+        if mutation_required and not mutation_state.get("no_op_reason") and deliverables:
+            for path in deliverables:
+                target_abs = self.repo_root / path
+                stub_left_behind = False
+                if target_abs.is_file():
+                    try:
+                        existing = target_abs.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        existing = ""
+                    stub_left_behind = _looks_like_stub(existing)
+                if (not target_abs.is_file()) or stub_left_behind:
+                    warnings.append(f"deliverable_not_authored:{path}")
+
+        # --- Cleanup: remove leftover wrong-path duplicates now satisfied. ---
+        if mutation_required and not mutation_state.get("no_op_reason") and deliverables:
+            removed_strays.extend(
+                _cleanup_stray_deliverables(self.repo_root, deliverables, changed_files, trace)
+            )
+
         # --- Verification gate: every required deliverable must exist on disk. ---
         missing_required_files = _missing_required_files(
             self.repo_root, deliverables, changed=set(mutation_state.get("changed_files") or [])
@@ -2775,7 +2743,10 @@ class QueueManager:
             elif missing_required_files:
                 run_status = "blocked"
                 terminal_reason = "mutation_required_but_missing_files"
-        changed_files = list(mutation_state.get("changed_files") or changed_files)
+        # Relocated/cleaned-up strays no longer exist on disk, so drop them from
+        # the reported changed files regardless of what the trace remembers.
+        _removed = set(removed_strays)
+        changed_files = [p for p in (mutation_state.get("changed_files") or changed_files) if p not in _removed]
         # Final answer is rebuilt from authoritative execution state (trace,
         # changed_files, mutation_state, verification), never from the last
         # natural-language worker answer, so an intermediate "I could not edit"
@@ -2834,10 +2805,7 @@ class QueueManager:
                     "verification_failing_checks": list(verification.get("failing", [])),
                     "mutation_tool_attempted": bool(mutation_state.get("mutation_attempted")),
                     "mutation_tool_successful": bool(mutation_state.get("mutation_succeeded")),
-                    "mutation_fallback_count": int(bool(deterministic_fallback_ran)) + int(bool(forced_retry_ran)),
-                    "blocked_non_mutation_tools_in_fallback": sorted(_MUTATION_FALLBACK_BLOCKED_TOOLS),
-                    "deterministic_fallback_ran": deterministic_fallback_ran,
-                    "deterministic_fallback_changed_files": deterministic_fallback_changed_files,
+                    "mutation_fallback_count": int(bool(forced_retry_ran)),
                     "required_files": list(deliverables),
                     "missing_required_files": list(missing_required_files),
                     "verification_passed": verification_passed,

@@ -199,7 +199,24 @@ def make_worker_executor(
         question = item.question or (f"run tool {item.tool_name}" if item.tool_name else item.title)
         item_policy = dict(tool_policy or {})
         if item.kind == "edit":
-            item_policy["allowed_tools"] = ["apply_patch", "write_file", "create_file", "git_diff", "git_status"]
+            # An edit item is an *agentic* analyze-then-write pass: the worker may
+            # read and search the repository to ground the file it is about to
+            # author, then must finish with a mutation tool. Read/search tools are
+            # allowed (so content is project-specific, never boilerplate); the
+            # mutation requirement still forces the pass to end in a real write.
+            item_policy["allowed_tools"] = [
+                "read_file",
+                "repo_search",
+                "semantic_search",
+                "list_files",
+                "ls",
+                "find_symbols",
+                "apply_patch",
+                "write_file",
+                "create_file",
+                "git_diff",
+                "git_status",
+            ]
             item_policy["require_read_files"] = 0
             item_policy["mutation_required"] = True
             item_policy["verify_requires_mutation"] = True

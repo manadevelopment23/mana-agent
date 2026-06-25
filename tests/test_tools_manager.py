@@ -35,7 +35,10 @@ class _NoopWorker:
         return ToolRunResponse(answer="ok", sources=[], mode="agent-tools", trace=[], warnings=[])
 
 
-def test_mutation_create_file_fallback_creates_docs_analyze(tmp_path: Path) -> None:
+def test_no_fabricated_content_when_worker_writes_nothing(tmp_path: Path) -> None:
+    # There is no template fallback: a worker that authors nothing yields an
+    # honest failure rather than fabricated boilerplate. The deliverable is not
+    # created and the run is blocked.
     (tmp_path / "docs").mkdir()
     (tmp_path / "README.md").write_text("# Demo\n\nA small CLI project.\n", encoding="utf-8")
     worker = _NoopWorker()
@@ -50,53 +53,17 @@ def test_mutation_create_file_fallback_creates_docs_analyze(tmp_path: Path) -> N
         max_steps=1,
     )
 
-    target = tmp_path / "docs" / "analyze.md"
-    assert target.exists()
-    content = target.read_text(encoding="utf-8")
-    assert "# Project Analysis" in content
-    assert "## Structure" in content
-    assert result.changed_files == ["docs/analyze.md"]
-    assert "No edit tool" not in result.answer
-    assert result.planner_decisions[0]["mutation_tool_attempted"] is True
-    assert result.planner_decisions[0]["mutation_tool_successful"] is True
+    assert not (tmp_path / "docs" / "analyze.md").exists()
+    assert result.run_status == "blocked"
+    decision = result.planner_decisions[0]
+    assert decision["verification_passed"] is False
+    assert "docs/analyze.md" in decision["missing_required_files"]
 
 
-def test_analysis_artifact_fallback_attaches_to_readme(tmp_path: Path) -> None:
-    (tmp_path / "src" / "mana_agent" / "commands").mkdir(parents=True)
-    (tmp_path / "src" / "mana_agent" / "commands" / "cli.py").write_text("def app():\n    pass\n", encoding="utf-8")
-    (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "test_cli.py").write_text("def test_cli():\n    assert True\n", encoding="utf-8")
-    (tmp_path / "README.md").write_text("# Mana Agent\n\nCLI assistant.\n", encoding="utf-8")
-    (tmp_path / "pyproject.toml").write_text(
-        "[project.scripts]\n"
-        'mana-agent = "mana_agent.commands.cli:app"\n',
-        encoding="utf-8",
-    )
-    worker = _NoopWorker()
-
-    result = QueueManager(worker_client=worker, repo_root=tmp_path).run(
-        request="analyze full project and create a analyze.md from whole project with diagram and attach to readme.md",
-        index_dir=str(tmp_path / ".mana" / "index"),
-        requires_edit=True,
-        target_files=[],
-        pass_cap=1,
-        max_steps=1,
-    )
-
-    analysis = tmp_path / "analyze.md"
-    assert analysis.exists()
-    content = analysis.read_text(encoding="utf-8")
-    assert "```mermaid" in content
-    assert "`src/mana_agent/`" in content
-    assert "`mana-agent` -> `mana_agent.commands.cli:app`" in content
-    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
-    assert "- [Project analysis](analyze.md)" in readme
-    assert result.run_status == "completed"
-    assert result.changed_files == ["README.md", "analyze.md"]
-    assert result.planner_decisions[0]["deterministic_fallback_changed_files"] is True
-
-
-def test_update_readme_analysis_fallback_does_not_strict_block_discovery(tmp_path: Path) -> None:
+def test_discovery_pass_does_not_run_under_mutation_required(tmp_path: Path) -> None:
+    # The first (discovery) pass must NOT be strict-mutation: the agent must be
+    # free to read/search before it authors anything. Only the edit pass carries
+    # mutation_required. With nothing authored, the run fails honestly.
     (tmp_path / "src" / "mana_agent").mkdir(parents=True)
     (tmp_path / "src" / "mana_agent" / "app.py").write_text("def main():\n    return 'ok'\n", encoding="utf-8")
     (tmp_path / "README.md").write_text("# Old\n", encoding="utf-8")
@@ -125,12 +92,53 @@ def test_update_readme_analysis_fallback_does_not_strict_block_discovery(tmp_pat
         max_steps=1,
     )
 
-    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
-    assert "# Project Analysis" in readme
-    assert "```mermaid" in readme
-    assert result.run_status == "completed"
-    assert result.changed_files == ["README.md"]
+    # Worker authored nothing, so the stub README is not a satisfied deliverable.
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "# Old\n"
+    assert result.run_status == "blocked"
     assert worker.policies[0].get("mutation_required") is None
+
+
+def test_edit_pass_can_read_and_search_to_ground_content(tmp_path: Path) -> None:
+    # The edit/forced pass is agentic: its policy must expose read/search tools so
+    # the worker can analyze the project before authoring (not just mutation tools).
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
+    body = "# Overview\n\n" + ("Grounded overview content for the demo project. " * 6) + "\n"
+
+    class _PolicyCapturingWorker:
+        def __init__(self) -> None:
+            self.edit_policies: list[dict] = []
+
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            _ = on_event
+            policy = dict(request.tool_policy or {})
+            if policy.get("mutation_required"):
+                self.edit_policies.append(policy)
+            path = str((request.tool_args or {}).get("path") or "")
+            if path == "docs/overview.md":
+                (tmp_path / path).write_text(body, encoding="utf-8")
+                return ToolRunResponse(
+                    answer="wrote overview",
+                    sources=[],
+                    mode="agent-tools",
+                    trace=[{"tool_name": "create_file", "status": "ok", "files_changed": [path]}],
+                    warnings=[],
+                )
+            return ToolRunResponse(answer="ok", sources=[], mode="agent-tools", trace=[], warnings=[])
+
+    worker = _PolicyCapturingWorker()
+    QueueManager(worker_client=worker, repo_root=tmp_path).run(
+        request="create overview.md in docs",
+        index_dir=str(tmp_path / ".mana" / "index"),
+        requires_edit=True,
+        pass_cap=1,
+        max_steps=1,
+    )
+
+    assert worker.edit_policies, "expected at least one mutation-required edit pass"
+    allowed = set(worker.edit_policies[0].get("allowed_tools") or [])
+    assert {"read_file", "repo_search"}.issubset(allowed)
+    assert {"create_file", "write_file", "apply_patch"}.issubset(allowed)
 
 
 def test_mutation_fallback_allowlist_blocks_discovery_tools() -> None:
@@ -739,12 +747,38 @@ def test_resolve_required_deliverables_handles_and_and_ampersand(tmp_path: Path)
     ]
 
 
-def test_create_two_files_in_docs_creates_both_under_docs(tmp_path: Path) -> None:
+def test_two_files_authored_under_docs_complete_the_run(tmp_path: Path) -> None:
+    # Agentic success: a worker that authors substantive, correctly-placed content
+    # for every deliverable completes the run. No templates involved.
     (tmp_path / "docs").mkdir()
     (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
-    worker = _NoopWorker()
 
-    result = QueueManager(worker_client=worker, repo_root=tmp_path).run(
+    overview_body = "# Overview\n\n" + ("This project is a demo CLI for analysis. " * 8) + "\n"
+    install_body = "# Installation\n\n" + ("Run pip install -e . to set up the project. " * 6) + "\n"
+    bodies = {"docs/01-overview.md": overview_body, "docs/02-installation.md": install_body}
+
+    class _TwoFileAuthoringWorker:
+        def __init__(self) -> None:
+            self.seen: set[str] = set()
+
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            _ = on_event
+            path = str((request.tool_args or {}).get("path") or "")
+            if path in bodies and path not in self.seen:
+                self.seen.add(path)
+                target = tmp_path / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(bodies[path], encoding="utf-8")
+                return ToolRunResponse(
+                    answer=f"wrote {path}",
+                    sources=[],
+                    mode="agent-tools",
+                    trace=[{"tool_name": "create_file", "status": "ok", "files_changed": [path]}],
+                    warnings=[],
+                )
+            return ToolRunResponse(answer="ok", sources=[], mode="agent-tools", trace=[], warnings=[])
+
+    result = QueueManager(worker_client=_TwoFileAuthoringWorker(), repo_root=tmp_path).run(
         request="create 01-overview.md & 02-installation.md in docs",
         index_dir=str(tmp_path / ".mana" / "index"),
         requires_edit=True,
@@ -752,8 +786,8 @@ def test_create_two_files_in_docs_creates_both_under_docs(tmp_path: Path) -> Non
         max_steps=1,
     )
 
-    assert (tmp_path / "docs" / "01-overview.md").exists()
-    assert (tmp_path / "docs" / "02-installation.md").exists()
+    assert (tmp_path / "docs" / "01-overview.md").read_text(encoding="utf-8") == overview_body
+    assert (tmp_path / "docs" / "02-installation.md").read_text(encoding="utf-8") == install_body
     # The wrong (repo-root) paths must NOT be created.
     assert not (tmp_path / "01-overview.md").exists()
     assert not (tmp_path / "02-installation.md").exists()
@@ -765,10 +799,13 @@ def test_create_two_files_in_docs_creates_both_under_docs(tmp_path: Path) -> Non
     assert decision["verification_passed"] is True
 
 
-def test_partial_success_creates_missing_required_file(tmp_path: Path) -> None:
+def test_partial_success_blocks_on_missing_file(tmp_path: Path) -> None:
+    # Honest partial failure: the worker authors 02 but never 01. The run is
+    # blocked on the missing deliverable; nothing is fabricated for 01.
     (tmp_path / "docs").mkdir()
     (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
-    worker = _OneFileWorker(tmp_path, made_path="docs/02-installation.md")
+    install_body = "# Installation\n\n" + ("Install the demo project with pip. " * 6) + "\n"
+    worker = _OneFileWorker(tmp_path, made_path="docs/02-installation.md", content=install_body)
 
     result = QueueManager(worker_client=worker, repo_root=tmp_path).run(
         request="create 01-overview.md and 02-installation.md in docs",
@@ -778,12 +815,11 @@ def test_partial_success_creates_missing_required_file(tmp_path: Path) -> None:
         max_steps=1,
     )
 
-    # Worker only produced 02; the supervisor must fill in the missing 01.
-    assert (tmp_path / "docs" / "01-overview.md").exists()
+    # Worker produced only 02; 01 is never fabricated, so the run fails honestly.
     assert (tmp_path / "docs" / "02-installation.md").exists()
-    assert result.run_status == "completed"
-    assert result.changed_files == ["docs/01-overview.md", "docs/02-installation.md"]
-    assert result.planner_decisions[0]["missing_required_files"] == []
+    assert not (tmp_path / "docs" / "01-overview.md").exists()
+    assert result.run_status == "blocked"
+    assert result.planner_decisions[0]["missing_required_files"] == ["docs/01-overview.md"]
 
 
 def test_missing_required_file_blocks_completion(tmp_path: Path) -> None:
@@ -811,7 +847,8 @@ def test_missing_required_file_blocks_completion(tmp_path: Path) -> None:
 
 def test_wrong_path_at_repo_root_does_not_satisfy_docs_requirement(tmp_path: Path) -> None:
     # File created at repo root must NOT satisfy a docs/ deliverable.
-    (tmp_path / "01-overview.md").write_text("body\n", encoding="utf-8")
+    body = "# Overview\n\n" + ("Real substantive overview content for the project. " * 6) + "\n"
+    (tmp_path / "01-overview.md").write_text(body, encoding="utf-8")
     assert _required_file_satisfied(tmp_path, "01-overview.md") is True
     assert _required_file_satisfied(tmp_path, "docs/01-overview.md") is False
     assert _missing_required_files(tmp_path, ["docs/01-overview.md"]) == ["docs/01-overview.md"]
@@ -823,11 +860,108 @@ def test_empty_file_does_not_satisfy_requirement(tmp_path: Path) -> None:
     assert _required_file_satisfied(tmp_path, "docs/01-overview.md") is False
 
 
-def test_forced_mutation_prompt_forbids_natural_language() -> None:
+def test_forced_mutation_prompt_drives_agentic_authoring() -> None:
     prompt = _forced_mutation_prompt("create docs/01-overview.md", "docs/01-overview.md")
-    assert "Your previous response failed because no mutation tool was called." in prompt
-    assert "You are in MUTATION_REQUIRED mode." in prompt
-    assert "You must call exactly one mutation tool now." in prompt
-    assert "Allowed tools: create_file, write_file, apply_patch." in prompt
-    assert "Do not answer in natural language." in prompt
+    assert "ANALYZING THIS PROJECT" in prompt
+    # It must point the worker at read/search tools, not just mutation tools.
+    assert "read_file" in prompt and "repo_search" in prompt
+    assert "create_file" in prompt and "write_file" in prompt and "apply_patch" in prompt
+    # No placeholders/boilerplate — there is no template fallback behind it.
+    assert "Do NOT write placeholders" in prompt
     assert "Target file: docs/01-overview.md" in prompt
+    assert "User request: create docs/01-overview.md" in prompt
+
+
+class _WrongPathStubWorker:
+    """Reproduces the live bug: writes stub files at the repo ROOT (not docs/).
+
+    Mirrors the observed failure where the worker, after repeated
+    ``tools_only_violation`` errors, finally calls write_file with bare
+    filenames and ``TODO:`` placeholder content.
+    """
+
+    def __init__(self, repo_root: Path, names: list[str]) -> None:
+        self.repo_root = Path(repo_root)
+        self.names = names
+        self.done = False
+
+    def run_tools(self, request, on_event=None):  # noqa: ANN001
+        _ = on_event
+        if self.done:
+            return ToolRunResponse(answer="ok", sources=[], mode="agent-tools", trace=[], warnings=[])
+        self.done = True
+        rows = []
+        for name in self.names:
+            target = self.repo_root / name  # bare name -> repo root (WRONG)
+            target.write_text(f"# {name}\n\nTODO: add content\n", encoding="utf-8")
+            rows.append({"tool_name": "write_file", "status": "ok", "files_changed": [name]})
+        return ToolRunResponse(answer="wrote stubs", sources=[], mode="agent-tools", trace=rows, warnings=[])
+
+
+def test_wrong_path_stub_is_not_rescued(tmp_path: Path) -> None:
+    # A stub written to the wrong path is neither relocated nor regenerated: there
+    # is no template fallback, and stub content is not worth relocating. The
+    # deliverable stays missing and the run is blocked (honest failure).
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "README.md").write_text("# Demo\n\nA small CLI.\n", encoding="utf-8")
+    worker = _WrongPathStubWorker(tmp_path, names=["01-overview.md", "02-installation.md"])
+
+    result = QueueManager(worker_client=worker, repo_root=tmp_path).run(
+        request="create 01-overview.md & 02-installation.md in docs",
+        index_dir=str(tmp_path / ".mana" / "index"),
+        requires_edit=True,
+        pass_cap=1,
+        max_steps=1,
+    )
+
+    # The docs/ deliverables were never authored with real content.
+    assert not (tmp_path / "docs" / "01-overview.md").exists()
+    assert not (tmp_path / "docs" / "02-installation.md").exists()
+    # The stub stays where the worker put it; it is not promoted into docs/.
+    assert (tmp_path / "01-overview.md").exists()
+    assert result.run_status == "blocked"
+    decision = result.planner_decisions[0]
+    assert set(decision["missing_required_files"]) == {
+        "docs/01-overview.md",
+        "docs/02-installation.md",
+    }
+
+
+def test_substantial_wrong_path_content_is_relocated_not_discarded(tmp_path: Path) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
+    rich = "# Project Overview\n\n" + ("This project does many useful things. " * 20) + "\n"
+
+    class _RichWrongPathWorker:
+        def __init__(self) -> None:
+            self.done = False
+
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            _ = on_event
+            if self.done:
+                return ToolRunResponse(answer="ok", sources=[], mode="agent-tools", trace=[], warnings=[])
+            self.done = True
+            (tmp_path / "01-overview.md").write_text(rich, encoding="utf-8")
+            return ToolRunResponse(
+                answer="wrote overview",
+                sources=[],
+                mode="agent-tools",
+                trace=[{"tool_name": "write_file", "status": "ok", "files_changed": ["01-overview.md"]}],
+                warnings=[],
+            )
+
+    result = QueueManager(worker_client=_RichWrongPathWorker(), repo_root=tmp_path).run(
+        request="create 01-overview.md in docs",
+        index_dir=str(tmp_path / ".mana" / "index"),
+        requires_edit=True,
+        pass_cap=1,
+        max_steps=1,
+    )
+
+    # The agent's real content is preserved, just moved into docs/.
+    assert (tmp_path / "docs" / "01-overview.md").read_text(encoding="utf-8") == rich
+    assert not (tmp_path / "01-overview.md").exists()
+    assert result.run_status == "completed"
+    assert result.changed_files == ["docs/01-overview.md"]
+
+

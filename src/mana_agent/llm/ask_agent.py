@@ -579,6 +579,65 @@ class AskAgent:
                 unread.append(rel)
         return unread
 
+    def _mutation_changed_files(
+        self,
+        *,
+        name: str,
+        args: dict[str, Any],
+        content: Any,
+    ) -> list[str]:
+        """Repo-relative files a *successful* mutation tool call changed.
+
+        Mutation tool results (and the ``ToolInvocationTrace`` built from them)
+        do not carry an explicit changed-files list, so strict mutation gates
+        downstream cannot recognize a real write. We reconstruct it here from the
+        tool payload, falling back to the call's own ``path``/``patch`` argument
+        when the payload omits a list. Returns ``[]`` for non-mutation tools or
+        when the call did not succeed.
+        """
+        if name not in {"apply_patch", "create_file", "write_file"}:
+            return []
+        if name == "apply_patch":
+            if self._is_apply_patch_failure(content):
+                return []
+        else:
+            payload = self._coerce_tool_payload(content)
+            if isinstance(payload, dict):
+                if payload.get("ok") is False:
+                    return []
+                if str(payload.get("error", "")).strip() or str(payload.get("error_code", "")).strip():
+                    return []
+
+        changed: list[str] = []
+        payload = self._coerce_tool_payload(content)
+        if isinstance(payload, dict):
+            for key in ("files_changed", "changed_files", "modified_files", "touched_files"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    changed.extend(str(item) for item in value if str(item).strip())
+            proof = payload.get("proof")
+            if isinstance(proof, dict) and isinstance(proof.get("modified_files"), list):
+                changed.extend(str(item) for item in proof["modified_files"] if str(item).strip())
+        if not changed:
+            if name == "apply_patch":
+                touched = extract_patch_touched_files(str(args.get("patch", "") or ""))
+                if bool(touched.get("ok")):
+                    changed.extend(str(item) for item in touched.get("touched_files", []) if str(item).strip())
+            else:
+                raw_path = str(args.get("path", "")).strip()
+                if raw_path:
+                    changed.append(raw_path)
+
+        normalized: list[str] = []
+        for item in changed:
+            try:
+                rel = self._to_project_rel(item)
+            except Exception:
+                rel = str(item).replace("\\", "/").lstrip("./")
+            if rel and rel not in normalized:
+                normalized.append(rel)
+        return normalized
+
     @staticmethod
     def _normalize_line_request(start_line: int, end_line: int, line_window: int) -> tuple[int, int]:
         start = max(int(start_line or 1), 1)
@@ -1630,6 +1689,11 @@ class AskAgent:
                                     duration_ms=(perf_counter() - tool_started) * 1000,
                                     status="ok" if not self._search_error_detail(content) else "error",
                                     output_preview=str(content)[:4000],
+                                    changed_files=self._mutation_changed_files(
+                                        name=name,
+                                        args=args if isinstance(args, dict) else {},
+                                        content=content,
+                                    ),
                                 )
                             )
                     except Exception as exc:
@@ -1705,18 +1769,11 @@ class AskAgent:
                         if not bool(payload.get("cache_hit", False)) and not read_failed:
                             disk_read_count += 1
                 if name in {"apply_patch", "create_file", "write_file"}:
-                    payload = self._coerce_tool_payload(content)
-                    changed_paths: list[str] = []
-                    if isinstance(payload, dict):
-                        for key in ("files_changed", "changed_files", "modified_files", "touched_files"):
-                            value = payload.get(key)
-                            if isinstance(value, list):
-                                changed_paths.extend(str(item) for item in value if str(item).strip())
-                        proof = payload.get("proof")
-                        if isinstance(proof, dict) and isinstance(proof.get("modified_files"), list):
-                            changed_paths.extend(str(item) for item in proof["modified_files"] if str(item).strip())
-                    if not changed_paths and isinstance(args, dict) and str(args.get("path", "")).strip():
-                        changed_paths.append(str(args.get("path", "")))
+                    changed_paths = self._mutation_changed_files(
+                        name=name,
+                        args=args if isinstance(args, dict) else {},
+                        content=content,
+                    )
                     if changed_paths:
                         evidence_memory.invalidate_many(set(changed_paths))
                 if name == "search_internet":

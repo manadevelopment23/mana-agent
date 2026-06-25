@@ -19,6 +19,35 @@ from mana_agent.llm.agent_work_queue_adapters import (
 from mana_agent.llm.tool_worker_process import ToolRunResponse
 
 
+# The agentic edit/forced pass exposes read+search tools (so the worker can
+# analyze the repo before authoring), then the mutation tools that end the pass.
+_AGENTIC_EDIT_TOOLS = [
+    "read_file",
+    "repo_search",
+    "semantic_search",
+    "list_files",
+    "ls",
+    "find_symbols",
+    "apply_patch",
+    "write_file",
+    "create_file",
+    "git_diff",
+    "git_status",
+]
+
+
+def _substantive(title: str) -> str:
+    """Body long enough to clear the deliverable stub check (>=120 chars)."""
+    return f"# {title}\n\n" + ("Real, substantive content describing the project. " * 6) + "\n"
+
+
+def _write_real(repo_root: Path, rel: str) -> None:
+    """Author a deliverable on disk the way a real mutation tool would."""
+    target = Path(repo_root) / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_substantive(rel), encoding="utf-8")
+
+
 # --------------------------------------------------------------------------- #
 # Fingerprint / dedup
 # --------------------------------------------------------------------------- #
@@ -233,6 +262,9 @@ def test_queue_manager_runs_edit_and_verify_for_mutating_request(tmp_path: Path)
                     trace=[{"tool_name": "repo_search", "status": "ok"}],
                     warnings=[],
                 )
+            is_write = (request.tool_name or "") == "write_file"
+            if is_write:
+                _write_real(tmp_path, "docs/overview.md")
             return ToolRunResponse(
                 answer="ok",
                 sources=[],
@@ -241,7 +273,7 @@ def test_queue_manager_runs_edit_and_verify_for_mutating_request(tmp_path: Path)
                     {
                         "tool_name": request.tool_name or "tool",
                         "status": "ok",
-                        "changed_files": ["docs/overview.md"] if (request.tool_name or "") == "write_file" else [],
+                        "changed_files": ["docs/overview.md"] if is_write else [],
                     }
                 ],
                 warnings=[],
@@ -294,7 +326,7 @@ def test_queue_manager_blocks_edit_when_no_mutation_tool_attempted(tmp_path: Pat
     assert result.run_status == "blocked"
     assert result.terminal_reason == "mutation_required_but_no_mutation_tool_attempted"
     assert "forced_mutation_retry_no_mutation_tool_attempted" in result.warnings
-    assert worker.policies[-1]["allowed_tools"] == ["apply_patch", "write_file", "create_file", "git_diff", "git_status"]
+    assert worker.policies[-1]["allowed_tools"] == _AGENTIC_EDIT_TOOLS
 
 
 def test_queue_manager_blocks_edit_when_mutation_has_no_changed_files(tmp_path: Path):
@@ -335,6 +367,7 @@ def test_queue_manager_uses_latest_useful_answer_only_for_edit_success(tmp_path:
                     trace=[{"tool_name": "repo_search", "status": "ok"}],
                     warnings=[],
                 )
+            _write_real(tmp_path, "docs/overview.md")
             return ToolRunResponse(
                 answer="final mutation answer",
                 sources=[],
@@ -378,7 +411,7 @@ def test_sniffer_uses_planner_target_file_for_edit_job(tmp_path: Path):
     assert "Target file: docs/analyze.md" in edit.question
 
 
-def test_edit_with_evidence_uses_mutation_only_policy_without_duplicate_reads(tmp_path: Path):
+def test_edit_with_evidence_uses_agentic_policy_without_duplicate_reads(tmp_path: Path):
     from mana_agent.llm.evidence_memory import EvidenceMemory
 
     (tmp_path / "src").mkdir()
@@ -427,7 +460,7 @@ def test_edit_with_evidence_uses_mutation_only_policy_without_duplicate_reads(tm
     assert len(seen) == 1
     request = seen[0]
     assert request.run_id == "edit-memory"
-    assert request.tool_policy["allowed_tools"] == ["apply_patch", "write_file", "create_file", "git_diff", "git_status"]
+    assert request.tool_policy["allowed_tools"] == _AGENTIC_EDIT_TOOLS
     assert request.tool_policy["require_read_files"] == 0
     assert request.tool_name == "write_file"
 
@@ -551,6 +584,7 @@ def test_failed_verify_project_is_surfaced_in_final_answer(tmp_path: Path):
                         }
                     ],
                 )
+            _write_real(tmp_path, "src/app.py")
             return ToolRunResponse(
                 answer="edited",
                 mode="agent-tools",
@@ -587,6 +621,7 @@ def test_passed_verify_reports_changed_files_and_checks_passed(tmp_path: Path):
                     trace=[{"tool_name": "verify_project", "status": "ok",
                             "checks": [{"name": "pytest", "status": "passed"}]}],
                 )
+            _write_real(tmp_path, "src/app.py")
             return ToolRunResponse(
                 answer="edited",
                 mode="agent-tools",
