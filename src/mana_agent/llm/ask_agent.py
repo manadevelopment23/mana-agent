@@ -44,6 +44,19 @@ from mana_agent.tools.repository import (
 logger = logging.getLogger(__name__)
 
 
+# Injected on the final step of a mutation-required run that has not yet produced
+# a write. It flips the worker from "read forever" to "act": the next turn is
+# bound to mutation tools only, so the run ends in a real, project-grounded file
+# instead of a natural-language answer that would trip the tools-only gate.
+_FORCED_WRITE_INSTRUCTION = (
+    "You have gathered enough evidence from the repository. Do NOT read, search, "
+    "or list anything else. Right now, in this step, call exactly one mutation "
+    "tool (create_file, write_file, or apply_patch) to write the required "
+    "deliverable file with its full, final, project-specific content. Do not "
+    "answer in prose and do not emit placeholder or stub content."
+)
+
+
 class _SemanticSearchInput(BaseModel):
     query: str = Field(description="Query used for semantic code search")
     k: int = Field(default=8, ge=1, le=50, description="Top results to return")
@@ -1408,6 +1421,32 @@ class AskAgent:
 
         bound = self.llm.bind_tools(tools)
 
+        # Mutation-required runs (the forced-write deliverable path) must end in a
+        # real write. Prepare a mutation-only bound model so that, when the step
+        # budget is nearly spent without a successful mutation, the final step can
+        # only call a write tool instead of synthesizing a prose answer that would
+        # later trip the tools-only gate. tool_choice support varies by provider,
+        # so degrade gracefully (required -> any -> plain bind).
+        mutation_required = bool(policy.get("mutation_required") or policy.get("mutation_strict"))
+        mutation_tool_names = [
+            name
+            for name in ("apply_patch", "write_file", "create_file")
+            if name in tool_map and (not allowed_tools or name in allowed_tools)
+        ]
+        bound_mutation = None
+        if mutation_required and mutation_tool_names:
+            mutation_tools = [tool_map[name] for name in mutation_tool_names]
+            for choice in ("required", "any"):
+                try:
+                    bound_mutation = self.llm.bind_tools(mutation_tools, tool_choice=choice)
+                    break
+                except Exception:
+                    bound_mutation = None
+            if bound_mutation is None:
+                bound_mutation = self.llm.bind_tools(mutation_tools)
+        mutation_succeeded = False
+        forced_write_done = False
+
         messages = [
             SystemMessage(content=system_prompt or ASK_AGENT_SYSTEM_PROMPT),
             HumanMessage(content=question),
@@ -1494,22 +1533,46 @@ class AskAgent:
                 return
 
         for step_idx in range(max_steps):
+            need_forced_write = (
+                mutation_required and not mutation_succeeded and bound_mutation is not None
+            )
             # When the remaining tool budget is too low to make further progress,
             # stop calling tools and synthesize a final answer from the evidence
             # gathered so far rather than risk ending with no answer at all.
             remaining_steps = max_steps - step_idx
             if remaining_steps <= 1 and step_idx > 0 and not final_answer:
-                force_synthesis_reason = force_synthesis_reason or "remaining_tool_budget_low"
-                break
+                # A mutation-required run must not bail to a natural-language
+                # answer here: that guarantees zero mutations and a downstream
+                # tools_only_violation. Spend the final step forcing a write.
+                if need_forced_write and not forced_write_done:
+                    forced_write_done = True
+                    messages.append(HumanMessage(content=_FORCED_WRITE_INSTRUCTION))
+                else:
+                    force_synthesis_reason = force_synthesis_reason or "remaining_tool_budget_low"
+                    break
 
+            # Once a forced write is in flight, restrict the model to mutation
+            # tools so it can only act, never read again, until a write lands.
+            use_bound = (
+                bound_mutation
+                if (forced_write_done and not mutation_succeeded and bound_mutation is not None)
+                else bound
+            )
             try:
-                ai_msg = bound.invoke(messages, config=cfg)
+                ai_msg = use_bound.invoke(messages, config=cfg)
             except TypeError:
-                ai_msg = bound.invoke(messages)
+                ai_msg = use_bound.invoke(messages)
             messages.append(ai_msg)
 
             tool_calls = getattr(ai_msg, "tool_calls", None) or []
             if not tool_calls:
+                # The model tried to answer in prose. For a mutation-required run
+                # with no write yet, force a mutation-only step instead of
+                # accepting a prose answer that cannot satisfy the deliverable.
+                if need_forced_write and not forced_write_done:
+                    forced_write_done = True
+                    messages.append(HumanMessage(content=_FORCED_WRITE_INSTRUCTION))
+                    continue
                 final_answer = self._extract_model_text(ai_msg.content) or str(ai_msg.content)
                 break
 
@@ -1776,6 +1839,7 @@ class AskAgent:
                     )
                     if changed_paths:
                         evidence_memory.invalidate_many(set(changed_paths))
+                        mutation_succeeded = True
                 if name == "search_internet":
                     detail = self._search_error_detail(content)
                     if detail:
