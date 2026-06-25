@@ -15,7 +15,12 @@ code.
 - [Configuration](./docs/05-configuration.md)
 - [Workflows](./docs/06-workflows.md)
 - [Project Diagram](./docs/07-diagram.md)
-- [Architecture](./docs/08-architecture.md)\n- [Project Diagram](./docs/07-diagram.md)
+- [Architecture](./docs/08-architecture.md)
+- [Agent Behavior](./docs/09-agent-behavior.md)
+- [Error Handling](./docs/10-error-handling.md)
+- [Logging](./docs/11-logging.md)
+- [Testing](./docs/12-testing.md)
+- [Tool System](./docs/13-tool-system.md)
 
 ## Project Diagram
 

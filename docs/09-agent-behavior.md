@@ -35,5 +35,5 @@ When finishing a task, the agent should report:
 ## Related Docs
 
 - [Architecture](./08-architecture.md)
-- [Tool System](./08-tool-system.md)
+- [Tool System](./13-tool-system.md)
 - [README](../README.md)

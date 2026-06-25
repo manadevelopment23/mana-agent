@@ -65,9 +65,11 @@ def _write_tools_execution_log(
 ) -> None:
     """Persist the full per-tool execution trace for a single run_tools request.
 
-    Writes one self-contained JSON file per run under ``.mana/tools_logs/`` and
-    appends a compact line to a per-day JSONL index. Logging failures never
-    propagate — tool execution must not be affected by log I/O.
+    Appends each tool-execution record to a single per-run JSONL file under
+    ``.mana/tools_logs/``, named ``tools_<run_id>.jsonl``. Every run has exactly
+    one log file, and all tool executions (each carrying ``flow_id``) for that
+    run are appended to it. Logging failures never propagate — tool execution
+    must not be affected by log I/O.
     """
     try:
         log_root = _resolve_tools_log_root(req, repo_root)
@@ -77,7 +79,6 @@ def _write_tools_execution_log(
         logs_dir.mkdir(parents=True, exist_ok=True)
 
         now = time.time()
-        stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime(now)) + f"{int((now % 1) * 1e6):06d}Z"
         run_id = str(req.run_id or "norun")
         safe_run = re.sub(r"[^A-Za-z0-9_.-]", "_", run_id)[:64]
 
@@ -99,33 +100,12 @@ def _write_tools_execution_log(
             "trace": trace_rows,
         }
 
-        payload = json.dumps(record, default=str, ensure_ascii=False, indent=2)
-        payload = redact_secrets(payload)
-        (logs_dir / f"tools_{stamp}_{safe_run}.json").write_text(payload, encoding="utf-8")
-
-        # Compact per-day index for quick scanning.
-        index_line = json.dumps(
-            {
-                "logged_at_iso": record["logged_at_iso"],
-                "run_id": req.run_id,
-                "flow_id": req.flow_id,
-                "tool_name": req.tool_name or None,
-                "ok": bool(ok),
-                "error_code": error_code or "",
-                "tools_total": len(trace_rows),
-                "tools_ok": int(ok_tools),
-                "tools": [
-                    str(r.get("tool_name") or r.get("tool") or r.get("name") or r.get("type") or "tool")
-                    for r in trace_rows
-                ],
-                "file": f"tools_{stamp}_{safe_run}.json",
-            },
-            default=str,
-            ensure_ascii=False,
-        )
-        index_name = "tools_" + time.strftime("%Y-%m-%d", time.gmtime(now)) + ".jsonl"
-        with (logs_dir / index_name).open("a", encoding="utf-8") as fh:
-            fh.write(redact_secrets(index_line) + "\n")
+        # One log file per run; every tool execution for this run is appended.
+        line = json.dumps(record, default=str, ensure_ascii=False)
+        line = redact_secrets(line)
+        log_name = f"tools_{safe_run}.jsonl"
+        with (logs_dir / log_name).open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
     except Exception as exc:  # pragma: no cover - logging must never break a run
         logger.debug("[tools_logs] failed to write execution log: %s", exc)
 

@@ -28,4 +28,4 @@ so repository changes can be validated with confidence.
 
 - [Error Handling](./10-error-handling.md)
 - [Logging](./11-logging.md)
-- [Tool System](./08-tool-system.md)
+- [Tool System](./13-tool-system.md)

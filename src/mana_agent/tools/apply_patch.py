@@ -1140,6 +1140,29 @@ def safe_apply_patch(
                 _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=touched_files, check_only=check_only)
                 return result
 
+            # A context mismatch means the patch's old_lines do not match the
+            # file at the stated location: the patch is stale/wrong. Do NOT let
+            # the fuzzier perl strategy salvage it — perl can pattern-match the
+            # hunk in at the wrong place and corrupt the file. Fail and tell the
+            # caller to re-read the target before patching again.
+            if "context mismatch" in py_detail.lower():
+                result = ApplyPatchResult(
+                    ok=False,
+                    touched_files=touched_files,
+                    check_only=check_only,
+                    strategy_requested=requested_strategy,
+                    strategy="py",
+                    attempts=attempts,
+                    error=(
+                        f"Error: patch does not match the current file: {py_detail}. "
+                        "Re-read the target file and rebuild the patch against its "
+                        "current contents (the perl fallback is intentionally not "
+                        "used here to avoid applying a stale hunk at the wrong location)."
+                    ),
+                ).to_dict()
+                _write_patch_history(repo_root=repo_root, patch=patch, result=result, touched_files=touched_files, check_only=check_only)
+                return result
+
     # -----------------------------------------------------------------------
     # Strategy: perl
     # -----------------------------------------------------------------------

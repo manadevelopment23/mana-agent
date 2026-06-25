@@ -29,6 +29,6 @@ traceable for users and developers.
 
 ## Related Docs
 
-- [Tool System](./08-tool-system.md)
+- [Tool System](./13-tool-system.md)
 - [Agent Behavior](./09-agent-behavior.md)
 - [Logging](./11-logging.md)

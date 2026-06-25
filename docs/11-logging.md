@@ -29,5 +29,5 @@ failures observable without overwhelming the user.
 ## Related Docs
 
 - [Error Handling](./10-error-handling.md)
-- [Tool System](./08-tool-system.md)
+- [Tool System](./13-tool-system.md)
 - [Agent Behavior](./09-agent-behavior.md)
