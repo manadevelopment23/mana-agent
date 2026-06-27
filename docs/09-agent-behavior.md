@@ -23,6 +23,33 @@ The agent should:
 5. Verify the change with tests or smoke checks.
 6. Summarize the result with file citations.
 
+## Normal Auto Chat
+
+`mana-agent chat` supports natural-language requests without requiring slash
+commands. Normal messages are classified into a bounded mode before the agent
+uses tools:
+
+- answer-only: questions such as `Where is this handled?`, `What calls this?`,
+  or `Explain this flow`.
+- plan-only: requests such as `Give me a plan for this feature` or `Suggest an
+  approach`.
+- edit: implementation requests such as `Fix this bug`, `Add this command`, or
+  `Rename this module`.
+- review: requests such as `Review my diff` or `Check what is wrong`.
+- verify: requests such as `Run tests` or `Verify this`.
+- analyze: bounded project or module analysis requests.
+
+The normal auto router is intentionally small and fast. It uses targeted search,
+caps candidate files and file reads, limits discovery rounds, and stops once it
+has enough evidence to answer or act. It does not perform a full repository
+analysis unless the user explicitly asks for analysis.
+
+Only edit mode can expose mutation tools such as `apply_patch`, `write_file`, or
+`create_file`. Answer, plan, review, verify, and analyze modes are read-only with
+respect to source files. Short follow-ups such as `continue`, `do it`, or
+`verify` reuse compact state from the previous normal chat turn instead of
+rediscovering from scratch.
+
 ## Reporting Expectations
 
 When finishing a task, the agent should report:
@@ -44,7 +71,8 @@ read-only operations that never invoke the LLM or coding agent:
   is writing the selected `.mana/` artifacts; source files are never modified.
 
 Anything that is not a recognized slash command is treated as a normal request
-and routed to the agent as usual.
+and routed through normal auto chat. Slash commands always override the auto
+router.
 
 ## Related Docs
 

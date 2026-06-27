@@ -1,106 +1,59 @@
 # Commands
 
-`mana-agent` is installed as the `mana-agent` console script from `pyproject.toml`, and the CLI entry point is wired to `mana_agent.commands.cli:app`. [pyproject.toml:1-51](pyproject.toml:1-51)
+This page documents the commands exposed by `mana-agent` and the `/analyze` slash command used inside chat. The console script is defined in `pyproject.toml` and points to `mana_agent.commands.cli:app`. [pyproject.toml:1-52](../pyproject.toml#L1-L52)
 
-The project exposes these top-level commands in the Typer app:
+The Typer app is created in `src/mana_agent/commands/cli_internal.py`, where the top-level CLI registers `analyze` and `continue`; the interactive chat command is registered in `src/mana_agent/commands/chat_cli.py`. [src/mana_agent/commands/cli_internal.py:68-69](../src/mana_agent/commands/cli_internal.py#L68-L69) [src/mana_agent/commands/cli_internal.py:148-191](../src/mana_agent/commands/cli_internal.py#L148-L191) [src/mana_agent/commands/chat_cli.py:1-1](../src/mana_agent/commands/chat_cli.py#L1-L1) [src/mana_agent/commands/chat_cli.py:196-196](../src/mana_agent/commands/chat_cli.py#L196-L196)
 
-- `analyze`
-- `ask`
-- `chat`
-- `continue`
+## Commands found in the project
 
-The first three are documented in the README and implemented as Typer commands in the CLI modules. The `continue` command is registered in `src/mana_agent/commands/cli_internal.py`. [README.md:1-242](README.md:1-242) [src/mana_agent/commands/analyze_cli.py:220-360](src/mana_agent/commands/analyze_cli.py:220-360) [src/mana_agent/commands/ask_cli.py:1-262](src/mana_agent/commands/ask_cli.py:1-262) [src/mana_agent/commands/chat_cli.py:120-260](src/mana_agent/commands/chat_cli.py:120-260) [src/mana_agent/commands/cli_internal.py:1-220](src/mana_agent/commands/cli_internal.py:1-220)
+From the CLI implementation, the commands available to users are:
 
-## Global usage
+- `mana-agent analyze`
+- `mana-agent chat`
+- `mana-agent continue`
 
-The README shows the general pattern for invoking the CLI and a few global flags:
+The README’s CLI section only highlights `chat`, but the code shows `analyze` and `continue` are also first-class commands. [README.md:1-337](../README.md#L1-L337) [src/mana_agent/commands/cli_internal.py:148-191](../src/mana_agent/commands/cli_internal.py#L148-L191) [src/mana_agent/commands/chat_cli.py:196-196](../src/mana_agent/commands/chat_cli.py#L196-L196)
 
-```bash
-mana-agent analyze /path/to/project
-mana-agent --verbose analyze .
-mana-agent --log-dir .mana/logs ask "summarize the parser"
-mana-agent --output-dir .mana/output chat
-```
+## Command reference
 
-`mana-agent --help` is also available, and the README states that `analyze`, `ask`, and `chat` support `--json` where structured output is available. [README.md:1-242](README.md:1-242)
+### `mana-agent analyze`
 
-## `analyze`
+`analyze` generates repository-intelligence artifacts for a target path. The command accepts a project path, analysis depth, output format, output directory, include/exclude filters, and file-scan limits. It normalizes `markdown` to `md`, accepts `md`, `json`, and `both`, and writes results under `.mana/analyze` by default. [src/mana_agent/commands/cli_internal.py:148-190](../src/mana_agent/commands/cli_internal.py#L148-L190)
 
-`analyze` is the unified repository-analysis pipeline. It takes a target path, resolves the project root, indexes the repository, runs dependency analysis, static analysis, semantic search when `--query` is supplied, LLM-assisted findings, structure analysis, and vulnerability scanning, then writes report artifacts under the analyzed project’s `.mana/` directory. [src/mana_agent/commands/analyze_cli.py:220-360](src/mana_agent/commands/analyze_cli.py:220-360) [README.md:1-242](README.md:1-242)
-
-Example:
+Common usage:
 
 ```bash
-mana-agent analyze /path/to/project --query "authentication flow"
-mana-agent analyze /path/to/project --json
+mana-agent analyze .
+mana-agent analyze /path/to/project --depth full
+mana-agent analyze /path/to/project --format json
+mana-agent analyze /path/to/project --format markdown
+mana-agent analyze /path/to/project --format both
+mana-agent analyze /path/to/project --include src,tests --exclude .venv,dist
 ```
 
-Common options documented in the README and visible in the command signature include:
+Input validation from the implementation:
 
-- `--query`
-- `--k`
-- `--model`
-- `--include-tests/--no-include-tests`
-- `--online/--offline`
-- `--osv-timeout-seconds`
-- `--security-scope`
-- `--report-profile`
-- `--detail-line-target`
-- `--security-lens`
-- `--output-format`
-- `--fail-on`
-- `--auto-continue/--no-auto-continue`
-- `--max-passes`
-- `--max-tool-calls`
-- `--max-runtime-minutes`
-- `--max-cost`
-- `--json` [src/mana_agent/commands/analyze_cli.py:220-360](src/mana_agent/commands/analyze_cli.py:220-360) [README.md:1-242](README.md:1-242)
+- `--depth` must be `quick`, `normal`, or `full`.
+- `--format` must be `md`, `json`, or `both`.
+- `--include` and `--exclude` are comma-separated lists.
+- `--max-files` defaults to `5000`.
+- `--max-file-size-kb` defaults to `512`.
 
-Artifacts written by `analyze`:
+The command writes analysis artifacts to `.mana/analyze` and prints the paths it created. [src/mana_agent/commands/cli_internal.py:148-190](../src/mana_agent/commands/cli_internal.py#L148-L190)
 
-- `.mana/analyze.json`
-- `.mana/analyze.md`
-- `.mana/analyze.html`
-- `.mana/analyze.dot`
-- `.mana/analyze.graphml` [README.md:1-242](README.md:1-242)
+### `mana-agent chat`
 
-## `ask`
-
-`ask` answers a repository question against an index. It supports a direct index, directory-aware mode, ephemeral indexes, agent tool use, and JSON output. When tool mode is enabled, it can return source references and tool trace information. [src/mana_agent/commands/ask_cli.py:1-262](src/mana_agent/commands/ask_cli.py:1-262) [README.md:1-242](README.md:1-242)
-
-Example:
-
-```bash
-mana-agent ask "How is configuration loaded?" --root-dir /path/to/project
-```
-
-Common options include:
-
-- `--k`
-- `--model`
-- `--index-dir`
-- `--ephemeral-index`
-- `--dir-mode`
-- `--root-dir`
-- `--max-indexes`
-- `--auto-index-missing/--no-auto-index-missing`
-- `--agent-tools/--no-agent-tools`
-- `--agent-max-steps`
-- `--agent-unlimited/--no-agent-unlimited`
-- `--agent-timeout-seconds`
-- `--json` [src/mana_agent/commands/ask_cli.py:1-262](src/mana_agent/commands/ask_cli.py:1-262)
-
-## `chat`
-
-`chat` opens an interactive REPL for repository analysis and coding-agent workflows. Its signature shows support for index selection, directory-aware mode, ephemeral indexes, coding memory, flow IDs, planning mode, auto execution, tool-worker execution, Redis-backed tool execution, and several limits for search, read, and execution budgets. [src/mana_agent/commands/chat_cli.py:120-260](src/mana_agent/commands/chat_cli.py:120-260) [src/mana_agent/commands/cli_internal.py:1-220](src/mana_agent/commands/cli_internal.py:1-220)
+`chat` starts the interactive assistant. It can work with an index, build an ephemeral index, use directory-aware mode, enable agent tools, enable the coding agent, persist coding memory, and run in full-auto or planning modes. The command also supports diagram rendering and JSON output. [src/mana_agent/commands/chat_cli.py:196-357](../src/mana_agent/commands/chat_cli.py#L196-L357)
 
 Example:
 
 ```bash
 mana-agent chat --root-dir /path/to/project
+mana-agent chat --root-dir . --planning-mode --coding-memory
+mana-agent chat --dir-mode --auto-index-missing
 ```
 
-Notable options visible in the command definition include:
+Notable options implemented in the command signature include:
 
 - `--model`
 - `--index-dir`
@@ -129,31 +82,65 @@ Notable options visible in the command definition include:
 - `--planning-max-questions`
 - `--auto-execute-plan/--no-auto-execute-plan`
 - `--auto-execute-max-passes`
-- `--auto-continue/--no-auto-continue` [src/mana_agent/commands/chat_cli.py:120-260](src/mana_agent/commands/chat_cli.py:120-260)
+- `--auto-continue/--no-auto-continue`
+- `--execution-profile`
+- `--full-auto`
+- `--full-auto-status-every`
+- `--agent-max-steps`
+- `--agent-unlimited/--no-agent-unlimited`
+- `--agent-timeout-seconds`
+- `--multiline-input/--no-multiline-input`
+- `--multiline-terminator`
+- `--diagram-render-images/--no-diagram-render-images`
+- `--diagram-output-dir`
+- `--diagram-format`
+- `--diagram-open/--no-diagram-open`
+- `--diagram-timeout-seconds`
+- `--json` [src/mana_agent/commands/chat_cli.py:196-357](../src/mana_agent/commands/chat_cli.py#L196-L357)
 
-The README also notes that chat can persist coding memory at `<project>/.mana/index/chat_memory.sqlite3`. [README.md:1-242](README.md:1-242)
+The chat implementation uses a read-only answer path when coding-agent features are not enabled, and a coding-agent path when edits are allowed. It also supports direct command fast paths, exact search, planning questions, and the `/analyze` slash command. [src/mana_agent/commands/chat_cli.py:1-2579](../src/mana_agent/commands/chat_cli.py#L1-L2579)
 
-### In-chat slash command: `/analyze`
+### `mana-agent continue`
 
-Inside the chat REPL you can run `/analyze` to analyze the current project and write report artifacts under `.mana/`. It is read-only except for those artifacts and is handled before the message is sent to the LLM. [src/mana_agent/commands/chat_analyze_command.py:1-80](src/mana_agent/commands/chat_analyze_command.py:1-80) [src/mana_agent/commands/chat_cli.py:1418-1470](src/mana_agent/commands/chat_cli.py:1418-1470)
+`continue` resumes a saved auto-execute run from `.mana/runs/<run_id>`. It requires `--run-id` and can be constrained with pass, tool-call, runtime, cost, and progress caps. [src/mana_agent/commands/cli_internal.py:191-262](../src/mana_agent/commands/cli_internal.py#L191-L262)
 
-Typing `/analyze` with no arguments opens a format menu:
+Example:
 
-```text
-Select output format:
-
-1. JSON
-2. Markdown
-3. HTML
-4. DOT graph
-5. GraphML
-6. Mermaid diagram
-7. All formats
-
-Enter choice:
+```bash
+mana-agent continue --run-id my-run --root-dir /path/to/project
 ```
 
-Enter a single number (`1`), several numbers (`1,2,3`), or `7` for all formats. You can also skip the menu with direct forms:
+Options implemented by the command:
+
+- `--run-id`
+- `--root-dir`
+- `--pass-cap`
+- `--auto-continue/--no-auto-continue`
+- `--max-passes`
+- `--max-tool-calls/--max-total-tool-calls`
+- `--max-runtime-minutes`
+- `--max-cost`
+- `--max-no-progress-passes`
+- `--timeout`
+- `--k`
+- `--max-steps`
+- `--max-resume-cycles` [src/mana_agent/commands/cli_internal.py:191-262](../src/mana_agent/commands/cli_internal.py#L191-L262)
+
+## In-chat `/analyze`
+
+Inside `mana-agent chat`, the `/analyze` slash command analyzes the current project and writes report artifacts under `.mana/`. The slash command is detected before normal chat routing and is implemented in `src/mana_agent/commands/chat_analyze_command.py`. [src/mana_agent/commands/chat_analyze_command.py:1-84](../src/mana_agent/commands/chat_analyze_command.py#L1-L84) [src/mana_agent/commands/chat_cli.py:1430-1470](../src/mana_agent/commands/chat_cli.py#L1430-L1470)
+
+The supported analyze artifact formats are defined in `src/mana_agent/commands/analyze_formats.py`:
+
+- `json` → `.mana/analyze.json`
+- `markdown` / `md` → `.mana/analyze.md`
+- `html` → `.mana/analyze.html`
+- `dot` → `.mana/analyze.dot`
+- `graphml` → `.mana/analyze.graphml`
+- `mermaid` → `.mana/diagram.mmd`
+- `all` → every artifact above [src/mana_agent/commands/analyze_formats.py:1-174](../src/mana_agent/commands/analyze_formats.py#L1-L174)
+
+Direct forms accepted by the parser include:
 
 ```text
 /analyze all
@@ -168,53 +155,18 @@ Enter a single number (`1`), several numbers (`1,2,3`), or `7` for all formats. 
 /analyze --format json,markdown,html
 ```
 
-Format-to-artifact mapping (written under `.mana/`):
+If no format is supplied, the slash command opens the numbered menu. The menu offers JSON, Markdown, HTML, DOT graph, GraphML, Mermaid diagram, and an all-formats option. [src/mana_agent/commands/chat_analyze_command.py:32-42](../src/mana_agent/commands/chat_analyze_command.py#L32-L42) [src/mana_agent/commands/analyze_formats.py:49-63](../src/mana_agent/commands/analyze_formats.py#L49-L63)
 
-| Token | Artifact |
-| --- | --- |
-| `json` | `.mana/analyze.json` |
-| `markdown` / `md` | `.mana/analyze.md` |
-| `html` | `.mana/analyze.html` |
-| `dot` | `.mana/analyze.dot` |
-| `graphml` | `.mana/analyze.graphml` |
-| `mermaid` | `.mana/diagram.mmd` |
-| `all` | every artifact above |
+## Quick diff against the markdown commands list
 
-Invalid tokens (e.g. `/analyze pdf`) print a clean error listing the supported formats and do not crash the session. The canonical format list lives in [src/mana_agent/commands/analyze_formats.py:1-80](src/mana_agent/commands/analyze_formats.py:1-80).
+The previous markdown already mentioned the following commands or slash command:
 
-## `continue`
+- `chat`
+- `/analyze`
 
-`continue` resumes a persisted auto-execute run from `<root>/.mana/runs/<run_id>`. It requires `--run-id` and accepts caps for passes, tool calls, runtime, and cost, plus retrieval and step limits. [src/mana_agent/commands/cli_internal.py:1-220](src/mana_agent/commands/cli_internal.py:1-220)
+The code-based command inventory adds the missing top-level CLI commands:
 
-Common options visible in the command definition include:
+- `analyze`
+- `continue`
 
-- `--run-id`
-- `--root-dir`
-- `--pass-cap`
-- `--auto-continue/--no-auto-continue`
-- `--max-passes`
-- `--max-tool-calls/--max-total-tool-calls`
-- `--max-runtime-minutes`
-- `--max-cost`
-- `--max-no-progress-passes`
-- `--timeout`
-- `--k`
-- `--max-steps`
-- `--max-resume-cycles` [src/mana_agent/commands/cli_internal.py:1-220](src/mana_agent/commands/cli_internal.py:1-220)
-
-## Help and verification
-
-All commands support `--help`. The README also lists local verification commands that are useful after editing CLI docs or behavior:
-
-```bash
-pytest -q
-ruff check src tests
-mypy src tests
-python -c "import mana_agent; print('ok')"
-mana-agent --help
-mana-agent analyze --help
-mana-agent ask --help
-mana-agent chat --help
-```
-
-[README.md:1-242](README.md:1-242)
+So the command list in this file is now aligned with the implementation. [src/mana_agent/commands/cli_internal.py:148-191](../src/mana_agent/commands/cli_internal.py#L148-L191) [src/mana_agent/commands/chat_cli.py:196-196](../src/mana_agent/commands/chat_cli.py#L196-L196)

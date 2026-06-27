@@ -43,6 +43,7 @@ from mana_agent.llm.coding_agent_models import (
     FlowStep,
     as_jsonable,
 )
+from mana_agent.llm.auto_chat import apply_auto_chat_tool_policy
 from mana_agent.llm.coding_agent_prompt import CODING_SYSTEM_PROMPT
 
 
@@ -713,6 +714,7 @@ class CodingAgent:
         run_id: str | None = None,
         callbacks: Sequence[Any] | None = None,
         prechecklist_payload: dict[str, Any] | None = None,
+        auto_chat_mode: str | None = None,
     ) -> dict[str, Any]:
         preview_payload = prechecklist_payload or self.preview_execution_checklist(
             request,
@@ -783,7 +785,11 @@ class CodingAgent:
             for item in (preview_payload.get("target_files") if isinstance(preview_payload.get("target_files"), list) else [])
             if str(item).strip()
         ]
-        tool_policy = self._tool_policy_for_request(request, flow_context=effective_flow_context)
+        tool_policy = self._tool_policy_for_request(
+            request,
+            flow_context=effective_flow_context,
+            auto_chat_mode=auto_chat_mode,
+        )
         try:
             _ = callbacks
             orchestrated = self.tools_manager_orchestrator.run(
@@ -1540,7 +1546,13 @@ class CodingAgent:
         selected["dynamic_read_budget_reason"] = "fallback_static_default"
         return selected
 
-    def _tool_policy_for_request(self, request: str, *, flow_context: str | None = None) -> dict[str, Any]:
+    def _tool_policy_for_request(
+        self,
+        request: str,
+        *,
+        flow_context: str | None = None,
+        auto_chat_mode: str | None = None,
+    ) -> dict[str, Any]:
         block_internet = self.repo_only_internet_default and (not self._allows_web_search(request))
         require_read_files = self.require_read_files
         explicit_files = {
@@ -1560,8 +1572,8 @@ class CodingAgent:
             request,
             flow_context=flow_context,
         )
-        return {
-        "allowed_tools": [
+        policy = {
+            "allowed_tools": [
                 "semantic_search",
                 "read_file",
                 "run_command",
@@ -1602,6 +1614,9 @@ class CodingAgent:
             "search_repeat_limit": 1,
             "max_semantic_k": 50,
         }
+        if auto_chat_mode:
+            policy = apply_auto_chat_tool_policy(policy, auto_chat_mode)
+        return policy
 
     def _generate_common(
         self,
@@ -1610,6 +1625,7 @@ class CodingAgent:
         call_agent_fn,
         flow_context: str | None,
         flow_id: str | None,
+        auto_chat_mode: str | None = None,
     ) -> tuple[dict[str, Any], str | None, str | None]:
         before = self._git_status_paths()
         warnings: list[str] = []
@@ -1646,7 +1662,11 @@ class CodingAgent:
             }
             return result, active_flow_id, effective_flow_context
 
-        tool_policy = self._tool_policy_for_request(request, flow_context=effective_flow_context)
+        tool_policy = self._tool_policy_for_request(
+            request,
+            flow_context=effective_flow_context,
+            auto_chat_mode=auto_chat_mode,
+        )
         required_read_files = int(tool_policy.get("require_read_files", self.require_read_files) or self.require_read_files)
         request_for_run = self._rewrite_ambiguous_followup(request, effective_flow_context)
         if request_for_run != request:
@@ -1920,6 +1940,7 @@ class CodingAgent:
         callbacks: Sequence[Any] | None = None,
         flow_context: str | None = None,
         flow_id: str | None = None,
+        auto_chat_mode: str | None = None,
     ) -> dict[str, Any]:
         def _call(*, request_text: str, tool_policy: dict[str, Any], flow_context: str | None) -> str:
             return self._call_agent_single(
@@ -1939,6 +1960,7 @@ class CodingAgent:
             call_agent_fn=_call,
             flow_context=flow_context,
             flow_id=flow_id,
+            auto_chat_mode=auto_chat_mode,
         )
         return result
 
@@ -1953,6 +1975,7 @@ class CodingAgent:
         callbacks: Sequence[Any] | None = None,
         flow_context: str | None = None,
         flow_id: str | None = None,
+        auto_chat_mode: str | None = None,
     ) -> dict[str, Any]:
         def _call(*, request_text: str, tool_policy: dict[str, Any], flow_context: str | None) -> str:
             return self._call_agent_multi(
@@ -1972,6 +1995,7 @@ class CodingAgent:
             call_agent_fn=_call,
             flow_context=flow_context,
             flow_id=flow_id,
+            auto_chat_mode=auto_chat_mode,
         )
         return result
 

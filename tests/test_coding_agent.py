@@ -256,6 +256,40 @@ def test_coding_agent_prevents_duplicate_semantic_search_loops(tmp_path: Path, m
     assert policy["search_repeat_limit"] == 1
 
 
+def test_coding_agent_auto_chat_answer_mode_blocks_mutation_tools(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    agent.generate(
+        "Where is approval handled?",
+        index_dir=tmp_path / ".mana/index",
+        k=4,
+        auto_chat_mode="answer_only",
+    )
+    fake = agent.ask_agent
+    assert isinstance(fake, _FakeAskAgent)
+    policy = fake.calls[0]["tool_policy"]
+    assert "apply_patch" not in policy["allowed_tools"]
+    assert "write_file" not in policy["allowed_tools"]
+    assert policy["auto_chat_mode"] == "answer_only"
+    assert policy["read_budget"] <= 6
+
+
+def test_coding_agent_auto_chat_edit_mode_allows_mutation_tools(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload)
+    agent.generate(
+        "Fix duplicate approval",
+        index_dir=tmp_path / ".mana/index",
+        k=4,
+        auto_chat_mode="edit",
+    )
+    fake = agent.ask_agent
+    assert isinstance(fake, _FakeAskAgent)
+    policy = fake.calls[0]["tool_policy"]
+    assert "apply_patch" in policy["allowed_tools"]
+    assert policy["auto_chat_mode"] == "edit"
+
+
 def test_coding_agent_effective_prompt_includes_language_tooling_guide(tmp_path: Path, monkeypatch) -> None:
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)

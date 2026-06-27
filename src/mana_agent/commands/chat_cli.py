@@ -10,6 +10,15 @@ from .chat_analyze_command import (
     handle_analyze_command,
     is_analyze_command,
 )
+from mana_agent.llm.auto_chat import (
+    AutoChatMode,
+    AutoChatSessionState,
+    apply_auto_chat_tool_policy,
+    classify_auto_chat_intent,
+    load_auto_chat_state,
+    resolve_auto_followup,
+    save_auto_chat_state,
+)
 
 
 def _load_analysis_context(root) -> str | None:
@@ -924,17 +933,21 @@ def chat(
         # Most recent /analyze output, loaded so later chat answers are grounded in
         # the analysis. Refreshed whenever /analyze runs during the session.
         analysis_context_text: str | None = _load_analysis_context(root)
+        auto_chat_state: AutoChatSessionState = load_auto_chat_state(root)
         full_auto_pass_window_logs: list[dict[str, Any]] = []
         full_auto_pass_window_decisions: list[dict[str, Any]] = []
         full_auto_latest_checklist_counts: dict[str, int] | None = None
         full_auto_passes_total: int = 0
         full_auto_pass_checkpoints_emitted: int = 0
 
-        def _base_auto_execute_tool_policy(user_question: str) -> dict[str, Any]:
+        def _base_auto_execute_tool_policy(user_question: str, *, auto_chat_mode: AutoChatMode | None = None) -> dict[str, Any]:
             if coding_agent_instance is not None:
-                return coding_agent_instance._tool_policy_for_request(user_question)  # type: ignore[attr-defined]
+                return coding_agent_instance._tool_policy_for_request(  # type: ignore[attr-defined]
+                    user_question,
+                    auto_chat_mode=(auto_chat_mode.value if auto_chat_mode is not None else None),
+                )
             block_internet = not bool(re.search(r"(?i)\\b(latest|internet|online|web|news|search web)\\b", user_question))
-            return {
+            policy = {
                 "allowed_tools": [
                     "semantic_search",
                     "read_file",
@@ -952,6 +965,9 @@ def chat(
                 "search_repeat_limit": 1,
                 "max_semantic_k": 50,
             }
+            if auto_chat_mode is not None:
+                policy = apply_auto_chat_tool_policy(policy, auto_chat_mode)
+            return policy
 
         def _ensure_tools_manager_orchestrator() -> QueueManager | None:
             nonlocal tool_worker_client
@@ -1008,6 +1024,7 @@ def chat(
             *,
             render_progress: bool = True,
             run_id: str | None = None,
+            auto_chat_mode: AutoChatMode | None = None,
         ) -> tuple[dict[str, Any], str]:
             # We may adopt the flow id the preview attached to, so this name is
             # rebound here rather than only read from the enclosing scope.
@@ -1157,7 +1174,7 @@ def chat(
                     k=resolved_k,
                     max_steps=chat_agent_max_steps,
                     timeout_seconds=agent_timeout_seconds,
-                    tool_policy=_base_auto_execute_tool_policy(user_question),
+                    tool_policy=_base_auto_execute_tool_policy(user_question, auto_chat_mode=auto_chat_mode),
                     pass_cap=auto_execute_max_passes,
                     on_event=CodingAgent._log_worker_event,
                     flow_id=active_flow_id,
@@ -1292,6 +1309,7 @@ def chat(
             user_question: str,
             *,
             render_progress: bool = True,
+            auto_chat_mode: AutoChatMode | None = None,
         ) -> tuple[dict[str, Any], str]:
             run_full_auto = str(execution_profile or "").strip().lower() == "full-auto"
             resume_cycles = 0
@@ -1307,6 +1325,7 @@ def chat(
                     effective_question,
                     render_progress=(render_progress and resume_cycles == 0),
                     run_id=resume_run_id,
+                    auto_chat_mode=auto_chat_mode,
                 )
                 last_debug_tail = debug_tail
                 payload_run_id = str(payload.get("run_id", "") or "").strip()
@@ -1338,6 +1357,7 @@ def chat(
             user_question: str,
             payload: dict[str, Any],
             debug_tail: str,
+            auto_chat_mode: AutoChatMode,
         ) -> None:
             nonlocal pending_ui_selection
             answer_raw = str(payload.get("answer", "") or "")
@@ -1457,6 +1477,46 @@ def chat(
                 multiline_input=multiline_input,
                 multiline_terminator=multiline_terminator,
             )
+            _save_auto_chat_turn_state(
+                mode=auto_chat_mode,
+                task=user_question,
+                answer_text=answer_text,
+                sources=payload_sources if isinstance(payload_sources, list) else [],
+                changed_files=changed_files,
+                verification=str(payload.get("terminal_reason", "") or ""),
+            )
+
+        def _save_auto_chat_turn_state(
+            *,
+            mode: AutoChatMode,
+            task: str,
+            answer_text: str,
+            sources: list[Any] | None = None,
+            changed_files: list[str] | None = None,
+            verification: str = "",
+        ) -> None:
+            nonlocal auto_chat_state
+            source_paths: list[str] = []
+            for item in sources or []:
+                if isinstance(item, dict):
+                    value = item.get("path") or item.get("file") or item.get("source")
+                else:
+                    value = str(item)
+                text = str(value or "").strip()
+                if text and text not in source_paths:
+                    source_paths.append(text)
+            auto_chat_state = AutoChatSessionState(
+                last_mode=mode.value,
+                last_task=task,
+                relevant_files=source_paths[:12],
+                changed_files=[str(item) for item in (changed_files or []) if str(item).strip()][:12],
+                verification=verification,
+                summary=str(answer_text or "").strip()[:800],
+            )
+            try:
+                save_auto_chat_state(root, auto_chat_state)
+            except Exception as exc:
+                logger.debug("Failed to save auto-chat state: %s", exc)
 
         while True:
             try:
@@ -1600,6 +1660,10 @@ def chat(
                 )
                 continue
 
+            original_auto_question = question
+            question = resolve_auto_followup(question, auto_chat_state)
+            auto_chat_mode = classify_auto_chat_intent(question)
+
             # -----------------------------
             # Exact search fast-path (ripgrep / static search, no index needed).
             # -----------------------------
@@ -1642,6 +1706,17 @@ def chat(
                     flow_id=active_flow_id,
                     multiline_input=multiline_input,
                     multiline_terminator=multiline_terminator,
+                )
+                _save_auto_chat_turn_state(
+                    mode=auto_chat_mode,
+                    task=original_auto_question,
+                    answer_text=answer_text,
+                    sources=[
+                        {"path": item.file_path}
+                        for item in search_result.matches[:12]
+                        if getattr(item, "file_path", None)
+                    ],
+                    changed_files=[],
                 )
                 continue
 
@@ -1740,14 +1815,13 @@ def chat(
                 )
                 continue
 
-            plan_trigger_request = _looks_like_plan_trigger_request(question)
-            edit_request = _looks_like_edit_request(question)
+            plan_trigger_request = bool(auto_chat_mode == AutoChatMode.PLAN_ONLY)
+            edit_request = bool(auto_chat_mode == AutoChatMode.EDIT)
             auto_planning_turn = bool(
                 planning_request is not None
                 or planning_mode
-                or (coding_agent_instance is not None and plan_trigger_request and not edit_request and not agent_tools_explicit)
             )
-            force_plan_only_response = False
+            force_plan_only_response = bool(auto_chat_mode == AutoChatMode.PLAN_ONLY)
             force_auto_execute_edit = bool(
                 coding_agent_instance is not None
                 and auto_execute_plan
@@ -1759,7 +1833,7 @@ def chat(
                 and auto_execute_plan
                 and hasattr(coding_agent_instance, "generate_auto_execute")
                 and not auto_planning_turn
-                and (plan_trigger_request or force_auto_execute_edit)
+                and force_auto_execute_edit
             ):
                 pending_prechecklist = None
                 pending_prechecklist_source = ""
@@ -1858,11 +1932,15 @@ def chat(
                 planning_answers = []
                 planning_questions = []
                 if agent_tools and legacy_auto_execute_plan_requested:
-                    auto_payload, auto_debug_tail = _run_auto_execute_pipeline_with_resume(question)
+                    auto_payload, auto_debug_tail = _run_auto_execute_pipeline_with_resume(
+                        question,
+                        auto_chat_mode=auto_chat_mode,
+                    )
                     _emit_auto_execute_terminal(
                         user_question=question,
                         payload=auto_payload,
                         debug_tail=auto_debug_tail,
+                        auto_chat_mode=auto_chat_mode,
                     )
                     continue
                 force_plan_only_response = True
@@ -1871,9 +1949,9 @@ def chat(
             logger.info("Chat question received", extra={"question": question, "dir_mode": dir_mode, "agent_tools": agent_tools})
 
             if (
-                _looks_like_edit_request(question)
+                edit_request
                 and coding_agent_instance is None
-                and not (agent_tools and auto_execute_plan and tool_worker_process and _looks_like_plan_trigger_request(question))
+                and not (agent_tools and auto_execute_plan and tool_worker_process and plan_trigger_request)
             ):
                 console.print(
                     "[yellow]This chat session is read-only for file edits.[/yellow] "
@@ -1884,7 +1962,7 @@ def chat(
             if (
                 coding_agent_instance is not None
                 and coding_memory
-                and _looks_like_edit_request(question)
+                and edit_request
                 and not plan_trigger_request
             ):
                 if pending_conflict_question is not None:
@@ -1894,7 +1972,7 @@ def chat(
                     elif choice in {"new", "n", "2"}:
                         active_flow_id = None
                         question = pending_conflict_question
-                    elif _looks_like_edit_request(question):
+                    elif edit_request:
                         logger.info(
                             "Pending flow conflict replaced by new edit request",
                             extra={
@@ -1927,16 +2005,18 @@ def chat(
                 and agent_tools
                 and auto_execute_plan
                 and (edit_request or legacy_auto_execute_plan_requested or execution_profile == "full-auto")
-                and _looks_like_plan_trigger_request(question)
+                and (plan_trigger_request or edit_request)
             ):
                 auto_payload, auto_debug_tail = _run_auto_execute_pipeline_with_resume(
                     question,
                     render_progress=False,
+                    auto_chat_mode=auto_chat_mode,
                 )
                 _emit_auto_execute_terminal(
                     user_question=question,
                     payload=auto_payload,
                     debug_tail=auto_debug_tail,
+                    auto_chat_mode=auto_chat_mode,
                 )
                 continue
 
@@ -2022,6 +2102,13 @@ def chat(
                     multiline_input=multiline_input,
                     multiline_terminator=multiline_terminator,
                 )
+                _save_auto_chat_turn_state(
+                    mode=auto_chat_mode,
+                    task=original_auto_question,
+                    answer_text=answer_text,
+                    sources=sources,
+                    changed_files=[],
+                )
                 continue
 
             # ==========================================================
@@ -2061,6 +2148,7 @@ def chat(
                                     callbacks=callbacks,
                                     flow_id=active_flow_id,
                                     run_id=turn_resume_run_id,
+                                    auto_chat_mode=auto_chat_mode.value,
                                     prechecklist_payload=(
                                         {
                                             "flow_id": active_flow_id,
@@ -2080,6 +2168,7 @@ def chat(
                                 timeout_seconds=min(max(agent_timeout_seconds, 60), 600),
                                 callbacks=callbacks,
                                 flow_id=active_flow_id,
+                                auto_chat_mode=auto_chat_mode.value,
                             )
                     else:
                         assert resolved_index_dir is not None
@@ -2096,6 +2185,7 @@ def chat(
                                     callbacks=callbacks,
                                     flow_id=active_flow_id,
                                     run_id=turn_resume_run_id,
+                                    auto_chat_mode=auto_chat_mode.value,
                                     prechecklist_payload=(
                                         {
                                             "flow_id": active_flow_id,
@@ -2115,6 +2205,7 @@ def chat(
                                 timeout_seconds=min(max(agent_timeout_seconds, 60), 600),
                                 callbacks=callbacks,
                                 flow_id=active_flow_id,
+                                auto_chat_mode=auto_chat_mode.value,
                             )
 
                     activity = LiveToolActivity(
@@ -2443,6 +2534,14 @@ def chat(
                     ),
                     multiline_input=multiline_input,
                     multiline_terminator=multiline_terminator,
+                )
+                _save_auto_chat_turn_state(
+                    mode=auto_chat_mode,
+                    task=original_auto_question,
+                    answer_text=answer_text,
+                    sources=list(payload_sources),
+                    changed_files=[str(item) for item in changed if str(item).strip()],
+                    verification=str((result or {}).get("auto_execute_terminal_reason", "") or ""),
                 )
                 pending_prechecklist = None
                 pending_prechecklist_source = ""
