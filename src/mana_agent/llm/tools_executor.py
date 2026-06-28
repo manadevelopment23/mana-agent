@@ -5,7 +5,7 @@ import json
 import time
 from typing import Any, Callable, Literal, Sequence
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from mana_agent.llm.tool_worker_process import (
     ToolRunRequest,

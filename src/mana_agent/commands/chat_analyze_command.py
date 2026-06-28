@@ -11,16 +11,20 @@ analysis. The only side effect is writing artifact files under ``.mana/``.
 from __future__ import annotations
 
 import logging
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from mana_agent.analysis.models import DependencyGraphReport
+from mana_agent.describe.describe_service import DescribeService
 from mana_agent.dependencies.dependency_service import DependencyService
-from mana_agent.renderers.html_report import render_analyze_html
+from mana_agent.renderers.html_report import render_analyze_html, render_report_html
 from mana_agent.services.project_analyze_service import ProjectAnalyzeOptions, ProjectAnalyzeService
+from mana_agent.services.report_service import ReportService
 from mana_agent.services.structure_service import StructureService
+from mana_agent.services.vulnerability_service import VulnerabilityService
 from mana_agent.analysis.checks import PythonStaticAnalyzer
 from mana_agent.utils.io import iter_python_files
 
@@ -79,6 +83,28 @@ class AnalyzeCommandOutcome:
     status: str  # "generated" | "error" | "cancelled"
     message: str
     result: AnalyzeRunResult | None = None
+
+
+class _StaticAnalyzeService:
+    """Small adapter for ReportService's legacy analyze_service contract."""
+
+    def analyze(self, root: str | Path) -> list[Any]:
+        analyzer = PythonStaticAnalyzer()
+        findings: list[Any] = []
+        for file_path in iter_python_files(Path(root)):
+            try:
+                findings.extend(analyzer.analyze_file(file_path))
+            except Exception as exc:  # noqa: BLE001 - report generation is best-effort per file
+                logger.warning("Static report analysis skipped for %s: %s", file_path, exc)
+        return findings
+
+
+class _AnalyzeDescribeService(DescribeService):
+    """DescribeService variant for /analyze that keeps writes under output_dir."""
+
+    def describe(self, root: str | Path, *args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("use_cache", False)
+        return super().describe(root, *args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +279,46 @@ def _build_payload(
     }
 
 
+def _write_report_service_artifacts(root: Path, out_dir: Path) -> list[Path]:
+    dependency_service = DependencyService()
+    report_service = ReportService(
+        dependency_service=dependency_service,
+        analyze_service=_StaticAnalyzeService(),
+        llm_analyze_service=None,
+        describe_service=_AnalyzeDescribeService(
+            dependency_service=dependency_service,
+            include_tests=False,
+        ),
+        structure_service=StructureService(include_tests=False),
+        vulnerability_service=VulnerabilityService(),
+    )
+    audit_report = report_service.generate(
+        target_path=str(root),
+        with_llm=False,
+        model_override=None,
+        llm_max_files=0,
+        summary_max_files=12,
+        full_structure=True,
+        online=False,
+        osv_timeout_seconds=10,
+        security_scope="all",
+        report_profile="standard",
+    )
+    payload = audit_report.to_dict()
+    markdown = report_service.render_markdown(audit_report)
+    artifacts = {
+        "audit_report.json": json.dumps(payload, indent=2, sort_keys=True, default=str),
+        "audit_report.md": markdown,
+        "audit_report.html": render_report_html(payload, markdown),
+    }
+    written: list[Path] = []
+    for filename, content in artifacts.items():
+        target = out_dir / filename
+        target.write_text(content, encoding="utf-8")
+        written.append(target)
+    return written
+
+
 def run_project_analysis(
     *,
     root_dir: Path | str,
@@ -297,10 +363,12 @@ def run_project_analysis(
         )
         result.written.extend(service_result.artifacts.values())
         result.errors.extend(service_result.errors)
-        if not legacy_requested:
-            return result
-
     if not legacy_requested:
+        try:
+            result.written.extend(_write_report_service_artifacts(root, out_dir))
+        except Exception as exc:  # noqa: BLE001 - keep /analyze artifacts available
+            logger.warning("ReportService artifacts failed for %s: %s", root, exc)
+            result.errors.append(f"Failed to generate ReportService audit report: {exc}")
         return result
 
     dep_report = DependencyService().analyze(root)
@@ -319,6 +387,12 @@ def run_project_analysis(
         except Exception as exc:  # pragma: no cover - defensive per-format guard
             logger.warning("Failed to render %s artifact: %s", fmt, exc)
             result.errors.append(f"Failed to generate {fmt}: {exc}")
+
+    try:
+        result.written.extend(_write_report_service_artifacts(root, out_dir))
+    except Exception as exc:  # noqa: BLE001 - keep /analyze artifacts available
+        logger.warning("ReportService artifacts failed for %s: %s", root, exc)
+        result.errors.append(f"Failed to generate ReportService audit report: {exc}")
 
     return result
 
@@ -376,6 +450,7 @@ def _chat_summary(result: AnalyzeRunResult, out_dir: Path) -> str:
 
     key_artifacts = [
         out_dir / "report.md",
+        out_dir / "audit_report.md",
         out_dir / "agent_context.json",
         out_dir / "evidence.json",
     ]

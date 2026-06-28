@@ -10,7 +10,7 @@ import subprocess
 import ast
 import re
 from time import perf_counter
-from typing import Any, Literal, Sequence, Optional
+from typing import Any, Literal, Sequence
 from collections import defaultdict
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage

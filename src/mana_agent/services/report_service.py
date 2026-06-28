@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from mana_agent.models import (
     ProjectAuditReport,
@@ -338,8 +338,7 @@ class ReportService:
     def _build_describe(self, project_root: Path) -> Any:
         """
         Call DescribeService.describe with just the project path.
-        The DescribeService instance was already configured
-        (via build_describe_service) with its file_agent and llm_chain.
+        The DescribeService instance is configured by the caller.
         """
         return self.describe_service.describe(project_root)
 

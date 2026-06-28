@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-import threading
 
 from .cli_internal import *
 from .cli_internal import _build_project_llm_analyzer

@@ -20,7 +20,7 @@ import os
 import urllib.parse
 from dataclasses import asdict, dataclass
 from typing import Any, Final
-from urllib import error, request
+from urllib import request
 
 logger = logging.getLogger(__name__)
 

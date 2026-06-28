@@ -2,6 +2,18 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-06-28 (analyze: ReportService audit artifacts)
+
+- Connected `ReportService` to the `/analyze` flow so every successful analyze run also writes `audit_report.json`, `audit_report.md`, and `audit_report.html` alongside the existing analyzer artifacts. The audit report runs offline OSV and uses a no-cache describe adapter so `/analyze` still writes only under the selected analyze output directory.
+- Updated the `/analyze` chat summary to list `audit_report.md`, and added tests that enforce ReportService audit artifact generation.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/commands/test_analyze_slash_command.py tests/integration/test_chat_analyze_command.py tests/test_html_output.py -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/commands/chat_analyze_command.py src/mana_agent/services/report_service.py` passed; `.venv/bin/ruff check src/mana_agent/commands/chat_analyze_command.py tests/commands/test_analyze_slash_command.py --select F401,F821` passed; `git diff --check` passed.
+
+## 2026-06-28
+
+- Removed unused imports across source and tests, including stale CLI/public-surface imports that were only left over from retired commands. Kept explicit `noqa` markers where imports are intentional for wildcard command wiring or static-analysis fixtures.
+- Deleted unused tracked artifacts and orphaned describe/deep-flow modules: `patch/ask_agent.patch`, `src/mana_agent/describe/build.py`, `src/mana_agent/describe/file_summary_executor.py`, and `src/mana_agent/describe/llm_chains/deep_flow.py`.
+- Verification: no references remain for the deleted describe/deep-flow names; `.venv/bin/ruff check src tests --select F401` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_describe_service.py tests/test_checks.py tests/test_cli_smoke.py::test_cli_commands tests/test_cli_ux_helpers.py tests/test_gate_command.py tests/test_tools_manager.py -q` passed; `PYTHONPATH=src .venv/bin/python -m compileall src/mana_agent tests` passed; CLI import smoke for `mana_agent.commands.cli` and `mana_agent.commands.chat_cli` passed.
+
 ## 2026-06-27 (chat: bounded normal auto router)
 
 - Added a bounded normal auto-chat router for non-slash `mana-agent chat` messages. Normal turns are classified into answer-only, plan-only, edit, review, verify, or analyze mode, with compact follow-up state saved under `.mana/chat/auto_state.json`.

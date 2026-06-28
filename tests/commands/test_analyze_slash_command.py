@@ -129,6 +129,7 @@ def test_run_project_analysis_writes_selected(sample_project: Path) -> None:
     )
     names = {p.name for p in result.written}
     assert {"report.json", "report.md", "agent_context.json", "inventory.json", "symbols.json", "dependencies.json", "risks.json"} <= names
+    assert {"audit_report.json", "audit_report.md", "audit_report.html"} <= names
     assert "analyze.html" in names
     for path in result.written:
         assert path.exists() and path.read_text(encoding="utf-8").strip()
@@ -143,6 +144,7 @@ def test_run_project_analysis_all_formats(sample_project: Path) -> None:
     )
     names = {p.name for p in result.written}
     assert {"report.json", "report.md", "agent_context.json", "analyze.html", "analyze.dot", "analyze.graphml", "diagram.mmd"} <= names
+    assert {"audit_report.json", "audit_report.md", "audit_report.html"} <= names
     assert (out_dir / "diagram.mmd").read_text(encoding="utf-8").startswith("graph LR")
     assert "digraph" in (out_dir / "analyze.dot").read_text(encoding="utf-8")
     assert "graphml" in (out_dir / "analyze.graphml").read_text(encoding="utf-8")
@@ -156,6 +158,7 @@ def test_handle_analyze_direct_all(sample_project: Path) -> None:
     # The modern path emits the rich .mana/analyze report set and a compact,
     # context-backed chat summary.
     assert "Analysis completed." in outcome.message
+    assert "audit_report.md" in outcome.message
     assert "Summary:" in outcome.message
 
 
@@ -164,6 +167,7 @@ def test_handle_analyze_direct_subset(sample_project: Path) -> None:
     assert outcome.status == "generated"
     names = {p.name for p in outcome.result.written}
     assert {"report.json", "report.md", "agent_context.json"} <= names
+    assert {"audit_report.json", "audit_report.md", "audit_report.html"} <= names
 
 
 # ---------------------------------------------------------------------------

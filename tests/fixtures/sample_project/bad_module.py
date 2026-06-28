@@ -1,6 +1,6 @@
 from math import *
-import os
-import json
+import os  # noqa: F401 - intentionally unused fixture import
+import json  # noqa: F401 - intentionally unused fixture import
 
 
 def compute(flag: bool) -> int:

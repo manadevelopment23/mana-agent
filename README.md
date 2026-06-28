@@ -269,7 +269,7 @@ src/mana_agent/
   commands/       CLI commands, chat input, and output rendering
   config/         Settings and environment handling
   dependencies/   Dependency graph support
-  describe/       Repository description and deep-flow helpers
+  describe/       Repository description service
   llm/            Chains, agents, prompts, tool managers, and workers
   parsers/        Python and multi-language parser entry points
   renderers/      HTML report rendering

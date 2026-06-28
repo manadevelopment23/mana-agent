@@ -5,7 +5,6 @@ from pathlib import Path
 from rich.console import Console
 from typer.testing import CliRunner
 
-from mana_agent.analysis.models import AskResponseWithTrace, SearchHit, ToolInvocationTrace
 from mana_agent.commands import cli
 from mana_agent.commands.chat_cli import _should_use_coding_agent_turn
 from mana_agent.commands.ui_helpers import (

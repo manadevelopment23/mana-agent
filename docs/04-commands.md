@@ -2,44 +2,18 @@
 
 This page documents the commands exposed by `mana-agent` and the `/analyze` slash command used inside chat. The console script is defined in `pyproject.toml` and points to `mana_agent.commands.cli:app`. [pyproject.toml:1-52](../pyproject.toml#L1-L52)
 
-The Typer app is created in `src/mana_agent/commands/cli_internal.py`, where the top-level CLI registers `analyze` and `continue`; the interactive chat command is registered in `src/mana_agent/commands/chat_cli.py`. [src/mana_agent/commands/cli_internal.py:68-69](../src/mana_agent/commands/cli_internal.py#L68-L69) [src/mana_agent/commands/cli_internal.py:148-191](../src/mana_agent/commands/cli_internal.py#L148-L191) [src/mana_agent/commands/chat_cli.py:1-1](../src/mana_agent/commands/chat_cli.py#L1-L1) [src/mana_agent/commands/chat_cli.py:196-196](../src/mana_agent/commands/chat_cli.py#L196-L196)
+The Typer app is created in `src/mana_agent/commands/cli_internal.py`, where the top-level CLI registers `continue`; the interactive chat command is registered in `src/mana_agent/commands/chat_cli.py`. [src/mana_agent/commands/cli_internal.py:68-69](../src/mana_agent/commands/cli_internal.py#L68-L69) [src/mana_agent/commands/cli_internal.py:191-262](../src/mana_agent/commands/cli_internal.py#L191-L262) [src/mana_agent/commands/chat_cli.py:1-1](../src/mana_agent/commands/chat_cli.py#L1-L1) [src/mana_agent/commands/chat_cli.py:196-196](../src/mana_agent/commands/chat_cli.py#L196-L196)
 
 ## Commands found in the project
 
 From the CLI implementation, the commands available to users are:
 
-- `mana-agent analyze`
 - `mana-agent chat`
 - `mana-agent continue`
 
-The README’s CLI section only highlights `chat`, but the code shows `analyze` and `continue` are also first-class commands. [README.md:1-337](../README.md#L1-L337) [src/mana_agent/commands/cli_internal.py:148-191](../src/mana_agent/commands/cli_internal.py#L148-L191) [src/mana_agent/commands/chat_cli.py:196-196](../src/mana_agent/commands/chat_cli.py#L196-L196)
+The README’s CLI section only highlights `chat`, but the code shows `continue` is also a first-class command. [README.md:1-337](../README.md#L1-L337) [src/mana_agent/commands/cli_internal.py:191-262](../src/mana_agent/commands/cli_internal.py#L191-L262) [src/mana_agent/commands/chat_cli.py:196-196](../src/mana_agent/commands/chat_cli.py#L196-L196)
 
 ## Command reference
-
-### `mana-agent analyze`
-
-`analyze` generates repository-intelligence artifacts for a target path. The command accepts a project path, analysis depth, output format, output directory, include/exclude filters, and file-scan limits. It normalizes `markdown` to `md`, accepts `md`, `json`, and `both`, and writes results under `.mana/analyze` by default. [src/mana_agent/commands/cli_internal.py:148-190](../src/mana_agent/commands/cli_internal.py#L148-L190)
-
-Common usage:
-
-```bash
-mana-agent analyze .
-mana-agent analyze /path/to/project --depth full
-mana-agent analyze /path/to/project --format json
-mana-agent analyze /path/to/project --format markdown
-mana-agent analyze /path/to/project --format both
-mana-agent analyze /path/to/project --include src,tests --exclude .venv,dist
-```
-
-Input validation from the implementation:
-
-- `--depth` must be `quick`, `normal`, or `full`.
-- `--format` must be `md`, `json`, or `both`.
-- `--include` and `--exclude` are comma-separated lists.
-- `--max-files` defaults to `5000`.
-- `--max-file-size-kb` defaults to `512`.
-
-The command writes analysis artifacts to `.mana/analyze` and prints the paths it created. [src/mana_agent/commands/cli_internal.py:148-190](../src/mana_agent/commands/cli_internal.py#L148-L190)
 
 ### `mana-agent chat`
 
@@ -166,7 +140,6 @@ The previous markdown already mentioned the following commands or slash command:
 
 The code-based command inventory adds the missing top-level CLI commands:
 
-- `analyze`
 - `continue`
 
 So the command list in this file is now aligned with the implementation. [src/mana_agent/commands/cli_internal.py:148-191](../src/mana_agent/commands/cli_internal.py#L148-L191) [src/mana_agent/commands/chat_cli.py:196-196](../src/mana_agent/commands/chat_cli.py#L196-L196)

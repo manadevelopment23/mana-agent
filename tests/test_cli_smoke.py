@@ -341,9 +341,7 @@ def test_cli_commands(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("mana_agent.commands.cli.build_index_service", lambda _s: FakeIndexService())
     monkeypatch.setattr("mana_agent.commands.cli.build_search_service", lambda _s: FakeSearchService())
     monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: FakeAskService())
-    monkeypatch.setattr("mana_agent.commands.cli.StructureService", FakeStructureService)
     monkeypatch.setattr("mana_agent.commands.cli.build_dependency_service", lambda: FakeDependencyService())
-    monkeypatch.setattr("mana_agent.commands.cli.build_describe_service", lambda *_args, **_kwargs: FakeDescribeService())
     monkeypatch.setattr("mana_agent.commands.cli.discover_subprojects", lambda root: [])
     monkeypatch.setattr("mana_agent.commands.cli.discover_index_dirs", lambda root: [Path(root) / ".mana/index"])
 

@@ -12,7 +12,7 @@ LLM-driven agent workflows.
   services.
 - `src/mana_agent/analysis/`: static analysis and chunking helpers.
 - `src/mana_agent/dependencies/`: dependency graph support.
-- `src/mana_agent/describe/`: repository description and deep-flow helpers.
+- `src/mana_agent/describe/`: repository description service.
 - `src/mana_agent/llm/`: prompt chains, agents, tool managers, and workers.
 - `src/mana_agent/parsers/`: parser entry points for source files.
 - `src/mana_agent/renderers/`: HTML and report rendering.

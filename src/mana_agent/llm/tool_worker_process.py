@@ -22,7 +22,7 @@ from mana_agent.services.search_service import SearchService
 from mana_agent.llm.ask_agent import AskAgent
 from mana_agent.vector_store.embeddings import build_embeddings
 from mana_agent.tools import build_apply_patch_tool, build_create_file_tool, build_write_file_tool
-from mana_agent.tools.search_internet import build_search_internet_tool, safe_search_internet
+from mana_agent.tools.search_internet import build_search_internet_tool
 from mana_agent.vector_store.faiss_store import FaissStore
 from mana_agent.utils.redaction import redact_json_line, redact_secrets
 from mana_agent.utils.tool_policy import expand_tool_aliases

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import sys
-import json
 import logging
 import tempfile
 import hashlib
@@ -14,53 +13,47 @@ from datetime import datetime, timezone
 import typer
 import asyncio
 from asyncio.subprocess import PIPE
-from rich.console import Console
 from langchain.agents import initialize_agent, AgentType
 from langchain_community.tools.file_management import (
     ReadFileTool,
     WriteFileTool,
     ListDirectoryTool,
 )
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from mana_agent.config.settings import (
     Settings,
-    default_diagrams_dir,
+    default_diagrams_dir,  # noqa: F401 - consumed by chat_cli through wildcard command wiring
     default_index_dir,
-    default_llm_logs_dir,
+    default_llm_logs_dir,  # noqa: F401 - consumed by chat_cli through wildcard command wiring
     default_logs_dir,
     mana_root_dir,
 )
 from mana_agent.vector_store.embeddings import build_embeddings
 from mana_agent.commands import ui_helpers as _ui_helpers
 from mana_agent.commands.ui_helpers import *  # noqa: F401,F403
-from mana_agent.commands.ui_helpers import _resolve_agent_max_steps
+from mana_agent.commands.ui_helpers import _resolve_agent_max_steps  # noqa: F401 - consumed by chat_cli through wildcard command wiring
 from mana_agent.analysis.chunker import CodeChunker
 from mana_agent.parsers.multi_parser import MultiLanguageParser
 from mana_agent.vector_store.faiss_store import FaissStore
 from mana_agent.services.ask_service import AskService
-from mana_agent.services.chat_service import ChatService
+from mana_agent.services.chat_service import ChatService  # noqa: F401 - consumed by chat_cli through wildcard command wiring
 from mana_agent.services.coding_memory_service import CodingMemoryService
-from mana_agent.describe.build import build_describe_service
 from mana_agent.services.index_service import IndexService
 from mana_agent.services.search_service import SearchService
-from mana_agent.services.structure_service import StructureService
 from mana_agent.services.dependency_service import DependencyService
-from mana_agent.services.vulnerability_service import VulnerabilityService
 from mana_agent.services.project_analyze_service import ProjectAnalyzeOptions, ProjectAnalyzeService
 from mana_agent.services.project_llm_analyze_service import ModelConfig, build_llm_analyzer
-from mana_agent.utils.index_discovery import discover_index_dirs
-from mana_agent.utils.project_discovery import discover_subprojects
+from mana_agent.utils.index_discovery import discover_index_dirs  # noqa: F401 - consumed by chat_cli through wildcard command wiring
+from mana_agent.utils.project_discovery import discover_subprojects  # noqa: F401 - consumed by chat_cli through wildcard command wiring
 from mana_agent.llm.ask_agent import AskAgent
 from mana_agent.llm.qna_chain import QnAChain
 from mana_agent.llm.coding_agent import CodingAgent
-from mana_agent.llm.tool_worker_process import ToolWorkerClient, ToolWorkerProcessError
-from mana_agent.llm.tools_executor import LocalToolsExecutor, RedisRQToolsExecutor, ToolsExecutionConfig
+from mana_agent.llm.tool_worker_process import ToolWorkerClient, ToolWorkerProcessError  # noqa: F401 - error class consumed by chat_cli through wildcard command wiring
+from mana_agent.llm.tools_executor import LocalToolsExecutor, RedisRQToolsExecutor, ToolsExecutionConfig  # noqa: F401 - executor types consumed by chat_cli through wildcard command wiring
 from mana_agent.llm.tools_manager import QueueManager
-from mana_agent.llm.run_logger import LlmRunLogger
+from mana_agent.llm.run_logger import LlmRunLogger  # noqa: F401 - consumed by chat_cli through wildcard command wiring
 from mana_agent.tools.search_internet import build_search_internet_tool
-from mana_agent.utils.project_search import project_search
-# The deep‐flow LLM chain:
-from mana_agent.describe.llm_chains.deep_flow import DeepFlowChain
+from mana_agent.utils.project_search import project_search  # noqa: F401 - consumed by chat_cli through wildcard command wiring
 from .output import build_output_sink, get_shared_console
 
 logger = logging.getLogger(__name__)

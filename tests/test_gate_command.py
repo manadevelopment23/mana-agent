@@ -9,12 +9,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from mana_agent.llm.gate_command import (
-    build_gate_command,
     can_run_final_report,
     can_run_verify,
-    preflight_tool_policy,
     reconcile_gate_pointer,
-    validate_gate_proof,
 )
 from mana_agent.llm.tools_manager import RunStateStore
 

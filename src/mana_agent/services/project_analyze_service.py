@@ -18,7 +18,7 @@ from mana_agent.services.project_llm_analyze_service import (
     LLMAnalyzeResult,
     build_evidence,
 )
-from mana_agent.utils.io import LANGUAGE_BY_EXTENSION, language_for_path, load_ignore_patterns
+from mana_agent.utils.io import language_for_path, load_ignore_patterns
 
 LLMAnalyzerFn = Callable[[AnalyzeEvidence, str, Path], LLMAnalyzeResult]
 
