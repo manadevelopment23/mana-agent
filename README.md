@@ -1,3 +1,5 @@
+![mana-agent banner](https://api.manadev.net/uploads/images/e60304eb-03f0-4342-8ca9-b060899fea35.png)
+
 # mana-agent
 
 > LLM-powered repository analysis, evidence-backed Q&A, and tool-aware coding automation for local codebases.
