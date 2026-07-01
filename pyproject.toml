@@ -50,3 +50,6 @@ dev = [
 
 [project.scripts]
 mana-agent = "mana_agent.commands.cli:app"
+
+[tool.setuptools.package-data]
+mana_agent = ["default_skills/*.md"]

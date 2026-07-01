@@ -685,43 +685,43 @@ No Markdown fences.
 No prose outside JSON.
 
 Schema:
-{
+{{
   "project_summary": "2-5 sentence plain-English summary of what the project is and does",
   "detected_stack_explanation": "short paragraph explaining languages, frameworks, package managers, and tooling",
   "repository_overview": "short paragraph explaining important folders and their purpose",
   "architecture_explanation": "multi-paragraph explanation of main layers and how they connect",
   "important_files": [
-    {
+    {{
       "file": "path",
       "why": "why it matters",
       "evidence": "what in the provided evidence supports this"
-    }
+    }}
   ],
   "cli_commands_explanation": "paragraph explaining CLI entrypoints and important commands",
   "agent_workflow": "paragraph explaining user message -> plan -> tools -> patch -> verify -> summary",
   "analyze_workflow": "paragraph explaining /analyze as a chat-integrated repository report flow",
   "important_symbols_overview": "short paragraph summarizing important classes/functions/commands",
   "risk_analysis": [
-    {
+    {{
       "title": "string",
       "severity": "High|Medium|Low",
       "evidence": "string",
       "why_it_matters": "string",
       "recommended_fix": "string"
-    }
+    }}
   ],
   "recommendations": ["concrete improvement"],
   "next_tasks": [
-    {
+    {{
       "title": "string",
       "priority": "High|Medium|Low",
       "files": ["path"],
       "acceptance_criteria": ["string"],
       "verification_command": "string"
-    }
+    }}
   ],
   "onboarding_summary": "short paragraph a new developer could read to get productive quickly"
-}
+}}
 """.strip()
 
 

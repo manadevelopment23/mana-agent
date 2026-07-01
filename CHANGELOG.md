@@ -2,6 +2,13 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-01 (CLI modes and root skills)
+
+- Added a polished Mana Agent root CLI entry flow with banner/menu rendering, root mode flags (`--chat`, `--analyze`, `--plan`), `--repo`, `--model`, `--debug`, and `--no-banner` handling.
+- Added root-level skills support with built-in fallback templates, priority loading from `./skills/`, `~/.mana/skills/`, and package defaults, plus `mana-agent skills init/list/show`.
+- Expanded Analyze Mode to write the requested Markdown report at `.mana/reports/analyze.md` or `--output` while preserving existing `.mana/analyze/` artifacts, and added first-class Plan Mode plan generation with skill loading and approval gating.
+- Verification: `PYTHONPATH=src .venv/bin/python -m compileall src` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_chat_planning_mode.py tests/test_cli_modes_skills.py tests/test_cli_smoke.py::test_root_command_shows_mode_menu tests/test_cli_smoke.py::test_analyze_command_is_public tests/test_cli_smoke.py::test_chat_help_works tests/test_prompts_contract.py -q` passed; `OPENAI_API_KEY= PYTHONPATH=src .venv/bin/mana-agent analyze --repo . --depth quick --format md --output .mana/reports/analyze-smoke.md --max-files 20` passed; `printf '4\n' | PYTHONPATH=src .venv/bin/mana-agent --no-banner`, `printf '/exit\n' | PYTHONPATH=src .venv/bin/mana-agent --chat --repo . --no-banner`, CLI help commands, and temp-repo `skills init/show` smokes passed; `git diff --check` passed. Broader CLI/analyze slice still has existing chat-smoke failures around default coding-agent transcript/auto-execute behavior.
+
 ## 2026-06-28 (agent work queue ownership)
 
 - Moved `QueueManager` into `agent_work_queue.py` so the queue manager, `AgentWorkQueue`, `TaskBoard`, `WorkItem`, and `WorkQueueRunner` share one queue-owned module while keeping `agent_work_queue_adapters.py` for worker/sniffer adapters.

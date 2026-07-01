@@ -223,11 +223,13 @@ def test_no_source_file_contains_analyzor() -> None:
     assert offenders == [], f"'analyzor' still present in: {offenders}"
 
 
-def test_root_command_defaults_to_chat() -> None:
-    result = runner.invoke(app, [], input="quit\n")
+def test_root_command_shows_mode_menu() -> None:
+    result = runner.invoke(app, ["--no-banner"], input="4\n")
 
     assert result.exit_code == 0
     assert "mana-agent chat" in result.output
+    assert "Analyze repo" in result.output
+    assert "Create implementation plan" in result.output
     assert "Goodbye!" in result.output
 
 

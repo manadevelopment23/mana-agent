@@ -18,6 +18,7 @@ from mana_agent.llm.auto_chat import (
     resolve_auto_followup,
     save_auto_chat_state,
 )
+from mana_agent.ui.banner import render_mode_header
 
 
 def _load_analysis_context(root) -> str | None:
@@ -194,6 +195,7 @@ def _render_auto_execute_pass_status(
 
 @app.command()
 def chat(
+    prompt: str | None = typer.Argument(None, help="Optional first chat prompt."),
     model: str | None = typer.Option(None, "--model"),
     index_dir: str | None = typer.Option(None, "--index-dir"),
     k: int | None = typer.Option(None, "--k"),
@@ -210,6 +212,7 @@ def chat(
     root_dir: str | None = typer.Option(
         None,
         "--root-dir",
+        "--repo",
         help="Project root used for tool execution and default index paths.",
     ),
     max_indexes: int = typer.Option(
@@ -523,6 +526,7 @@ def chat(
     root = Path(root_dir).resolve() if root_dir else Path.cwd().resolve()
     if root.is_file():
         root = root.parent
+    render_mode_header("Chat", "Ask about your repository or request edits", console)
 
     logger.debug("Resolved chat root", extra={"root": str(root)})
     run_logger_cls = _public_symbol("LlmRunLogger", LlmRunLogger)
@@ -1513,14 +1517,20 @@ def chat(
             except Exception as exc:
                 logger.debug("Failed to save auto-chat state: %s", exc)
 
+        queued_questions = [prompt] if prompt else []
+
         while True:
             try:
-                question = _read_chat_input(
-                    console,
-                    prompt=CHAT_PROMPT,
-                    multiline_enabled=multiline_input,
-                    multiline_terminator=multiline_terminator,
-                )
+                if queued_questions:
+                    question = queued_questions.pop(0)
+                    console.print(f"[bold cyan]mana ❯[/bold cyan] {question}")
+                else:
+                    question = _read_chat_input(
+                        console,
+                        prompt=CHAT_PROMPT,
+                        multiline_enabled=multiline_input,
+                        multiline_terminator=multiline_terminator,
+                    )
             except (EOFError, KeyboardInterrupt):
                 console.print("\nExiting chat.")
                 logger.info("Chat session ended by user interrupt/EOF")
@@ -1541,10 +1551,20 @@ def chat(
 
             if not question:
                 continue
-            if question.lower() in {"exit", "quit"}:
+            if question.lower() in {"exit", "quit", "/exit", "/quit"}:
                 console.print("Goodbye!")
                 logger.info("Chat session ended by user command", extra={"command": question.lower()})
                 break
+            if question.lower() == "/clear":
+                session_turns.clear()
+                console.clear()
+                console.print("[green]Chat history cleared.[/green]")
+                continue
+            if question.lower() == "/help":
+                question = "help"
+            if question.strip().startswith("/plan"):
+                plan_args = question.strip()[len("/plan"):].strip()
+                question = f"plan {plan_args}" if plan_args else "plan the next repository change"
 
             # -----------------------------
             # /analyze slash command (read-only; writes only .mana/ artifacts).
@@ -1815,6 +1835,7 @@ def chat(
             auto_planning_turn = bool(
                 planning_request is not None
                 or planning_mode
+                or (plan_trigger_request and not agent_tools_explicit)
             )
             force_plan_only_response = bool(auto_chat_mode == AutoChatMode.PLAN_ONLY)
             force_auto_execute_edit = bool(
