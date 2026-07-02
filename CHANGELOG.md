@@ -2,6 +2,39 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-02 (mutation tool reliability)
+
+- Added exact-string `edit_file` and atomic sequential `multi_edit_file` mutation tools, registered them across coding-agent, worker, policies, prompts, contracts, and tests, and made them the preferred edit path before patching or whole-file writes.
+- Replaced the fragile line-number JSON patch contract with Codex-style text patches using `*** Begin Patch` file blocks, contextual hunks, and strict path/context validation; removed automatic duplicate mutation retry after patch failures.
+- Guarded `write_file` overwrites with `expected_sha256` or `force=true`, registered the Laravel default skill, and added regression coverage for line-number-free registry updates.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_edit_file_tools.py tests/test_apply_patch_json_only.py tests/test_tool_input_aliases.py tests/test_write_file_chunking.py tests/test_coding_tool_system.py tests/test_prompts_contract.py tests/test_tool_policy.py tests/test_auto_chat.py tests/test_gate_command.py tests/test_cli_modes_skills.py tests/test_coding_memory_service.py -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py tests/test_tools_manager.py -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_ask_agent.py tests/test_coding_agent.py tests/test_tool_worker_process.py -q` passed; `PYTHONPATH=src .venv/bin/python -m compileall src`, `PYTHONPATH=src .venv/bin/mana-agent skills list --repo .`, and `git diff --check` passed.
+
+## 2026-07-02 (chat edit orchestration and default skills)
+
+- Added built-in `fastapi`, `nestjs`, `nextjs`, and `reactjs` skills, registered their keyword detection, and added a deterministic default-skill registry text builder for simple marker-based registry edits.
+- Targeted built-in skill edit orchestration so default-skill requests seed `DEFAULT_SKILL_NAMES` and `src/mana_agent/default_skills/*.md` discovery instead of broad per-framework searches that can drift into dependency detection files.
+- Made `list_files` handle flat markdown globs and recursive `dir/**` / `dir/**/*` patterns consistently, removed the unsafe perl patch fallback from `apply_patch`, validated direct mutation tool args before worker dispatch, and replaced blind tools-only retry with controlled `mutation_not_attempted` / `mutation_failed` / worker-error reporting.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_cli_modes_skills.py tests/test_repository_tools.py tests/test_tool_worker_process.py tests/test_coding_agent.py::test_coding_agent_does_not_retry_tools_only_violation_through_orchestrator tests/test_coding_agent.py::test_coding_agent_provider_error_does_not_fallback_to_direct_ask_agent tests/test_agent_work_queue.py::test_queue_manager_targets_default_skill_registry_without_framework_search_loops tests/test_apply_patch_json_only.py -q` passed; `PYTHONPATH=src .venv/bin/python -m compileall src` passed; `PYTHONPATH=src .venv/bin/mana-agent skills list --repo .` passed and listed the new built-in skills; `printf '/exit\n' | PYTHONPATH=src .venv/bin/mana-agent --chat --repo . --no-banner` passed. `PYTHONPATH=src .venv/bin/python -m pytest tests -q` was run and ended with 458 passed, 8 failed in `tests/test_cli_smoke.py` chat-routing/fake-agent smoke cases.
+
+## 2026-07-02 (coding workflow mutation guard)
+
+- Strengthened edit-task workflow instructions so create/modify/delete runs require project-level related-file cleanup across imports, exports, registries, routers, commands, call sites, tests, docs, and stale references.
+- Kept `delete_file` in bounded edit tool policies and mutation-required forced retries, and made write/create/delete mutation payloads report changed files consistently for completion guards and cache invalidation.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py tests/test_auto_chat.py tests/test_write_file_chunking.py -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_ask_agent.py::test_ask_agent_keeps_looping_after_apply_patch_failures_for_write_file_fallback tests/test_tool_input_aliases.py::test_safe_delete_file_deletes_existing_file -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/llm/auto_chat.py src/mana_agent/llm/ask_agent.py src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/agent_work_queue_adapters.py src/mana_agent/tools/write_file.py tests/test_agent_work_queue.py tests/test_auto_chat.py tests/test_write_file_chunking.py` passed.
+
+## 2026-07-02 (chat new topic flow)
+
+- Added explicit chat new-topic handling so `/new`, `/new-topic`, `new topic`, and `new topic chat` reset/deactivate the active coding flow while preserving the visible session history.
+- Expanded the active-flow divergence prompt to accept `new topic` as a new-flow choice and reset the old flow before rerunning the pending request.
+- Verification: `.venv/bin/python -m pytest tests/test_cli_smoke.py::test_chat_new_topic_resets_flow_but_keeps_history tests/test_cli_smoke.py::test_chat_conflict_new_topic_choice_starts_new_flow tests/test_cli_smoke.py::test_chat_clear_still_clears_visible_history -q` passed; `.venv/bin/python -m py_compile src/mana_agent/commands/chat_cli.py tests/test_cli_smoke.py` passed.
+
+## 2026-07-01 (CLI modes and root skills)
+
+- Added a polished Mana Agent root CLI entry flow with banner/menu rendering, root mode flags (`--chat`, `--analyze`, `--plan`), `--repo`, `--model`, `--debug`, and `--no-banner` handling.
+- Added root-level skills support with built-in fallback templates, priority loading from `./skills/`, `~/.mana/skills/`, and package defaults, plus `mana-agent skills init/list/show`.
+- Expanded Analyze Mode to write the requested Markdown report at `.mana/reports/analyze.md` or `--output` while preserving existing `.mana/analyze/` artifacts, and added first-class Plan Mode plan generation with skill loading and approval gating.
+- Verification: `PYTHONPATH=src .venv/bin/python -m compileall src` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_chat_planning_mode.py tests/test_cli_modes_skills.py tests/test_cli_smoke.py::test_root_command_shows_mode_menu tests/test_cli_smoke.py::test_analyze_command_is_public tests/test_cli_smoke.py::test_chat_help_works tests/test_prompts_contract.py -q` passed; `OPENAI_API_KEY= PYTHONPATH=src .venv/bin/mana-agent analyze --repo . --depth quick --format md --output .mana/reports/analyze-smoke.md --max-files 20` passed; `printf '4\n' | PYTHONPATH=src .venv/bin/mana-agent --no-banner`, `printf '/exit\n' | PYTHONPATH=src .venv/bin/mana-agent --chat --repo . --no-banner`, CLI help commands, and temp-repo `skills init/show` smokes passed; `git diff --check` passed. Broader CLI/analyze slice still has existing chat-smoke failures around default coding-agent transcript/auto-execute behavior.
+
 ## 2026-06-28 (agent work queue ownership)
 
 - Moved `QueueManager` into `agent_work_queue.py` so the queue manager, `AgentWorkQueue`, `TaskBoard`, `WorkItem`, and `WorkQueueRunner` share one queue-owned module while keeping `agent_work_queue_adapters.py` for worker/sniffer adapters.

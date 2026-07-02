@@ -17,4 +17,3 @@ Update `CHANGELOG.md` with every repository change. Each entry should include:
 - The date of the change.
 - A short summary of what changed.
 - Any verification performed, or a note when verification was not run.
-

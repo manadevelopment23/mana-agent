@@ -4,11 +4,19 @@ import warnings
 
 from .cli_internal import *
 from .output import build_output_sink
+from mana_agent.ui.banner import render_banner, render_repository
 
 @app.callback()
 def main(
     ctx: typer.Context,
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logs (console + file)."),
+    debug: bool = typer.Option(False, "--debug", help="Alias for --verbose."),
+    chat_mode: bool = typer.Option(False, "--chat", help="Start Chat Mode."),
+    analyze_mode: bool = typer.Option(False, "--analyze", help="Start Analyze Mode."),
+    plan_mode: bool = typer.Option(False, "--plan", help="Start Plan Mode."),
+    repo: str | None = typer.Option(None, "--repo", help="Repository root for the selected mode."),
+    model: str | None = typer.Option(None, "--model", help="Model override for the selected mode."),
+    no_banner: bool = typer.Option(False, "--no-banner", help="Hide the Mana Agent banner."),
     debug_llm: bool = typer.Option(
         False,
         "--debug-llm/--no-debug-llm",
@@ -18,6 +26,7 @@ def main(
     output_dir: str | None = typer.Option(None, "--output-dir", help="Directory for saving command output logs."),
 ) -> None:
     global OUTPUT_DIR, LLM_DEBUG_MODE
+    verbose = bool(verbose or debug)
     OUTPUT_DIR = Path(output_dir).resolve() if output_dir else None
     LLM_DEBUG_MODE = debug_llm
     _set_cli_runtime_flags(verbose=verbose, debug_llm=debug_llm)
@@ -43,6 +52,55 @@ def main(
         sink = build_output_sink(command_name="main", json_mode=False, console=console)
         sink.emit_warning(warning_msg)
     if ctx.invoked_subcommand is None:
-        chat_command = ctx.command.commands["chat"]
-        with chat_command.make_context("chat", [], parent=ctx) as chat_ctx:
-            chat_command.invoke(chat_ctx)
+        root = Path(repo).expanduser().resolve() if repo else Path.cwd().resolve()
+        if root.is_file():
+            root = root.parent
+
+        def _invoke(name: str, args: list[str] | None = None) -> None:
+            command = ctx.command.commands[name]
+            with command.make_context(name, args or [], parent=ctx) as sub_ctx:
+                command.invoke(sub_ctx)
+
+        selected_flags = [chat_mode, analyze_mode, plan_mode]
+        if sum(1 for item in selected_flags if item) > 1:
+            raise typer.BadParameter("Choose only one of --chat, --analyze, or --plan.")
+        if chat_mode:
+            args = ["--root-dir", str(root)]
+            if model:
+                args += ["--model", model]
+            _invoke("chat", args)
+            return
+        if analyze_mode:
+            args = ["--repo", str(root)]
+            if model:
+                args += ["--model", model]
+            _invoke("analyze", args)
+            return
+        if plan_mode:
+            args = ["--repo", str(root)]
+            if model:
+                args += ["--model", model]
+            _invoke("plan", args)
+            return
+
+        if not no_banner:
+            render_banner(console)
+        render_repository(root, console)
+        console.print("\n[bold cyan]Choose what you want to do:[/bold cyan]\n")
+        console.print("1. Chat with repo (mana-agent chat)")
+        console.print("2. Analyze repo")
+        console.print("3. Create implementation plan")
+        console.print("4. Exit")
+        try:
+            choice = input("\nMana Agent ❯ ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\nGoodbye!")
+            return
+        if choice in {"1", "chat", "c"}:
+            _invoke("chat", ["--root-dir", str(root)])
+        elif choice in {"2", "analyze", "a"}:
+            _invoke("analyze", ["--repo", str(root)])
+        elif choice in {"3", "plan", "p"}:
+            _invoke("plan", ["--repo", str(root)])
+        else:
+            console.print("Goodbye!")

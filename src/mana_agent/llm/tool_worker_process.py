@@ -21,7 +21,15 @@ from mana_agent.services.coding_memory_service import CodingMemoryService
 from mana_agent.services.search_service import SearchService
 from mana_agent.llm.ask_agent import AskAgent
 from mana_agent.vector_store.embeddings import build_embeddings
-from mana_agent.tools import build_apply_patch_tool, build_create_file_tool, build_delete_file_tool, build_write_file_tool
+from mana_agent.tools import (
+    build_apply_patch_tool,
+    build_create_file_tool,
+    build_delete_file_tool,
+    build_edit_file_tool,
+    build_multi_edit_file_tool,
+    build_write_file_tool,
+)
+from mana_agent.tools.apply_patch import extract_patch_touched_files
 from mana_agent.vector_store.faiss_store import FaissStore
 from mana_agent.utils.redaction import redact_json_line, redact_secrets
 from mana_agent.utils.tool_policy import expand_tool_aliases
@@ -221,6 +229,72 @@ def _strip_banned_keys(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_strip_banned_keys(item) for item in obj]
     return obj
+
+
+def _tool_arg_error(tool_name: str, args: dict[str, Any]) -> str:
+    """Return a validation error for direct worker tool requests, else empty."""
+    name = str(tool_name or "").strip().lower()
+    if not name:
+        return ""
+    if not isinstance(args, dict):
+        return f"{name} arguments must be an object"
+
+    def _text(key: str) -> str:
+        return str(args.get(key) or "").strip()
+
+    if name in {"write_file", "create_file"}:
+        if not _text("path"):
+            return f"{name} requires `path`"
+        has_content = any(args.get(key) is not None for key in ("content", "text", "body"))
+        if name == "write_file" and bool(args.get("finalize")):
+            return ""
+        if name == "write_file" and args.get("part_index") is not None and not has_content:
+            return "write_file with `part_index` requires `content`, `text`, or `body`"
+        if not has_content:
+            return f"{name} requires `content`, `text`, or `body`"
+        return ""
+    if name == "delete_file":
+        if not _text("path"):
+            return "delete_file requires `path`"
+        return ""
+    if name == "edit_file":
+        if not _text("path"):
+            return "edit_file requires `path`"
+        if args.get("old_string") is None:
+            return "edit_file requires `old_string`"
+        if args.get("new_string") is None:
+            return "edit_file requires `new_string`"
+        return ""
+    if name == "multi_edit_file":
+        if not _text("path"):
+            return "multi_edit_file requires `path`"
+        edits = args.get("edits")
+        if not isinstance(edits, list) or not edits:
+            return "multi_edit_file requires non-empty `edits`"
+        for index, edit in enumerate(edits):
+            if not isinstance(edit, dict) or edit.get("old_string") is None or edit.get("new_string") is None:
+                return f"multi_edit_file edit {index} requires `old_string` and `new_string`"
+        return ""
+    if name == "apply_patch":
+        patch_payload = args.get("patch", args.get("diff", args.get("input")))
+        touched = extract_patch_touched_files(patch_payload)
+        if not bool(touched.get("ok")):
+            return str(touched.get("error") or "apply_patch requires a valid patch")
+        if not touched.get("touched_files"):
+            return "apply_patch requires at least one touched file"
+        return ""
+    return ""
+
+
+def _validate_direct_tool_request(req: "ToolRunRequest") -> None:
+    error = _tool_arg_error(req.tool_name, req.tool_args)
+    if error:
+        raise ToolWorkerProcessError(
+            code="invalid_tool_args",
+            message=error,
+            retriable=False,
+            details={"tool_name": req.tool_name, "tool_args": req.tool_args},
+        )
 
 
 def _deep_strip_banned_keys_inplace(obj: Any) -> Any:
@@ -583,7 +657,7 @@ def _infer_trace_row_success(row: dict[str, Any]) -> bool:
             return False
         if normalized_status in ("ok", "success"):
             tool_name = str(row.get("tool_name") or row.get("tool") or row.get("name") or "").strip().lower()
-            if tool_name in {"apply_patch", "write_file", "create_file", "delete_file"}:
+            if tool_name in {"edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file"}:
                 changed = []
                 for key in ("files_changed", "changed_files", "modified_files"):
                     value = row.get(key)
@@ -671,7 +745,7 @@ def _infer_trace_row_success(row: dict[str, Any]) -> bool:
 
 def _infer_trace_row_mutation_success(row: dict[str, Any]) -> bool:
     tool_name = str(row.get("tool_name") or row.get("tool") or row.get("name") or "").strip().lower()
-    if tool_name not in {"apply_patch", "write_file", "create_file", "delete_file"}:
+    if tool_name not in {"edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file"}:
         return False
     if not _infer_trace_row_success(row):
         return False
@@ -687,6 +761,23 @@ def _infer_trace_row_mutation_success(row: dict[str, Any]) -> bool:
             if isinstance(value, list):
                 changed.extend(str(item).strip() for item in value if str(item).strip())
     return bool(changed)
+
+
+def _mutation_failure_error(trace_rows: list[dict[str, Any]]) -> tuple[str, str]:
+    """Classify a mutation-strict trace that did not produce changed files."""
+    mutation_rows = [
+        row for row in trace_rows
+        if str(row.get("tool_name") or row.get("tool") or row.get("name") or "").strip().lower()
+        in {"edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file"}
+    ]
+    if not mutation_rows:
+        return "mutation_not_attempted", "mutation phase ended without attempting a mutation tool"
+    details: list[str] = []
+    for row in mutation_rows:
+        tool = str(row.get("tool_name") or row.get("tool") or row.get("name") or "mutation_tool")
+        detail = str(row.get("error") or row.get("output_preview") or row.get("result") or row.get("status") or "")
+        details.append(f"{tool}: {detail}" if detail else tool)
+    return "mutation_failed", "mutation tool attempted but no file changes were recorded: " + "; ".join(details[:3])
 
 
 # ---------------------------------------------------------------------------
@@ -932,6 +1023,7 @@ class ToolWorkerClient:
     ) -> ToolRunResponse:
         logger.info(f"[ToolWorkerClient.run_tools] Starting with question: {request.question[:100]}...")
         logger.debug(f"[ToolWorkerClient.run_tools] Full request: {request.model_dump()}")
+        _validate_direct_tool_request(request)
         request_started = time.time()
         request_event_id = f"worker-request-{uuid.uuid4().hex}"
 
@@ -1220,6 +1312,18 @@ def _build_worker_ask_agent(payload: WorkerInitPayload) -> AskAgent:
         coding_memory_service=CodingMemoryService(project_root=Path(payload.project_root)),
     )
     tools = [
+        build_edit_file_tool(
+            repo_root=Path(payload.repo_root),
+            allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
+        ),
+        build_multi_edit_file_tool(
+            repo_root=Path(payload.repo_root),
+            allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
+        ),
+        build_apply_patch_tool(
+            repo_root=Path(payload.repo_root),
+            allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
+        ),
         build_write_file_tool(
             repo_root=Path(payload.repo_root),
             allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
@@ -1229,10 +1333,6 @@ def _build_worker_ask_agent(payload: WorkerInitPayload) -> AskAgent:
             allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
         ),
         build_delete_file_tool(
-            repo_root=Path(payload.repo_root),
-            allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
-        ),
-        build_apply_patch_tool(
             repo_root=Path(payload.repo_root),
             allowed_prefixes=tuple(payload.allowed_prefixes) if payload.allowed_prefixes else None,
         ),
@@ -1376,11 +1476,10 @@ def _run_tool_request(
         for r in trace_rows_raw:
             logger.error(json.dumps(r, default=str))
         logger.error("TRACE DUMP END")
-        message = (
-            "tools-only mode requires at least one successful mutation tool call"
-            if mutation_strict
-            else "tools-only mode requires at least one successful tool call"
-        )
+        error_code = "tools_only_violation"
+        message = "tools-only mode requires at least one successful tool call"
+        if mutation_strict:
+            error_code, message = _mutation_failure_error(trace_rows_raw)
 
         _write_tools_execution_log(
             repo_root=repo_root,
@@ -1389,12 +1488,12 @@ def _run_tool_request(
             ok=False,
             ok_tools=ok_tools,
             ok_mutation_tools=ok_mutation_tools,
-            error_code="tools_only_violation",
+            error_code=error_code,
             error_message=message,
         )
 
         raise ToolWorkerProcessError(
-            code="tools_only_violation",
+            code=error_code,
             message=message,
             retriable=False,
             details={"trace_count": len(trace_rows_raw), "trace_sample": trace_rows_raw[:3]},
@@ -1657,6 +1756,7 @@ class _ToolWorkerServer:
         try:
             sanitized_env_payload = _strip_banned_keys(env.payload)
             req = ToolRunRequest.model_validate(sanitized_env_payload)
+            _validate_direct_tool_request(req)
 
             tool_name = str(req.tool_name or "").strip()
             if tool_name:

@@ -5,6 +5,7 @@ import sys
 import logging
 import tempfile
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 import threading
@@ -53,11 +54,15 @@ from mana_agent.llm.tools_executor import LocalToolsExecutor, RedisRQToolsExecut
 from mana_agent.llm.agent_work_queue import QueueManager
 from mana_agent.llm.run_logger import LlmRunLogger  # noqa: F401 - consumed by chat_cli through wildcard command wiring
 from mana_agent.utils.project_search import project_search  # noqa: F401 - consumed by chat_cli through wildcard command wiring
+from mana_agent.skills import SkillManager
+from mana_agent.ui.banner import render_mode_header
 from .output import build_output_sink, get_shared_console
 
 logger = logging.getLogger(__name__)
 console = get_shared_console()
 app = typer.Typer(help="mana-agent CLI", invoke_without_command=True, no_args_is_help=False)
+skills_app = typer.Typer(help="Manage Mana Agent skills.")
+app.add_typer(skills_app, name="skills")
 
 OUTPUT_DIR: Path | None = None
 CLI_VERBOSE_MODE = False
@@ -137,47 +142,385 @@ def _build_project_llm_analyzer():
     )
 
 
+def _split_csv(value: str | None) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+def _resolve_repo(repo: str | None, fallback: str | Path = ".") -> Path:
+    root = Path(repo or fallback).expanduser().resolve()
+    return root.parent if root.is_file() else root
+
+
+def _analyze_report_markdown(result, *, root: Path, focus: str | None = None) -> str:
+    report = result.report
+    inventory = report.get("inventory", {})
+    architecture = report.get("architecture", {})
+    risks = report.get("risks", {})
+    recommendations = report.get("recommendations", {})
+    dependencies = report.get("dependencies", {})
+    symbols = report.get("symbols", {})
+    llm = report.get("llm_analysis", {}) or {}
+
+    def _items(value: Any, limit: int = 8) -> list[Any]:
+        return list(value or [])[:limit] if isinstance(value, list) else []
+
+    lines = ["# Mana Agent Analyze Report", ""]
+    if focus:
+        lines += [f"Focus: {focus}", ""]
+    lines += [
+        "## 1. Project overview",
+        str(llm.get("project_summary") or report.get("project_summary") or f"Repository at {root}."),
+        "",
+        "## 2. Architecture map",
+        str(llm.get("architecture_explanation") or architecture.get("summary") or "Architecture was derived from repository folders and imports."),
+        "",
+        "## 3. Important modules",
+    ]
+    important = _items(llm.get("important_files") or inventory.get("important_config_files") or inventory.get("entrypoints"))
+    lines.extend(
+        f"- `{item.get('file')}` - {item.get('why', 'Important repository file.')}"
+        if isinstance(item, dict)
+        else f"- `{item}`"
+        for item in important
+    )
+    if not important:
+        lines.append("- No important modules detected.")
+    lines += ["", "## 4. Main data flows"]
+    flows = _items(architecture.get("edges") or architecture.get("area_dependencies"))
+    lines.extend(f"- {json.dumps(item, ensure_ascii=False)}" for item in flows)
+    if not flows:
+        lines.append("- No explicit data-flow edges detected.")
+    lines += ["", "## 5. Risk areas"]
+    risk_items = _items(llm.get("risk_analysis") or risks.get("items"))
+    lines.extend(
+        f"- {item.get('severity', 'info')}: {item.get('title') or item.get('message') or item}"
+        if isinstance(item, dict)
+        else f"- {item}"
+        for item in risk_items
+    )
+    if not risk_items:
+        lines.append("- No high-signal risks detected.")
+    lines += [
+        "",
+        "## 6. Bugs or code smells",
+        str(llm.get("risk_summary") or f"Static analysis found {len(risks.get('items', []) or [])} risk item(s)."),
+        "",
+        "## 7. Security notes",
+        str(llm.get("security_notes") or "Review auth, secrets handling, file-path validation, and logging before sensitive deployments."),
+        "",
+        "## 8. Performance notes",
+        str(llm.get("performance_notes") or f"Repository scan covered {inventory.get('total_files', 0)} file(s). Watch large generated folders and dependency-heavy paths."),
+        "",
+        "## 9. Missing tests",
+    ]
+    testing = dependencies.get("testing_packages", [])
+    lines.append(
+        "Testing packages detected: " + ", ".join(testing)
+        if testing
+        else "No testing packages were detected from dependency manifests."
+    )
+    lines += ["", "## 10. Recommended next actions"]
+    recs = _items(llm.get("recommended_tasks") or recommendations.get("items"))
+    lines.extend(
+        f"- {item.get('title', item)}"
+        if isinstance(item, dict)
+        else f"- {item}"
+        for item in recs
+    )
+    if not recs:
+        lines.append("- Add focused tests around the highest-risk modules, then address top static-analysis findings.")
+    lines += ["", "## Supporting facts"]
+    lines.append(f"- Languages: {', '.join(inventory.get('detected_languages', []) or []) or 'not detected'}")
+    lines.append(f"- Frameworks: {', '.join(inventory.get('detected_frameworks', []) or []) or 'not detected'}")
+    lines.append(f"- Important symbols: {len(symbols.get('important_symbols', []) or [])}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _write_analyze_report(result, *, root: Path, output: str | None, focus: str | None) -> Path:
+    target = Path(output).expanduser().resolve() if output else root / ".mana" / "reports" / "analyze.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_analyze_report_markdown(result, root=root, focus=focus), encoding="utf-8")
+    return target
+
+
+def _slug(text: str) -> str:
+    import re
+
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", text.strip().lower()).strip("-")
+    return slug[:80] or "plan"
+
+
+def _project_snapshot(root: Path) -> dict[str, Any]:
+    interesting = []
+    for name in ("pyproject.toml", "package.json", "requirements.txt", "README.md", "src", "tests", "docs"):
+        path = root / name
+        if path.exists():
+            interesting.append(name)
+    return {"root": str(root), "items": interesting}
+
+
+def _plan_markdown(*, task: str, root: Path, skills: list[Any], no_code: bool, yes: bool) -> str:
+    snapshot = _project_snapshot(root)
+    skill_names = [skill.name for skill in skills]
+    skill_summary = "\n".join(f"- {skill.name} ({skill.source})" for skill in skills) or "- No specific skills matched."
+    affected = ", ".join(snapshot["items"]) or "repository files discovered during implementation"
+    return f"""# Implementation Plan
+
+## 1. Goal
+
+Build the requested change: {task}
+
+## 2. Current System Understanding
+
+Repository root: `{root}`
+
+Detected project anchors: {affected}
+
+## 3. Relevant Skills Loaded
+
+{skill_summary}
+
+## 4. Required Changes
+
+- Inspect the code paths related to the task before editing.
+- Reuse existing services, command wiring, tests, and conventions.
+- Keep changes focused and preserve unrelated user work.
+
+## 5. Files Likely Affected
+
+- Files will be selected after repository inspection for `{task}`.
+- `CHANGELOG.md` must be updated for the repository change.
+
+## 6. Data Model / Migration Changes
+
+No migration is assumed unless inspection finds model or schema changes are necessary.
+
+## 7. Backend Logic
+
+Update the shared service or command owner for the behavior so parallel paths do not drift.
+
+## 8. Frontend / CLI / Bot Changes
+
+Apply user-facing changes only where the task requires them, preserving existing text and flow conventions.
+
+## 9. Edge Cases
+
+- Existing user changes must not be reverted.
+- Missing configuration should fail clearly.
+- Existing public behavior should remain compatible unless the task explicitly changes it.
+
+## 10. Tests
+
+- Add focused tests for changed behavior.
+- Run existing regression tests that cover the touched subsystem.
+
+## 11. Verification Commands
+
+```bash
+PYTHONPATH=src .venv/bin/python -m compileall src
+PYTHONPATH=src .venv/bin/python -m pytest -q
+```
+
+## 12. Risks
+
+- Broad tasks may need additional clarification before implementation.
+- Over-broad edits can break CLI/chat compatibility.
+
+## 13. Implementation Order
+
+1. Inspect relevant files and tests.
+2. Make the smallest implementation change that satisfies the task.
+3. Update tests and `CHANGELOG.md`.
+4. Run focused verification, then broader tests as time allows.
+
+## 14. Approval
+
+{"Implementation is approved by `--yes`." if yes else "Plan only; implementation requires explicit approval."}
+{"`--no-code` is active, so implementation must not run." if no_code else ""}
+
+Loaded skill names: {", ".join(skill_names) or "none"}
+"""
+
+
 @app.command("analyze")
 def analyze_command(
-    path: str = typer.Argument(".", help="Repository path to analyze."),
+    path_or_task: str = typer.Argument(".", help="Repository path or analysis focus."),
+    repo: str | None = typer.Option(None, "--repo", "--root-dir", help="Repository root to analyze."),
+    model: str | None = typer.Option(None, "--model", help="Model override for LLM analysis."),
+    focus: str | None = typer.Option(None, "--focus", help="Focus area for the Markdown report."),
     depth: str = typer.Option("normal", "--depth", help="Analysis depth: quick, normal, or full."),
     output_format: str = typer.Option("both", "--format", help="Output format: md, json, or both."),
-    output: str | None = typer.Option(None, "--output", help="Artifact directory. Defaults to .mana/analyze."),
+    output: str | None = typer.Option(None, "--output", help="Markdown report path. Defaults to .mana/reports/analyze.md."),
+    artifact_dir: str | None = typer.Option(None, "--artifact-dir", help="Artifact directory. Defaults to .mana/analyze."),
     include: str | None = typer.Option(None, "--include", help="Comma-separated paths to include."),
     exclude: str | None = typer.Option(None, "--exclude", help="Comma-separated paths or folders to exclude."),
     max_files: int = typer.Option(5000, "--max-files", help="Maximum files to scan."),
     max_file_size_kb: int = typer.Option(512, "--max-file-size-kb", help="Maximum text file size to scan."),
 ) -> None:
     """Generate reusable repository intelligence artifacts."""
+    _ = model
     if depth not in {"quick", "normal", "full"}:
         raise typer.BadParameter("depth must be quick, normal, or full")
     normalized_format = {"markdown": "md"}.get(output_format, output_format)
     if normalized_format not in {"md", "json", "both"}:
         raise typer.BadParameter("format must be md, json, or both")
-    root = Path(path).resolve()
-    if root.is_file():
-        root = root.parent
-    out_dir = Path(output).resolve() if output else (root / ".mana" / "analyze")
-    split = lambda value: [item.strip() for item in str(value or "").split(",") if item.strip()]
+    candidate = Path(path_or_task).expanduser()
+    if repo:
+        root = _resolve_repo(repo)
+        inferred_focus = path_or_task if path_or_task != "." else None
+    elif candidate.exists():
+        root = _resolve_repo(candidate)
+        inferred_focus = None
+    else:
+        root = Path.cwd().resolve()
+        inferred_focus = path_or_task
+    effective_focus = focus or inferred_focus
+    out_dir = Path(artifact_dir).expanduser().resolve() if artifact_dir else (root / ".mana" / "analyze")
+    render_mode_header("Analyze", "Scanning repository and generating report", console)
     result = ProjectAnalyzeService().run(
         root,
         out_dir,
         options=ProjectAnalyzeOptions(
             depth=depth,
             output_format=normalized_format,
-            include=split(include),
-            exclude=split(exclude),
+            include=_split_csv(include),
+            exclude=_split_csv(exclude),
             max_files=max_files,
             max_file_size_kb=max_file_size_kb,
         ),
         llm_analyzer=_build_project_llm_analyzer(),
     )
+    report_path = _write_analyze_report(result, root=root, output=output, focus=effective_focus)
+    console.print(f"[green]report[/green] {report_path}")
     for path_item in result.artifacts.values():
         console.print(f"[green]wrote[/green] {path_item}")
     if result.errors:
+        nonfatal = [
+            error
+            for error in result.errors
+            if str(error).startswith("LLM analysis unavailable:")
+        ]
+        fatal = [error for error in result.errors if error not in nonfatal]
+        for warning in nonfatal:
+            console.print(f"[yellow]warning[/yellow] {warning}")
+        if not fatal:
+            return
         for error in result.errors:
             console.print(f"[red]error[/red] {error}")
         raise typer.Exit(code=1)
+
+
+@app.command("plan")
+def plan_command(
+    task: str = typer.Argument("", help="Task to plan."),
+    repo: str | None = typer.Option(None, "--repo", "--root-dir", help="Repository root to inspect."),
+    model: str | None = typer.Option(None, "--model", help="Model override for planning."),
+    yes: bool = typer.Option(False, "--yes", help="Approve implementation after the plan is generated."),
+    no_code: bool = typer.Option(False, "--no-code", help="Never implement; only generate and save the plan."),
+    save: bool = typer.Option(True, "--save/--no-save", help="Save the generated plan."),
+    output: str | None = typer.Option(None, "--output", help="Plan output path. Defaults to .mana/plans/<task>.md."),
+    skill: list[str] | None = typer.Option(None, "--skill", help="Force-load a skill by name."),
+) -> None:
+    """Create an approval-gated implementation plan."""
+    _ = model
+    root = _resolve_repo(repo)
+    render_mode_header("Plan", "Build a safe implementation plan first", console)
+    if not task.strip():
+        try:
+            task = input("Task: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            task = ""
+        if not task.strip():
+            raise typer.BadParameter("Plan mode requires a task.")
+    manager = SkillManager(root)
+    console.print("[cyan]Inspecting repository...[/cyan]")
+    console.print("[cyan]Loading relevant skills...[/cyan]")
+    try:
+        loaded_skills = manager.load_for_task(task, skill or [])
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if loaded_skills:
+        console.print("[green]Loaded skills:[/green] " + ", ".join(item.name for item in loaded_skills))
+    else:
+        console.print("[yellow]Loaded skills:[/yellow] none")
+    plan_text = _plan_markdown(task=task, root=root, skills=loaded_skills, no_code=no_code, yes=yes)
+    console.print(plan_text)
+    plan_path: Path | None = None
+    if save:
+        plan_path = Path(output).expanduser().resolve() if output else root / ".mana" / "plans" / f"{_slug(task)}.md"
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_path.write_text(plan_text, encoding="utf-8")
+        console.print(f"[green]Saved:[/green] {plan_path}")
+    if no_code:
+        console.print("[yellow]No-code mode is active; implementation skipped.[/yellow]")
+        return
+    if yes:
+        console.print("[green]Implementation approved by --yes.[/green]")
+        console.print("[yellow]Use chat full-auto for execution:[/yellow] mana-agent chat --full-auto " + repr(task))
+        return
+    if not sys.stdin.isatty():
+        console.print("[yellow]Plan ready. Re-run with --yes to approve implementation.[/yellow]")
+        return
+    choice = input("Approve implementation? [yes/save/edit]: ").strip().lower()
+    if choice in {"yes", "y"}:
+        console.print("[green]Implementation approved.[/green]")
+        console.print("[yellow]Use chat full-auto for execution:[/yellow] mana-agent chat --full-auto " + repr(task))
+    elif choice in {"edit", "e"}:
+        console.print("[yellow]Edit the task and rerun plan mode.[/yellow]")
+    else:
+        if plan_path:
+            console.print(f"[green]Plan saved only:[/green] {plan_path}")
+        else:
+            console.print("[green]Plan generated only.[/green]")
+
+
+@skills_app.command("init")
+def skills_init(
+    repo: str | None = typer.Option(None, "--repo", "--root-dir", help="Repository root."),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing root skill files."),
+) -> None:
+    """Create ./skills/ and copy built-in templates into it."""
+    root = _resolve_repo(repo)
+    written = SkillManager(root).init_project_skills(force=force)
+    console.print(f"[green]Skills directory:[/green] {root / 'skills'}")
+    if written:
+        for path in written:
+            console.print(f"[green]wrote[/green] {path}")
+    else:
+        console.print("[yellow]No files written; existing skills were preserved.[/yellow]")
+
+
+@skills_app.command("list")
+def skills_list(
+    repo: str | None = typer.Option(None, "--repo", "--root-dir", help="Repository root."),
+) -> None:
+    """List skills by priority source."""
+    root = _resolve_repo(repo)
+    groups = SkillManager(root).list_by_source()
+    console.print("[bold cyan]Available Skills[/bold cyan]\n")
+    for title, names in groups.items():
+        console.print(f"[bold]{title}:[/bold]")
+        if names:
+            for name in names:
+                console.print(f"- {name}")
+        else:
+            console.print("- (none)")
+        console.print("")
+
+
+@skills_app.command("show")
+def skills_show(
+    name: str = typer.Argument(..., help="Skill name to show."),
+    repo: str | None = typer.Option(None, "--repo", "--root-dir", help="Repository root."),
+) -> None:
+    """Print the selected skill content."""
+    root = _resolve_repo(repo)
+    skill = SkillManager(root).get(name)
+    if skill is None:
+        raise typer.BadParameter(f"Unknown skill: {name}")
+    source = skill.path if skill.path is not None else skill.source
+    console.print(f"[bold cyan]{skill.name}[/bold cyan] ({source})\n")
+    console.print(skill.content)
 
 
 @app.command("continue")

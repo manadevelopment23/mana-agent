@@ -668,7 +668,7 @@ def test_coding_agent_without_orchestrator_does_not_call_ask_agent_run(tmp_path:
     assert fake.calls == []
 
 
-def test_coding_agent_retries_tools_only_violation_once_through_orchestrator(tmp_path: Path, monkeypatch) -> None:
+def test_coding_agent_does_not_retry_tools_only_violation_through_orchestrator(tmp_path: Path, monkeypatch) -> None:
     class _RetryOrchestrator:
         def __init__(self) -> None:
             self.calls = 0
@@ -677,20 +677,10 @@ def test_coding_agent_retries_tools_only_violation_once_through_orchestrator(tmp
         def run(self, **kwargs):
             self.calls += 1
             self.kwargs.append(dict(kwargs))
-            if self.calls == 1:
-                raise ToolWorkerProcessError(
-                    code="tools_only_violation",
-                    message="no successful tool calls",
-                    retriable=False,
-                )
-            return AutoExecuteResult(
-                answer="fallback answer",
-                trace=[],
-                warnings=[],
-                changed_files=[],
-                passes=1,
-                terminal_reason="manager_stop",
-                toolsmanager_requests_count=1,
+            raise ToolWorkerProcessError(
+                code="tools_only_violation",
+                message="no successful tool calls",
+                retriable=False,
             )
 
     payload = {"answer": "ok", "trace": [], "warnings": []}
@@ -698,10 +688,10 @@ def test_coding_agent_retries_tools_only_violation_once_through_orchestrator(tmp
     orchestrator = _RetryOrchestrator()
     agent.set_tools_manager_orchestrator(orchestrator)
     result = agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
-    assert orchestrator.calls == 2
+    assert orchestrator.calls == 1
     assert result.get("render_mode") == "answer_only"
     assert result.get("fallback_reason") == "tools_only_violation"
-    assert result.get("fallback_retry_attempted") is True
+    assert result.get("fallback_retry_attempted") is False
     fake = agent.ask_agent
     assert isinstance(fake, _FakeAskAgent)
     assert fake.calls == []
@@ -720,15 +710,17 @@ def test_coding_agent_provider_error_does_not_fallback_to_direct_ask_agent(tmp_p
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
     agent.set_tools_manager_orchestrator(_BadProviderOrchestrator())
 
-    with pytest.raises(ToolWorkerProcessError):
-        agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
+    result = agent.generate("Implement planner", index_dir=tmp_path / ".mana/index", k=4)
+
+    assert result.get("fallback_reason") == "run_failed"
+    assert result.get("fallback_retry_attempted") is False
 
     fake = agent.ask_agent
     assert isinstance(fake, _FakeAskAgent)
     assert fake.calls == []
 
 
-def test_coding_agent_force_fallback_retry_uses_retry_request_text(tmp_path: Path, monkeypatch) -> None:
+def test_coding_agent_does_not_retry_after_patch_failure(tmp_path: Path, monkeypatch) -> None:
     ask_agent = _SequenceAskAgent(
         [
             {
@@ -748,16 +740,13 @@ def test_coding_agent_force_fallback_retry_uses_retry_request_text(tmp_path: Pat
     result = agent.generate("update README section", index_dir=tmp_path / ".mana/index", k=4)
     _ = result
     calls = _orchestrator_calls(agent)
-    assert len(calls) >= 2
-    assert any(
-        "apply_patch is unavailable or failed/no-op repeatedly" in str(call.get("request", ""))
-        for call in calls
-    )
+    assert len(calls) == 1
     warnings = result.get("warnings") or []
-    assert any("forced_write_file_retry_after_patch_noop" in str(item) for item in warnings)
+    assert any("mutation_failed_no_changes" in str(item) for item in warnings)
+    assert result["progress"]["phase"] == "blocked"
 
 
-def test_coding_agent_noop_patch_then_write_change_avoids_blocked(tmp_path: Path, monkeypatch) -> None:
+def test_coding_agent_noop_patch_does_not_attempt_write_retry(tmp_path: Path, monkeypatch) -> None:
     ask_agent = _SequenceAskAgent(
         [
             {
@@ -766,28 +755,22 @@ def test_coding_agent_noop_patch_then_write_change_avoids_blocked(tmp_path: Path
                     {"tool_name": "read_file", "status": "ok", "output_preview": '{"file_path":"README.md"}'},
                     {"tool_name": "apply_patch", "status": "error"},
                     {"tool_name": "apply_patch", "status": "error"},
-                ],
-                "warnings": [],
-            },
-            {
-                "answer": "write done",
-                "trace": [
-                    {"tool_name": "write_file", "status": "ok"},
                 ],
                 "warnings": [],
             },
         ]
     )
     agent = _build_agent_with_ask(tmp_path, monkeypatch, ask_agent)
-    states = iter([set(), set(), {"README.md"}])
-    monkeypatch.setattr(agent, "_git_status_paths", lambda: next(states, {"README.md"}))  # type: ignore[method-assign]
+    monkeypatch.setattr(agent, "_git_status_paths", lambda: set())  # type: ignore[method-assign]
 
     result = agent.generate("update README section", index_dir=tmp_path / ".mana/index", k=4)
-    assert result["progress"]["phase"] != "blocked"
-    assert result["changed_files"] == ["README.md"]
+    calls = _orchestrator_calls(agent)
+    assert len(calls) == 1
+    assert result["progress"]["phase"] == "blocked"
+    assert result["changed_files"] == []
 
 
-def test_coding_agent_true_blocker_after_bounded_noop_retries(tmp_path: Path, monkeypatch) -> None:
+def test_coding_agent_true_blocker_after_mutation_noop(tmp_path: Path, monkeypatch) -> None:
     ask_agent = _SequenceAskAgent(
         [
             {
@@ -796,14 +779,6 @@ def test_coding_agent_true_blocker_after_bounded_noop_retries(tmp_path: Path, mo
                     {"tool_name": "read_file", "status": "ok", "output_preview": '{"file_path":"README.md"}'},
                     {"tool_name": "apply_patch", "status": "error"},
                     {"tool_name": "apply_patch", "status": "error"},
-                ],
-                "warnings": [],
-            },
-            {
-                "answer": "still no change",
-                "trace": [
-                    {"tool_name": "apply_patch", "status": "error"},
-                    {"tool_name": "write_file", "status": "ok"},
                 ],
                 "warnings": [],
             },
@@ -814,9 +789,9 @@ def test_coding_agent_true_blocker_after_bounded_noop_retries(tmp_path: Path, mo
 
     result = agent.generate("update README section", index_dir=tmp_path / ".mana/index", k=4)
     assert result["progress"]["phase"] == "blocked"
-    assert "mutation_exhausted_true_blocker" in str(result["progress"]["why"])
+    assert "mutation_failed_no_changes" in str(result["progress"]["why"])
     warnings = result.get("warnings") or []
-    assert any("mutation_exhausted_true_blocker" in str(item) for item in warnings)
+    assert any("mutation_failed_no_changes" in str(item) for item in warnings)
 
 
 def test_coding_agent_conversational_noop_retries_before_terminal(tmp_path: Path, monkeypatch) -> None:

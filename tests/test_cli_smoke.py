@@ -223,11 +223,13 @@ def test_no_source_file_contains_analyzor() -> None:
     assert offenders == [], f"'analyzor' still present in: {offenders}"
 
 
-def test_root_command_defaults_to_chat() -> None:
-    result = runner.invoke(app, [], input="quit\n")
+def test_root_command_shows_mode_menu() -> None:
+    result = runner.invoke(app, ["--no-banner"], input="4\n")
 
     assert result.exit_code == 0
     assert "mana-agent chat" in result.output
+    assert "Analyze repo" in result.output
+    assert "Create implementation plan" in result.output
     assert "Goodbye!" in result.output
 
 
@@ -2711,6 +2713,204 @@ def test_chat_conflict_followup_edit_request_starts_new_flow(monkeypatch, tmp_pa
     assert "This request appears to diverge from the active flow." in result.stdout
     assert "Reply 'continue' or 'new'." not in result.stdout
     assert _FakeCodingAgent.calls == [{"question": request, "flow_id": None}]
+
+
+def test_chat_new_topic_resets_flow_but_keeps_history(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        calls: list[dict[str, object]] = []
+        reset_ids: list[str] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active: str | None = "flow-existing"
+            _FakeCodingAgent.calls = []
+            _FakeCodingAgent.reset_ids = []
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def reset_flow(self, flow_id: str | None = None) -> str | None:
+            target = flow_id or self.active
+            if target:
+                _FakeCodingAgent.reset_ids.append(target)
+            self.active = None
+            return target
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, question: str, **kwargs: object) -> dict:
+            _FakeCodingAgent.calls.append({"question": question, "flow_id": kwargs.get("flow_id")})
+            self.active = f"flow-{len(_FakeCodingAgent.calls)}"
+            return {
+                "answer": f"updated {len(_FakeCodingAgent.calls)}",
+                "changed_files": ["README.md"],
+                "warnings": [],
+                "diff": "diff --git a/README.md b/README.md\n",
+                "flow_id": self.active,
+                "plan": {"objective": question, "steps": []},
+                "progress": {"phase": "answer", "why": "done", "tool_call_allowed": False},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+        def generate_dir_mode(self, *args: object, **kwargs: object) -> dict:
+            return self.generate(*args, **kwargs)
+
+    rendered_history_lengths: list[int] = []
+
+    def _capture_turn_transparency(_console: object, *, turn: object, history: list[object]) -> None:
+        _ = turn
+        rendered_history_lengths.append(len(history))
+
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.chat_cli._render_turn_transparency", _capture_turn_transparency)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="change README title\nnew topic chat\nchange pyproject description\nquit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Started new chat topic; flow reset: flow-1" in result.stdout
+    assert _FakeCodingAgent.reset_ids == ["flow-1"]
+    assert _FakeCodingAgent.calls == [
+        {"question": "change README title", "flow_id": "flow-existing"},
+        {"question": "change pyproject description", "flow_id": None},
+    ]
+    assert rendered_history_lengths == [1, 2]
+
+
+def test_chat_conflict_new_topic_choice_starts_new_flow(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        calls: list[dict[str, object]] = []
+        reset_ids: list[str] = []
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.active: str | None = "flow-existing"
+            _FakeCodingAgent.calls = []
+            _FakeCodingAgent.reset_ids = []
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def reset_flow(self, flow_id: str | None = None) -> str | None:
+            target = flow_id or self.active
+            if target:
+                _FakeCodingAgent.reset_ids.append(target)
+            self.active = None
+            return target
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = request
+            return flow_id == "flow-existing"
+
+        def generate(self, question: str, **kwargs: object) -> dict:
+            _FakeCodingAgent.calls.append({"question": question, "flow_id": kwargs.get("flow_id")})
+            self.active = "flow-new"
+            return {
+                "answer": "updated",
+                "changed_files": [".gitignore"],
+                "warnings": [],
+                "diff": "diff --git a/.gitignore b/.gitignore\n",
+                "flow_id": self.active,
+                "plan": {"objective": "new request", "steps": []},
+                "progress": {"phase": "answer", "why": "done", "tool_call_allowed": False},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+        def generate_dir_mode(self, *args: object, **kwargs: object) -> dict:
+            return self.generate(*args, **kwargs)
+
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
+
+    request = "add .mana to .gitignore"
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input=f"{request}\nnew topic\nquit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "This request appears to diverge from the active flow." in result.stdout
+    assert "new/new topic" in result.stdout
+    assert _FakeCodingAgent.reset_ids == ["flow-existing"]
+    assert _FakeCodingAgent.calls == [{"question": request, "flow_id": None}]
+
+
+def test_chat_clear_still_clears_visible_history(monkeypatch, tmp_path: Path) -> None:
+    class _FakeAskService(FakeAskService):
+        def __init__(self) -> None:
+            self.ask_agent = object()
+
+    class _FakeCodingAgent:
+        def __init__(self, **_kwargs: object) -> None:
+            self.active = "flow-existing"
+
+        def get_active_flow_id(self) -> str | None:
+            return self.active
+
+        def is_conflicting_request(self, request: str, flow_id: str | None = None) -> bool:
+            _ = (request, flow_id)
+            return False
+
+        def generate(self, question: str, **kwargs: object) -> dict:
+            _ = kwargs
+            return {
+                "answer": f"updated {question}",
+                "changed_files": ["README.md"],
+                "warnings": [],
+                "diff": "diff --git a/README.md b/README.md\n",
+                "flow_id": self.active,
+                "plan": {"objective": question, "steps": []},
+                "progress": {"phase": "answer", "why": "done", "tool_call_allowed": False},
+                "checklist": {"done": 0, "pending": 0, "blocked": 0, "total": 0},
+                "actions_taken": [],
+                "next_step": "done",
+                "static_analysis": {"finding_count": 0, "findings": []},
+            }
+
+        def generate_dir_mode(self, *args: object, **kwargs: object) -> dict:
+            return self.generate(*args, **kwargs)
+
+    rendered_history_lengths: list[int] = []
+
+    def _capture_turn_transparency(_console: object, *, turn: object, history: list[object]) -> None:
+        _ = turn
+        rendered_history_lengths.append(len(history))
+
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _FakeAskService())
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.chat_cli._render_turn_transparency", _capture_turn_transparency)
+
+    result = runner.invoke(
+        app,
+        ["chat", "--agent-tools", "--coding-agent"],
+        input="change README title\n/clear\nchange README subtitle\nquit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Chat history cleared." in result.stdout
+    assert rendered_history_lengths == [1, 1]
 
 
 def test_chat_full_auto_pass_cap_auto_resumes_until_completion(monkeypatch, tmp_path: Path) -> None:

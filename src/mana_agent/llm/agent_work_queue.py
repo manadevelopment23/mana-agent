@@ -121,13 +121,32 @@ def compute_fingerprint(*, kind: str, tool_name: str, tool_args: dict[str, Any],
     elif tool in {"repo_search", "semantic_search", "list_files"}:
         query = _normalize_text(args.get("query") or args.get("q") or args.get("pattern") or question)
         payload = f"{tool}:{query}"
-    elif tool in {"apply_patch", "write_file", "create_file", "delete_file"}:
+    elif tool in {"edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file"}:
         path = _norm_path(args.get("path") or args.get("file") or args.get("target_file"))
         payload = f"{tool}:{path or _normalize_text(question)[:160]}"
     else:
         blob = json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
         payload = f"{tool or 'request'}:{_normalize_text(question)[:160]}:{blob}"
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+
+_DEFAULT_SKILL_TERMS = ("default skill", "default skills", "built-in skill", "builtin skill", "skill registry")
+
+
+def _looks_like_default_skill_registry_request(request: str) -> bool:
+    text = str(request or "").lower()
+    if not any(term in text for term in _DEFAULT_SKILL_TERMS):
+        return False
+    return any(name in text for name in ("nestjs", "nextjs", "reactjs", "fastapi"))
+
+
+def _default_skill_target_files(request: str) -> list[str]:
+    text = str(request or "").lower()
+    targets = ["src/mana_agent/skills/manager.py"]
+    for name in ("nestjs", "nextjs", "reactjs", "fastapi"):
+        if name in text:
+            targets.append(f"src/mana_agent/default_skills/{name}.md")
+    return targets
 
 
 class WorkItem(BaseModel):
@@ -735,9 +754,20 @@ class QueueManager:
             steps.append(
                 {
                     "id": "edit",
-                    "title": f"Apply changes to {targets_label}",
+                    "title": (
+                        "Apply the requested change and update all related imports, exports, "
+                        "registries, routers, commands, call sites, tests, and docs required "
+                        f"for {targets_label} to remain working"
+                    ),
                     "status": "pending",
-                    "requires_tools": ["apply_patch", "write_file", "create_file", "delete_file"],
+                    "requires_tools": ["edit_file", "multi_edit_file", "apply_patch", "write_file", "create_file", "delete_file"],
+                    "checks": [
+                        "target file changed/created/deleted",
+                        "related imports/usages updated",
+                        "integration path updated",
+                        "stale references removed",
+                        "verification selected and executed when possible",
+                    ],
                 }
             )
             steps.append(
@@ -854,7 +884,19 @@ class QueueManager:
         _ = (index_dirs, max_no_progress_passes, flow_context)
         store = RunStateStore(repo_root=self.repo_root, run_id=run_id)
         resolved_tool_policy = dict(tool_policy or {})
-        mutation_required = _mutation_required_from_policy(resolved_tool_policy, requires_edit) or _mutation_required_from_text(request)
+        default_skill_registry_request = _looks_like_default_skill_registry_request(request)
+        if default_skill_registry_request:
+            requires_edit = True if requires_edit is None else requires_edit
+            if not target_files:
+                target_files = _default_skill_target_files(request)
+            resolved_tool_policy.setdefault("search_budget", 3)
+            resolved_tool_policy.setdefault("read_budget", 3)
+            resolved_tool_policy.setdefault("search_repeat_limit", 1)
+        mutation_required = (
+            _mutation_required_from_policy(resolved_tool_policy, requires_edit)
+            or _mutation_required_from_text(request)
+            or default_skill_registry_request
+        )
         if mutation_required:
             resolved_tool_policy["mutation_required"] = True
         required_files = _resolve_required_deliverables(request, self.repo_root, target_files)
@@ -873,16 +915,41 @@ class QueueManager:
             def _relevant(path: str) -> bool:
                 return True
 
-        queue.submit(
-            WorkItem(
-                kind="discover",
-                tool_name="repo_search",
-                tool_args={"query": request},
-                question=f"Locate files relevant to: {request}",
-                gate="locate_candidates",
-                priority=10,
+        if default_skill_registry_request:
+            queue.submit(
+                WorkItem(
+                    kind="discover",
+                    tool_name="repo_search",
+                    tool_args={"query": "DEFAULT_SKILL_NAMES"},
+                    question=(
+                        "Locate the built-in skill registry by searching DEFAULT_SKILL_NAMES. "
+                        "Prefer src/mana_agent/skills/manager.py and ignore dependency detection files."
+                    ),
+                    gate="locate_skill_registry",
+                    priority=10,
+                )
             )
-        )
+            queue.submit(
+                WorkItem(
+                    kind="discover",
+                    tool_name="list_files",
+                    tool_args={"glob": "src/mana_agent/default_skills/*.md"},
+                    question="List flat built-in skill markdown files under src/mana_agent/default_skills/*.md.",
+                    gate="locate_builtin_skill_files",
+                    priority=11,
+                )
+            )
+        else:
+            queue.submit(
+                WorkItem(
+                    kind="discover",
+                    tool_name="repo_search",
+                    tool_args={"query": request},
+                    question=f"Locate files relevant to: {request}",
+                    gate="locate_candidates",
+                    priority=10,
+                )
+            )
 
         answers: list[str] = []
         sources: list[dict[str, Any]] = []
@@ -1002,9 +1069,12 @@ class QueueManager:
                         "list_files",
                         "ls",
                         "find_symbols",
+                        "edit_file",
+                        "multi_edit_file",
                         "apply_patch",
                         "write_file",
                         "create_file",
+                        "delete_file",
                         "git_diff",
                         "git_status",
                     ],
