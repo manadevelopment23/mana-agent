@@ -25,12 +25,8 @@ from langchain_openai import ChatOpenAI
 from pydantic import ValidationError
 
 from mana_agent.llm.prompts import (
-    CODING_AGENT_RECOGNITION_PROMPT,
-    CODING_AGENT_LANGUAGE_TOOLING_PROMPT,
     HEAD_TOOLS_PLANNER_PROMPT,
-    CODING_FLOW_MEMORY_PROMPT,
     CODING_FLOW_PLANNER_PROMPT,
-    FULL_AUTO_EXECUTION_PROMPT,
     TOOLSMANAGER_PROMPT
 )
 from mana_agent.llm.agent_work_queue import QueueManager
@@ -44,6 +40,7 @@ from mana_agent.llm.coding_agent_models import (
 )
 from mana_agent.llm.auto_chat import apply_auto_chat_tool_policy
 from mana_agent.llm.coding_agent_prompt import CODING_SYSTEM_PROMPT
+from mana_agent.prompting.builder import build_coding_system_prompt
 
 
 from mana_agent.llm.tool_worker_process import (
@@ -1081,18 +1078,14 @@ class CodingAgent:
         )
 
     def _effective_system_prompt_for(self, request: str, *, flow_context: str | None = None) -> str:
-        prompt = self.system_prompt
-        prompt = f"{prompt}\n\n{CODING_AGENT_LANGUAGE_TOOLING_PROMPT}"
-        if self._looks_like_edit_request(request):
-            prompt = f"{prompt}\n\n{CODING_AGENT_RECOGNITION_PROMPT}"
-        if self.full_auto_mode:
-            prompt = f"{prompt}\n\n{FULL_AUTO_EXECUTION_PROMPT}"
-        if flow_context:
-            prompt = (
-                f"{prompt}\n\n{CODING_FLOW_MEMORY_PROMPT}\n\n"
-                f"Flow context:\n{flow_context.strip()}"
-            )
-        return prompt
+        return build_coding_system_prompt(
+            base_prompt=self.system_prompt,
+            request=request,
+            repo_root=self.repo_root,
+            flow_context=flow_context,
+            full_auto_mode=self.full_auto_mode,
+            include_edit_rules=self._looks_like_edit_request(request),
+        )
 
     @staticmethod
     def _log_worker_event(event: Any) -> None:

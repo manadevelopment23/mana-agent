@@ -2,6 +2,12 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-02 (agent flow and prompt layers)
+
+- Added the new `mana_agent.agent` flow modules for mode/phase selection, task context rendering, and verification planning, plus the new `mana_agent.prompting` modules for stable prompt layers, compact skills indexing, project memory snapshots, mode rules, and prompt composition.
+- Connected `CodingAgent._effective_system_prompt_for()` to the layered prompt builder so the existing coding prompt now composes core identity, tool rules, mode rules, skills, memory, verification, and current task context through the new architecture.
+- Verification: `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/agent/flow.py src/mana_agent/agent/task_context.py src/mana_agent/agent/selection.py src/mana_agent/agent/verification.py src/mana_agent/prompting/layers.py src/mana_agent/prompting/builder.py src/mana_agent/prompting/skills_index.py src/mana_agent/prompting/memory_snapshot.py src/mana_agent/prompting/mode_rules.py src/mana_agent/llm/coding_agent.py tests/test_prompting_builder.py tests/test_coding_agent.py` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_prompting_builder.py tests/test_prompts_contract.py tests/test_coding_agent.py::test_coding_agent_effective_prompt_includes_language_tooling_guide -q` passed; `PYTHONPATH=src .venv/bin/python -m compileall src/mana_agent/agent src/mana_agent/prompting src/mana_agent/llm/coding_agent.py` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/agent src/mana_agent/prompting src/mana_agent/llm/coding_agent.py tests/test_prompting_builder.py tests/test_coding_agent.py --select F401` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_coding_agent.py tests/test_prompting_builder.py -q` passed.
+
 ## 2026-07-02 (mutation tool reliability)
 
 - Added exact-string `edit_file` and atomic sequential `multi_edit_file` mutation tools, registered them across coding-agent, worker, policies, prompts, contracts, and tests, and made them the preferred edit path before patching or whole-file writes.
