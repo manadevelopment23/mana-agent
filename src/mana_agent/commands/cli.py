@@ -15,24 +15,20 @@ from .ui_helpers import (
     _sanitize_full_auto_answer_text,
 )
 
-# Public app used by tests and console entrypoint.
-# Do not rely on wildcard-imported app wiring here.
+# Must be AFTER "from .cli_internal import *"
 app = typer.Typer(
     help="mana-agent CLI",
     invoke_without_command=True,
     no_args_is_help=False,
 )
 
-# Root callback from main_cli.py
 app.callback()(main)
 
-# Public commands
 app.command("chat")(chat)
 app.command("analyze")(_cli_internal.analyze_command)
 app.command("plan")(_cli_internal.plan_command)
 app.command("continue")(_cli_internal.continue_command)
 
-# Sub-apps
 app.add_typer(_cli_internal.skills_app, name="skills")
 
 
