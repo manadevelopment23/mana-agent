@@ -213,6 +213,31 @@ def test_chat_help_works() -> None:
     assert "chat [OPTIONS]" in result.output
 
 
+def test_chat_prompt_direct_readme_version_edit_skips_heavy_setup(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text(
+        "# Demo\n\nCurrent documented version: **v0.0.7**.\n",
+        encoding="utf-8",
+    )
+
+    def _blocked(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("small direct edit should not initialize heavy chat dependencies")
+
+    monkeypatch.setattr("mana_agent.commands.chat_cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.chat_cli.build_ask_service", _blocked)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.build_index_service", _blocked)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.CodingAgent", _blocked)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.ToolWorkerClient", _blocked)
+
+    result = runner.invoke(
+        app,
+        ["chat", "update version in readme.md to 0.0.8", "--root-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert "Verification skipped: docs-only one-line edit" in result.output
+    assert "Current documented version: **v0.0.8**." in (tmp_path / "README.md").read_text(encoding="utf-8")
+
+
 def test_no_source_file_contains_analyzor() -> None:
     repo_root = Path(__file__).resolve().parent.parent
     offenders = [
