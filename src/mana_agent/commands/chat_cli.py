@@ -21,6 +21,7 @@ from mana_agent.llm.auto_chat import (
 )
 from mana_agent.llm.agent_session import route_for_turn
 from mana_agent.llm.small_direct_edit import handle_small_direct_edit
+from mana_agent.llm.tools_executor import build_tools_executor_with_fallback
 from mana_agent.ui.banner import render_mode_header
 
 
@@ -591,18 +592,21 @@ def chat(
     effective_base_url = settings.openai_base_url or os.getenv("OPENAI_BASE_URL")
 
     def _build_tools_executor(worker_client: ToolWorkerClient):
-        if tools_execution_config.backend != "redis":
-            return _public_symbol("LocalToolsExecutor", LocalToolsExecutor)(worker_client=worker_client)
-        try:
-            return _public_symbol("RedisRQToolsExecutor", RedisRQToolsExecutor)(
-                worker_init_payload=worker_client.init_payload_dict(),
-                config=tools_execution_config,
-            )
-        except Exception as exc:
-            warning = f"redis executor unavailable; falling back to local backend: {exc}"
-            logger.warning(warning)
-            tools_execution_boot_warnings.append(warning)
-            return _public_symbol("LocalToolsExecutor", LocalToolsExecutor)(worker_client=worker_client)
+        helper = _public_symbol("build_tools_executor_with_fallback", build_tools_executor_with_fallback)
+        init_payload = (
+            worker_client.init_payload_dict()
+            if hasattr(worker_client, "init_payload_dict")
+            else {}
+        )
+        return helper(
+            worker_client=worker_client,
+            config=tools_execution_config,
+            worker_init_payload=init_payload,
+            warnings=tools_execution_boot_warnings,
+            warning_key=f"chat:{root}:{tools_execution_config.redis_url}:{tools_execution_config.queue_name}",
+            local_executor_cls=_public_symbol("LocalToolsExecutor", LocalToolsExecutor),
+            redis_executor_cls=_public_symbol("RedisRQToolsExecutor", RedisRQToolsExecutor),
+        )
 
     if coding_agent:
         if not agent_tools:

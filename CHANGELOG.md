@@ -2,6 +2,13 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-04 (agent decision and evidence gate)
+
+- Added a central agent orchestrator with task classification, evidence queue items, an evaluation gate state machine, post-tool critic tracing, and verification-profile selection.
+- Wired the live work queue to read explicit single-file targets directly, stop unrelated discovery once enough evidence exists, and emit edit/verify work from read evidence instead of requiring broad repo search first.
+- Added a planner-unavailable circuit breaker, explicit fake-worker lifecycle protocol, and Redis executor fallback warning deduplication.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_orchestrator.py tests/test_agent_work_queue.py tests/test_tools_executor_redis.py tests/test_tool_worker_process.py::test_tool_worker_client_init_health_shutdown tests/test_tool_worker_process.py::test_tool_worker_client_restarts_once_on_worker_failure tests/test_tool_worker_process.py::test_tool_worker_client_run_tools_forwards_events tests/test_coding_agent.py::test_preview_execution_checklist_uses_planner_and_persists_to_flow_memory tests/test_coding_agent.py::test_preview_execution_checklist_reports_repair_source tests/test_coding_agent.py::test_preview_execution_checklist_surfaces_deterministic_fallback_warning tests/test_coding_agent.py::test_explicit_file_heading_task_skips_planner_questions tests/test_coding_agent.py::test_planner_failure_circuit_breaker_uses_fallback_once tests/test_cli_smoke.py::test_chat_redis_backend_falls_back_to_local_executor_when_unavailable -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest -q tests/commands tests/integration` passed; `PYTHONPATH=src .venv/bin/python -m pytest -q` passed with 533 tests and 16 warnings; `PYTHONPATH=src .venv/bin/python -c "import mana_agent; print('ok')"` passed; `PYTHONPATH=src .venv/bin/mana-agent --help` passed; `PYTHONPATH=src .venv/bin/mana-agent chat --help` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/agent src/mana_agent/llm/tools_executor.py tests/test_agent_orchestrator.py --select F,E9` passed.
+
 ## 2026-07-04 (chat routing regression repair)
 
 - Restored plain `chat` to classic routing by default while keeping `--coding-agent` opt-in and `--agent-tools` auto-execute available for plan-trigger turns.

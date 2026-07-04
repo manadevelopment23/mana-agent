@@ -449,6 +449,7 @@ class CodingAgentSniffer:
         max_reads: int = 8,
         max_follow_per_read: int = 4,
         relevant: Callable[[str], bool] | None = None,
+        orchestrator: Any | None = None,
     ) -> None:
         self._repo_root = Path(repo_root).resolve()
         self._request = str(request or "").strip()
@@ -464,6 +465,7 @@ class CodingAgentSniffer:
         self._reads_emitted = 0
         self._finalization_emitted = False
         self._read_files: set[str] = set()
+        self._orchestrator = orchestrator
         self._target_files = [
             self._normalize_repo_path(str(item))
             for item in (target_files or [])
@@ -495,7 +497,12 @@ class CodingAgentSniffer:
             return out
         if kind == "read":
             self._read_files.update(result.files_read)
-            return self._follow_local_imports(result, parent=item)
+            out: list[WorkItem] = []
+            if self._orchestrator is not None and self._orchestrator.state.evidence_sufficient:
+                out.extend(self._finalization_jobs())
+                return out
+            out.extend(self._follow_local_imports(result, parent=item))
+            return out
         return []
 
     def _finalization_jobs(self) -> list[WorkItem]:
