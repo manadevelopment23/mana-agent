@@ -423,6 +423,7 @@ def test_queue_manager_runs_edit_and_verify_for_mutating_request(tmp_path: Path)
                     trace=[{"tool_name": "repo_search", "status": "ok"}],
                     warnings=[],
                 )
+<<<<<<< HEAD
             if "MutationCommand" in str(request.question):
                 return ToolRunResponse(
                     answer=json.dumps(
@@ -436,11 +437,17 @@ def test_queue_manager_runs_edit_and_verify_for_mutating_request(tmp_path: Path)
                     trace=[],
                     warnings=[],
                 )
+=======
+            is_edit = bool((request.tool_policy or {}).get("mutation_required"))
+            if is_edit:
+                _write_real(tmp_path, "docs/overview.md")
+>>>>>>> ac61abe (Fix no-op edit error)
             return ToolRunResponse(
                 answer="ok",
                 sources=[],
                 mode="agent-tools",
                 trace=[
+<<<<<<< HEAD
                     {
                         "tool_name": request.tool_name or "tool",
                         "status": "ok",
@@ -449,6 +456,16 @@ def test_queue_manager_runs_edit_and_verify_for_mutating_request(tmp_path: Path)
                 ],
                 warnings=[],
             )
+=======
+                        {
+                            "tool_name": "write_file" if is_edit else (request.tool_name or "tool"),
+                            "status": "ok",
+                            "changed_files": ["docs/overview.md"] if is_edit else [],
+                        }
+                    ],
+                    warnings=[],
+                )
+>>>>>>> ac61abe (Fix no-op edit error)
 
     worker = _FakeWorker()
     mgr = QueueManager(worker_client=worker, repo_root=tmp_path)
@@ -499,7 +516,7 @@ def test_queue_manager_prefers_injected_tools_executor(tmp_path: Path):
                     mode="agent-tools",
                     trace=[{"tool_name": "read_file", "status": "ok"}],
                 )
-            elif name == "write_file":
+            elif (req.tool_policy or {}).get("mutation_required"):
                 _write_real(tmp_path, "docs/overview.md")
                 response = ToolRunResponse(
                     answer="updated docs/overview.md",
@@ -539,7 +556,7 @@ def test_queue_manager_prefers_injected_tools_executor(tmp_path: Path):
     assert result.execution_backend == "work_queue:local"
     assert result.run_status == "completed"
     assert result.changed_files == ["docs/overview.md"]
-    assert [req.tool_name for req in executor.requests][:3] == ["repo_search", "read_file", "write_file"]
+    assert [req.tool_name for req in executor.requests][:3] == ["repo_search", "read_file", ""]
     assert {req.run_id for req in executor.requests} == {"run-queue"}
     assert {req.flow_id for req in executor.requests} == {"flow-queue"}
 
@@ -566,13 +583,13 @@ def test_queue_manager_forced_mutation_retry_uses_tools_executor(tmp_path: Path)
                     mode="agent-tools",
                     trace=[{"tool_name": "repo_search", "status": "ok"}],
                 )
-            elif name == "write_file":
+            elif (req.tool_policy or {}).get("mutation_required") and not str(req.question or "").startswith("You must create"):
                 response = ToolRunResponse(
                     answer="no changes",
                     mode="agent-tools",
                     trace=[{"tool_name": "write_file", "status": "ok", "changed_files": []}],
                 )
-            elif name == "create_file":
+            elif (req.tool_policy or {}).get("mutation_required") and str(req.question or "").startswith("You must create"):
                 _write_real(tmp_path, "docs/forced.md")
                 response = ToolRunResponse(
                     answer="created docs/forced.md",
@@ -596,8 +613,8 @@ def test_queue_manager_forced_mutation_retry_uses_tools_executor(tmp_path: Path)
         target_files=["docs/forced.md"],
     )
 
-    assert "create_file" in [req.tool_name for req in executor.requests]
-    forced_req = [req for req in executor.requests if req.tool_name == "create_file"][-1]
+    forced_req = executor.requests[-1]
+    assert forced_req.tool_name == ""
     assert forced_req.run_id == "run-forced"
     assert forced_req.tool_policy["mutation_required"] is True
     assert forced_req.tool_policy["mutation_strict"] is True
@@ -640,8 +657,22 @@ def test_queue_manager_targets_default_skill_registry_without_framework_search_l
                     mode="agent-tools",
                     trace=[{"tool_name": "list_files", "status": "ok"}],
                 )
+<<<<<<< HEAD
             if "MutationCommand" in str(request.question):
                 target_file = request.question.split("Target file:", 1)[1].split(". User goal", 1)[0].strip()
+=======
+            if (request.tool_policy or {}).get("mutation_required"):
+                for rel in [
+                    "src/mana_agent/skills/manager.py",
+                    "src/mana_agent/default_skills/nestjs.md",
+                    "src/mana_agent/default_skills/nextjs.md",
+                    "src/mana_agent/default_skills/reactjs.md",
+                    "src/mana_agent/default_skills/fastapi.md",
+                ]:
+                    target = tmp_path / rel
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(_substantive(rel), encoding="utf-8")
+>>>>>>> ac61abe (Fix no-op edit error)
                 return ToolRunResponse(
                     answer=json.dumps(
                         {
@@ -675,7 +706,11 @@ def test_queue_manager_targets_default_skill_registry_without_framework_search_l
 
     assert tool_names.count("repo_search") == 1
     assert tool_names.count("list_files") == 1
+<<<<<<< HEAD
     assert tool_names.count("write_file") == 0
+=======
+    assert tool_names.count("") >= 1
+>>>>>>> ac61abe (Fix no-op edit error)
     assert all("dependency_service.py" not in path for path in read_paths)
     assert "DEFAULT_SKILL_NAMES" in questions
     assert "src/mana_agent/default_skills/*.md" in questions
@@ -1345,6 +1380,80 @@ def test_queue_manager_blocks_edit_when_mutation_has_no_changed_files(tmp_path: 
     assert "forced_mutation_retry_no_changed_files" in result.warnings
 
 
+def test_queue_manager_reports_failed_mutation_details(tmp_path: Path):
+    from mana_agent.llm.agent_work_queue import QueueManager
+
+    class _FakeWorker:
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            return ToolRunResponse(
+                answer="mutation failed",
+                sources=[],
+                mode="agent-tools",
+                trace=[
+                    {
+                        "tool_name": "write_file",
+                        "status": "failed",
+                        "error": "expected_sha256 is required for overwrite",
+                        "changed_files": [],
+                    }
+                ],
+                warnings=[],
+            )
+
+    result = QueueManager(worker_client=_FakeWorker(), repo_root=tmp_path).run(
+        request="update docs/overview.md",
+        index_dir=str(tmp_path),
+        tool_policy={"mutation_required": True},
+        target_files=["docs/overview.md"],
+    )
+
+    assert result.run_status == "blocked"
+    assert "Failed edit tool details:" in result.answer
+    assert "write_file: expected_sha256 is required for overwrite" in result.answer
+
+
+def test_queue_manager_resolves_bare_existing_filename_before_forced_retry(tmp_path: Path):
+    from mana_agent.llm.agent_work_queue import QueueManager
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "07-diagram.md").write_text(
+        "# Project Diagram\n\n```mermaid\nflowchart TD\n    A[Old]\n```\n",
+        encoding="utf-8",
+    )
+
+    class _FakeWorker:
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            if (request.tool_policy or {}).get("mutation_required") and "Target file: docs/07-diagram.md" in str(request.question):
+                _write_real(tmp_path, "docs/07-diagram.md")
+                return ToolRunResponse(
+                    answer="diagram updated",
+                    sources=[],
+                    mode="agent-tools",
+                    trace=[
+                        {
+                            "tool_name": "write_file",
+                            "status": "ok",
+                            "changed_files": ["docs/07-diagram.md"],
+                        }
+                    ],
+                    warnings=[],
+                )
+            return ToolRunResponse(answer="ok", sources=[], mode="agent-tools", trace=[], warnings=[])
+
+    result = QueueManager(worker_client=_FakeWorker(), repo_root=tmp_path).run(
+        request="update Project Diagram(07-diagram.md) with new diagrams.",
+        index_dir=str(tmp_path),
+        requires_edit=True,
+        pass_cap=1,
+        max_steps=1,
+    )
+
+    decision = result.planner_decisions[0]
+    assert decision["required_files"] == ["docs/07-diagram.md"]
+    assert result.run_status == "completed"
+    assert result.changed_files == ["docs/07-diagram.md"]
+
+
 def test_queue_manager_uses_latest_useful_answer_only_for_edit_success(tmp_path: Path):
     from mana_agent.llm.agent_work_queue import QueueManager
 
@@ -1397,9 +1506,14 @@ def test_sniffer_uses_planner_target_file_for_edit_job(tmp_path: Path):
     new_items = sniffer.on_result(search, WorkResult(ok=True, files_discovered=[]), board=board)
     edit = next(item for item in new_items if item.kind == "edit")
 
+<<<<<<< HEAD
     assert edit.tool_name == "write_file"
     assert edit.tool_args["path"] == "docs/analyze.md"
     assert edit.tool_args["mutation_plan_id"]
+=======
+    assert edit.tool_name == ""
+    assert edit.tool_args == {}
+>>>>>>> ac61abe (Fix no-op edit error)
     assert "Target file: docs/analyze.md" in edit.question
     assert "related importers, exports, registries" in edit.question
     assert "stale docs/config references" in edit.question

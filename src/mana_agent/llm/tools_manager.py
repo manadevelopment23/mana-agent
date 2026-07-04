@@ -1830,6 +1830,7 @@ def _safe_relative_path(repo_root: Path, raw: str) -> str:
         return ""
 
 
+<<<<<<< HEAD
 def _is_ignored_target_path(path: str) -> bool:
     rel = str(path or "").strip().replace("\\", "/").lstrip("./")
     if not rel:
@@ -2021,6 +2022,27 @@ def resolve_target_state(
         "resolved_target_files": resolved,
         "unresolved_target_files": unresolved,
     }
+=======
+def _resolve_existing_unique_bare_path(repo_root: Path, rel: str) -> str:
+    """Resolve a bare filename to its unique existing repo path when possible."""
+    candidate = str(rel or "").strip().replace("\\", "/").lstrip("./")
+    if not candidate or "/" in candidate:
+        return candidate
+    target = repo_root / candidate
+    if target.exists():
+        return candidate
+    try:
+        matches = sorted(
+            path.relative_to(repo_root).as_posix()
+            for path in repo_root.rglob(candidate)
+            if path.is_file()
+            and ".git" not in path.relative_to(repo_root).parts
+            and ".mana" not in path.relative_to(repo_root).parts
+        )
+    except OSError:
+        return candidate
+    return matches[0] if len(matches) == 1 else candidate
+>>>>>>> ac61abe (Fix no-op edit error)
 
 
 def _resolve_mutation_target_path(task: str, repo_root: Path, target_files: Sequence[str] = ()) -> str:
@@ -2035,7 +2057,7 @@ def _resolve_mutation_target_path(task: str, repo_root: Path, target_files: Sequ
     for item in target_files:
         rel = _safe_relative_path(repo_root, item)
         if rel:
-            return rel
+            return _resolve_existing_unique_bare_path(repo_root, rel)
 
     text = str(task or "")
     match = _CREATE_FILE_IN_DIR_RE.search(text)
@@ -2044,13 +2066,13 @@ def _resolve_mutation_target_path(task: str, repo_root: Path, target_files: Sequ
         filename = match.group("file").strip().strip("`'\" ")
         rel = _safe_relative_path(repo_root, f"{directory.rstrip('/')}/{filename}")
         if rel:
-            return rel
+            return _resolve_existing_unique_bare_path(repo_root, rel)
 
     candidates: list[str] = []
     for match in _EXPLICIT_FILE_RE.finditer(text):
         rel = _safe_relative_path(repo_root, match.group("path"))
         if rel:
-            candidates.append(rel)
+            candidates.append(_resolve_existing_unique_bare_path(repo_root, rel))
     if candidates:
         if _README_ATTACH_RE.search(text):
             for candidate in candidates:
@@ -2109,6 +2131,7 @@ def _resolve_required_deliverables(
     explicit: list[str] = []
     for item in target_files:
         rel = _safe_relative_path(repo_root, item)
+        rel = _resolve_existing_unique_bare_path(repo_root, rel)
         if rel and rel not in explicit:
             explicit.append(rel)
     if explicit:
@@ -2128,6 +2151,7 @@ def _resolve_required_deliverables(
         raw = match.group("path")
         candidate = f"{directory}/{raw}" if directory and "/" not in raw else raw
         rel = _safe_relative_path(repo_root, candidate)
+        rel = _resolve_existing_unique_bare_path(repo_root, rel)
         if rel and rel not in normalized:
             normalized.append(rel)
     if normalized:
@@ -2602,7 +2626,11 @@ def _compose_final_answer(
     worker_answer: str,
     fallback: str,
     missing_required_files: Sequence[str] = (),
+<<<<<<< HEAD
     mutation_tools_used: Sequence[str] = (),
+=======
+    tool_failures: Sequence[dict[str, str]] = (),
+>>>>>>> ac61abe (Fix no-op edit error)
 ) -> str:
     """Rebuild the final answer from authoritative execution state.
 
@@ -2648,6 +2676,17 @@ def _compose_final_answer(
             )
         else:
             lines.append(f"Reason: {reason}")
+        failures = [
+            (str(item.get("tool") or "tool").strip(), str(item.get("detail") or "").strip())
+            for item in (tool_failures or [])
+            if isinstance(item, dict)
+        ]
+        failures = [(tool, detail) for tool, detail in failures if detail]
+        if failures:
+            lines.append("")
+            lines.append("Failed edit tool details:")
+            for tool, detail in failures[:3]:
+                lines.append(f"- {tool}: {detail}")
         return "\n".join(lines)
 
     if mutated:

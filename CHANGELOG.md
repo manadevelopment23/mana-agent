@@ -3,6 +3,7 @@
 All notable repository changes should be recorded here.
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 ## 2026-07-03 (mutation command execution wiring)
 
 - Added `MutationCommand` compilation and validation so approved `MutationPlan` work produces an executable registered mutation-tool payload before edit execution.
@@ -74,6 +75,15 @@ All notable repository changes should be recorded here.
 - Enforced the stable prompt assembly order and moved edit/full-auto/verification/flow-memory guidance inside the stable layers instead of adding extra top-level prompt sections.
 - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_prompting_builder.py tests/test_coding_agent.py::test_coding_agent_effective_prompt_includes_language_tooling_guide -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/agent/flow.py src/mana_agent/agent/task_context.py src/mana_agent/agent/selection.py src/mana_agent/agent/verification.py src/mana_agent/prompting/layers.py src/mana_agent/prompting/builder.py src/mana_agent/prompting/skills_index.py src/mana_agent/prompting/memory_snapshot.py src/mana_agent/prompting/mode_rules.py src/mana_agent/prompting/output_contract.py src/mana_agent/llm/coding_agent.py tests/test_prompting_builder.py tests/test_coding_agent.py` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_coding_agent.py tests/test_prompting_builder.py -q` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/agent/flow.py src/mana_agent/agent/task_context.py src/mana_agent/prompting/builder.py src/mana_agent/prompting/layers.py src/mana_agent/prompting/output_contract.py tests/test_prompting_builder.py --select F,E9` passed.
 =======
+=======
+## 2026-07-04 (edit target resolution)
+
+- Resolved bare existing filenames in edit requests to their unique repository path before forced mutation retries, so requests like `Project Diagram(07-diagram.md)` target `docs/07-diagram.md` when that is the only matching file.
+- Routed queue-authored edit and forced-retry work as agentic mutation-required turns instead of incomplete direct `write_file` / `create_file` tool requests, preserving target instructions in the prompt.
+- Included failed edit tool details in blocked no-change answers instead of only returning the generic corrected-payload message.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py tests/test_tools_manager.py -q` passed; `PYTHONPATH=src .venv/bin/python -m compileall src/mana_agent/llm/tools_manager.py src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/agent_work_queue_adapters.py` passed; `git diff --check` passed.
+
+>>>>>>> ac61abe (Fix no-op edit error)
 ## 2026-07-04 (executor-backed agent sessions)
 
 - Added explicit `AgentSession` / `AgentRoute` models for coding-agent routing metadata and chat turn route decisions.

@@ -572,11 +572,18 @@ class CodingAgentSniffer:
             return []
         self._finalization_emitted = True
         target_file = self._target_files[0] if self._target_files else ""
+<<<<<<< HEAD
         plan = build_mutation_plan(
             repo_root=self._repo_root,
             user_goal=self._request,
             target_files=self._target_files,
             evidence_files_read=sorted(self._read_files),
+=======
+        target_instruction = (
+            f" Target file: {target_file}. Create it if it does not exist."
+            if target_file
+            else ""
+>>>>>>> ac61abe (Fix no-op edit error)
         )
         if not plan.allowed_to_mutate:
             tool_args = {"path": target_file, "mutation_plan": plan.model_dump(), "mutation_plan_id": plan.plan_id}
@@ -590,8 +597,8 @@ class CodingAgentSniffer:
             target_instruction = ""
         edit = WorkItem(
             kind="edit",
-            tool_name="write_file",
-            tool_args=tool_args,
+            tool_name="",
+            tool_args={},
             question=(
                 f"{edit_lead} User request context: {self._request}. Evidence summary: {plan.evidence_summary}. "
                 f"Intended changes: {'; '.join(plan.intended_changes)}. Patch strategy: {plan.patch_strategy}. "

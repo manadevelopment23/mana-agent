@@ -1559,13 +1559,22 @@ class QueueManager:
             mutation_state = _mutation_state_from_trace(trace, changed_files)
             return result
 
+        sniffer_target_files = [
+            str(item).strip()
+            for item in (target_files or required_files or ([resolved_target_path] if resolved_target_path else []))
+            if str(item).strip()
+        ]
         # Whether to finalize with an edit + verify is recognized upstream by the
         # coding agent's planner (the LLM checklist) and passed in as requires_edit.
         sniffer = CodingAgentSniffer(
             repo_root=self.repo_root,
             request=request,
             emit_edit=requires_edit,
+<<<<<<< HEAD
             target_files=[str(item).strip() for item in (resolved_target_files or target_files) if str(item).strip()],
+=======
+            target_files=sniffer_target_files,
+>>>>>>> ac61abe (Fix no-op edit error)
             relevant=_relevant,
         )
         runner = WorkQueueRunner(
@@ -1812,8 +1821,8 @@ class QueueManager:
                     )
                 forced_item = WorkItem(
                     kind="edit",
-                    tool_name="write_file" if target_file and (self.repo_root / target_file).exists() else ("create_file" if target_file else ""),
-                    tool_args={"path": target_file} if target_file else {},
+                    tool_name="",
+                    tool_args={},
                     question=_forced_mutation_prompt(request, target_file),
                     gate="apply_changes",
                     priority=1,
@@ -1924,7 +1933,11 @@ class QueueManager:
             worker_answer=_latest_useful_answer(answers),
             fallback=board.render(),
             missing_required_files=missing_required_files,
+<<<<<<< HEAD
             mutation_tools_used=mutation_tool_stats["mutation_tools_called"],
+=======
+            tool_failures=failed_calls,
+>>>>>>> ac61abe (Fix no-op edit error)
         )
         if mutation_required and approved_mutation_plan is not None:
             final_answer = f"{final_answer}\nMutation plan: {approved_mutation_plan.plan_id}"
