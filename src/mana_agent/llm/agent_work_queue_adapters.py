@@ -25,18 +25,15 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from mana_agent.llm.agent_work_queue import TaskBoard, WorkItem, WorkResult, execute_registered_mutation_command
+from mana_agent.llm.agent_session import AgentSession
+from mana_agent.llm.agent_work_queue import TaskBoard, WorkItem, WorkResult
 from mana_agent.llm.mutation_plan import (
-    REGISTERED_MUTATION_TOOLS,
-    MutationCommand,
-    build_mutation_plan,
     is_architecture_docs_update,
     mutation_trace_has_plan,
     representative_architecture_sources,
-    validate_mutation_command,
-    validate_mutation_plan,
 )
 from mana_agent.llm.tool_worker_process import ToolRunRequest, ToolRunResponse
+from mana_agent.llm.tools_executor import BatchToolRequest, ToolsExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +59,23 @@ _REQUEST_STOPWORDS = frozenset(
         "change", "fix", "separately", "seperately", "please", "want",
     }
 )
+
+_AGENTIC_EDIT_TOOLS = [
+    "read_file",
+    "repo_search",
+    "semantic_search",
+    "list_files",
+    "ls",
+    "find_symbols",
+    "edit_file",
+    "multi_edit_file",
+    "apply_patch",
+    "write_file",
+    "create_file",
+    "delete_file",
+    "git_diff",
+    "git_status",
+]
 
 
 def _extract_paths(response: ToolRunResponse, *, repo_root: Path) -> set[str]:
@@ -204,115 +218,17 @@ def make_worker_executor(
     """Build the ``execute`` callable that runs a :class:`WorkItem` on the worker."""
     repo_root = Path(repo_root).resolve()
 
-    def _normalized_path(path: str) -> str:
-        text = str(path or "").strip()
-        if not text:
-            return ""
-        try:
-            candidate = Path(text)
-            resolved = candidate if candidate.is_absolute() else (repo_root / candidate)
-            return resolved.resolve().relative_to(repo_root).as_posix()
-        except Exception:
-            return text.replace("\\", "/").lstrip("./")
-
     def _execute(item: WorkItem) -> WorkResult:
-        question = item.question or (f"run tool {item.tool_name}" if item.tool_name else item.title)
-        item_policy = dict(tool_policy or {})
-        if item.kind == "edit":
-            # Edit work must go through a mutation-only pass. Discovery/read jobs
-            # are queued separately before this point; allowing read/search here
-            # lets an edit-required run finish with a prose-only worker response.
-            item_policy["allowed_tools"] = list(MUTATION_ONLY_TOOLS)
-            item_policy["require_read_files"] = 0
-            item_policy["mutation_required"] = True
-            item_policy["mutation_strict"] = True
-            item_policy["verify_requires_mutation"] = True
-        else:
-            item_policy.pop("mutation_required", None)
-            item_policy.pop("mutation_strict", None)
-            item_policy.pop("verify_requires_mutation", None)
-        tool_args = dict(item.tool_args or {})
-        if item.kind == "edit":
-            plan_payload = tool_args.get("mutation_plan")
-            plan_id = str(tool_args.get("mutation_plan_id") or "").strip()
-            errors = validate_mutation_plan(plan_payload, repo_root=repo_root) if isinstance(plan_payload, dict) else ["missing approved mutation plan"]
-            if errors or not plan_id:
-                return WorkResult(
-                    ok=False,
-                    summary="mutation plan validation failed",
-                    error="mutation_plan_validation_failed: " + "; ".join(errors or ["missing mutation_plan_id"]),
-                    trace=[
-                        {
-                            "tool_name": item.tool_name or "mutation",
-                            "status": "blocked",
-                            "error": "mutation_plan_validation_failed",
-                            "details": errors,
-                            "mutation_plan_id": plan_id,
-                        }
-                    ],
-                )
-            tool = (item.tool_name or "").strip().lower()
-            if tool in REGISTERED_MUTATION_TOOLS:
-                command_args = {
-                    key: value
-                    for key, value in tool_args.items()
-                    if key not in {"mutation_plan", "mutation_plan_id"}
-                }
-                try:
-                    command = MutationCommand(
-                        plan_id=plan_id,
-                        tool_name=tool,  # type: ignore[arg-type]
-                        tool_args=command_args,
-                        target_files=list(plan_payload.get("target_files") or []),
-                        reason="compiled from registered edit WorkItem",
-                    )
-                except Exception as exc:
-                    return WorkResult(
-                        ok=False,
-                        summary="mutation command invalid",
-                        error=f"mutation_command_incomplete: {exc}",
-                        trace=[
-                            {
-                                "tool_name": tool,
-                                "status": "blocked",
-                                "error": "mutation_command_incomplete",
-                                "mutation_plan_id": plan_id,
-                            }
-                        ],
-                    )
-                command_errors = validate_mutation_command(command)
-                if command_errors:
-                    return WorkResult(
-                        ok=False,
-                        summary="mutation command incomplete",
-                        error="mutation_command_incomplete: " + "; ".join(command_errors),
-                        trace=[
-                            {
-                                "tool_name": tool,
-                                "status": "blocked",
-                                "error": "mutation_command_incomplete",
-                                "details": command_errors,
-                                "mutation_plan_id": plan_id,
-                                "target_files": list(command.target_files),
-                                "changed_files": [],
-                                "created_by": "mutation_command_executor",
-                            }
-                        ],
-                    )
-                return execute_registered_mutation_command(repo_root=repo_root, command=command)
-        if (item.tool_name or "").strip().lower() == "read_file" and tool_args.get("path"):
-            tool_args["path"] = _normalized_path(str(tool_args.get("path")))
-        request = ToolRunRequest(
-            question=question,
+        request = build_tool_run_request(
+            item,
+            repo_root=repo_root,
             index_dir=index_dir,
             flow_id=flow_id,
             run_id=run_id,
-            k=int(default_k),
-            max_steps=int(default_max_steps),
-            timeout_seconds=int(default_timeout),
-            tool_policy=item_policy,
-            tool_name=item.tool_name or "",
-            tool_args=tool_args,
+            k=default_k,
+            max_steps=default_max_steps,
+            timeout_seconds=default_timeout,
+            tool_policy=tool_policy,
         )
         t0 = time.perf_counter()
         try:
@@ -322,23 +238,148 @@ def make_worker_executor(
         except Exception as exc:
             return WorkResult(ok=False, error=f"worker_error: {exc}")
         if item.kind == "edit":
+            tool_args = dict(item.tool_args or {})
             plan_id = str(tool_args.get("mutation_plan_id") or "").strip()
-            for row in response.trace:
-                if not isinstance(row, dict):
-                    continue
-                tool = str(row.get("tool_name") or row.get("tool") or row.get("name") or "").strip().lower()
-                if tool in set(MUTATION_ONLY_TOOLS):
-                    row.setdefault("mutation_plan_id", plan_id)
-            if not mutation_trace_has_plan(response.trace, plan_id):
-                return WorkResult(
-                    ok=False,
-                    summary="mutation did not execute with approved plan",
-                    error="mutation_tool_missing_plan_id",
-                    trace=list(response.trace),
-                )
+            if plan_id:
+                for row in response.trace:
+                    if not isinstance(row, dict):
+                        continue
+                    tool = str(row.get("tool_name") or row.get("tool") or row.get("name") or "").strip().lower()
+                    if tool in set(MUTATION_ONLY_TOOLS):
+                        row.setdefault("mutation_plan_id", plan_id)
+                if not mutation_trace_has_plan(response.trace, plan_id):
+                    return WorkResult(
+                        ok=False,
+                        summary="mutation did not execute with approved plan",
+                        error="mutation_tool_missing_plan_id",
+                        trace=list(response.trace),
+                    )
         result = classify_result(item, response, repo_root=repo_root)
         result.duration_ms = round((time.perf_counter() - t0) * 1000.0, 3)
         return result
+
+    return _execute
+
+
+def _normalized_repo_path(path: str, *, repo_root: Path) -> str:
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    try:
+        candidate = Path(text)
+        resolved = candidate if candidate.is_absolute() else (repo_root / candidate)
+        return resolved.resolve().relative_to(repo_root).as_posix()
+    except Exception:
+        return text.replace("\\", "/").lstrip("./")
+
+
+def _policy_for_item(item: WorkItem, tool_policy: dict[str, Any] | None) -> dict[str, Any]:
+    item_policy = dict(tool_policy or {})
+    if item.kind == "edit":
+        # An edit item is an agentic analyze-then-write pass: the worker may
+        # inspect the repo before authoring, but must finish with a mutation.
+        item_policy["allowed_tools"] = list(_AGENTIC_EDIT_TOOLS)
+        item_policy["require_read_files"] = 0
+        item_policy["mutation_required"] = True
+        item_policy["verify_requires_mutation"] = True
+    else:
+        item_policy.pop("mutation_required", None)
+        item_policy.pop("mutation_strict", None)
+        item_policy.pop("verify_requires_mutation", None)
+    return item_policy
+
+
+def build_tool_run_request(
+    item: WorkItem,
+    *,
+    repo_root: Path,
+    index_dir: str | None = None,
+    index_dirs: list[str] | None = None,
+    flow_id: str | None = None,
+    run_id: str | None = None,
+    k: int = 8,
+    max_steps: int = 6,
+    timeout_seconds: int = 60,
+    tool_policy: dict[str, Any] | None = None,
+) -> ToolRunRequest:
+    question = item.question or (f"run tool {item.tool_name}" if item.tool_name else item.title)
+    tool_args = dict(item.tool_args or {})
+    if (item.tool_name or "").strip().lower() == "read_file" and tool_args.get("path"):
+        tool_args["path"] = _normalized_repo_path(str(tool_args.get("path")), repo_root=repo_root)
+    return ToolRunRequest(
+        question=question,
+        index_dir=index_dir,
+        index_dirs=list(index_dirs or []) or None,
+        flow_id=flow_id,
+        run_id=run_id,
+        k=int(k),
+        max_steps=int(max_steps),
+        timeout_seconds=int(timeout_seconds),
+        tool_policy=_policy_for_item(item, tool_policy),
+        tool_name=item.tool_name or "",
+        tool_args=tool_args,
+    )
+
+
+def make_batch_executor(
+    *,
+    executor: ToolsExecutor,
+    session: AgentSession,
+    on_event: Callable[[Any], None] | None = None,
+    default_timeout: int = 60,
+    default_k: int = 8,
+    default_max_steps: int = 6,
+) -> Callable[[WorkItem], WorkResult]:
+    """Build an execute callable that routes WorkItems through ToolsExecutor.run_batch."""
+    repo_root = Path(session.repo_root).resolve()
+
+    def _execute(item: WorkItem) -> WorkResult:
+        request = build_tool_run_request(
+            item,
+            repo_root=repo_root,
+            index_dir=session.index_dir,
+            index_dirs=session.index_dirs,
+            flow_id=session.flow_id,
+            run_id=session.run_id,
+            k=default_k,
+            max_steps=default_max_steps,
+            timeout_seconds=default_timeout,
+            tool_policy=session.tool_policy,
+        )
+        results = executor.run_batch(
+            run_id=session.run_id,
+            requests=[BatchToolRequest(request_index=0, request=request)],
+            on_event=on_event,
+        )
+        if not results:
+            return WorkResult(ok=False, error="executor_returned_no_results")
+        result = results[0]
+        if not result.ok:
+            trace = [
+                {
+                    "tool_name": item.tool_name or "",
+                    "status": "failed",
+                    "error_code": result.error_code,
+                    "error": result.error_message,
+                    "backend": result.backend,
+                }
+            ]
+            return WorkResult(
+                ok=False,
+                summary=result.error_message or result.error_code or "tool execution failed",
+                error=result.error_message or result.error_code or "tool execution failed",
+                trace=trace,
+                duration_ms=float(result.duration_ms or 0.0),
+            )
+        if not isinstance(result.response, dict):
+            return WorkResult(ok=False, error="executor_result_missing_response")
+        try:
+            response = ToolRunResponse.model_validate(result.response)
+        except Exception as exc:
+            return WorkResult(ok=False, error=f"executor_result_decode_failed: {exc}")
+        work_result = classify_result(item, response, repo_root=repo_root)
+        work_result.duration_ms = float(result.duration_ms or 0.0)
+        return work_result
 
     return _execute
 
@@ -433,29 +474,18 @@ class CodingAgentSniffer:
             return []
         self._finalization_emitted = True
         target_file = self._target_files[0] if self._target_files else ""
-        plan = build_mutation_plan(
-            repo_root=self._repo_root,
-            user_goal=self._request,
-            target_files=self._target_files,
-            evidence_files_read=sorted(self._read_files),
+        target_instruction = (
+            f" Target file: {target_file}. Create it if it does not exist."
+            if target_file
+            else ""
         )
-        if not plan.allowed_to_mutate:
-            tool_args = {"path": target_file, "mutation_plan": plan.model_dump(), "mutation_plan_id": plan.plan_id}
-        else:
-            tool_args = {"path": target_file, "mutation_plan": plan.model_dump(), "mutation_plan_id": plan.plan_id}
-        if target_file:
-            edit_lead = f"Using approved MutationPlan {plan.plan_id}, update {target_file}."
-            target_instruction = f" Target file: {target_file}. Create it if it does not exist."
-        else:
-            edit_lead = f"Using approved MutationPlan {plan.plan_id}, carry out the user's request."
-            target_instruction = ""
         edit = WorkItem(
             kind="edit",
-            tool_name="write_file",
-            tool_args=tool_args,
+            tool_name="",
+            tool_args={},
             question=(
-                f"{edit_lead} User request context: {self._request}. Evidence summary: {plan.evidence_summary}. "
-                f"Intended changes: {'; '.join(plan.intended_changes)}. Patch strategy: {plan.patch_strategy}. "
+                "Using the file evidence already gathered in this run, carry out "
+                f"the user's request: {self._request}. "
                 "Apply concrete changes with "
                 "edit_file/multi_edit_file/apply_patch/create_file/write_file/delete_file and report the changed files. "
                 "Before mutating, use bounded exact path/name/symbol evidence to account for "
@@ -575,6 +605,8 @@ class CodingAgentSniffer:
 
 __all__ = [
     "CodingAgentSniffer",
+    "build_tool_run_request",
     "classify_result",
+    "make_batch_executor",
     "make_worker_executor",
 ]

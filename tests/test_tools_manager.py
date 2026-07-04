@@ -799,10 +799,12 @@ def test_two_files_authored_under_docs_complete_the_run(tmp_path: Path) -> None:
 
         def run_tools(self, request, on_event=None):  # noqa: ANN001
             _ = on_event
-            if "MutationCommand" in str(request.question):
-                path = request.question.split("Target file:", 1)[1].split(". User goal", 1)[0].strip()
-            else:
-                path = str((request.tool_args or {}).get("path") or "")
+            path = str((request.tool_args or {}).get("path") or "")
+            if not path:
+                for candidate in bodies:
+                    if f"Target file: {candidate}" in str(request.question or ""):
+                        path = candidate
+                        break
             if path in bodies and path not in self.seen:
                 self.seen.add(path)
                 return ToolRunResponse(
@@ -893,6 +895,19 @@ def test_empty_file_does_not_satisfy_requirement(tmp_path: Path) -> None:
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "01-overview.md").write_text("", encoding="utf-8")
     assert _required_file_satisfied(tmp_path, "docs/01-overview.md") is False
+
+
+def test_bare_existing_unique_file_resolves_to_repo_path(tmp_path: Path) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "07-diagram.md").write_text(
+        "# Project Diagram\n\nExisting substantive diagram documentation.\n",
+        encoding="utf-8",
+    )
+
+    assert _resolve_required_deliverables(
+        "update Project Diagram(07-diagram.md) with new diagrams.",
+        tmp_path,
+    ) == ["docs/07-diagram.md"]
 
 
 def test_forced_mutation_prompt_drives_agentic_authoring() -> None:
