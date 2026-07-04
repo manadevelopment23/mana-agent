@@ -73,8 +73,6 @@ All notable repository changes should be recorded here.
 - Connected `CodingAgent._effective_system_prompt_for()` to the layered prompt builder so the existing coding prompt now composes core identity, tool rules, mode rules, skills, memory, current task context, and output contract through the new architecture.
 - Enforced the stable prompt assembly order and moved edit/full-auto/verification/flow-memory guidance inside the stable layers instead of adding extra top-level prompt sections.
 - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_prompting_builder.py tests/test_coding_agent.py::test_coding_agent_effective_prompt_includes_language_tooling_guide -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/agent/flow.py src/mana_agent/agent/task_context.py src/mana_agent/agent/selection.py src/mana_agent/agent/verification.py src/mana_agent/prompting/layers.py src/mana_agent/prompting/builder.py src/mana_agent/prompting/skills_index.py src/mana_agent/prompting/memory_snapshot.py src/mana_agent/prompting/mode_rules.py src/mana_agent/prompting/output_contract.py src/mana_agent/llm/coding_agent.py tests/test_prompting_builder.py tests/test_coding_agent.py` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_coding_agent.py tests/test_prompting_builder.py -q` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/agent/flow.py src/mana_agent/agent/task_context.py src/mana_agent/prompting/builder.py src/mana_agent/prompting/layers.py src/mana_agent/prompting/output_contract.py tests/test_prompting_builder.py --select F,E9` passed.
-=======
-=======
 ## 2026-07-04 (edit target resolution)
 
 - Resolved bare existing filenames in edit requests to their unique repository path before forced mutation retries, so requests like `Project Diagram(07-diagram.md)` target `docs/07-diagram.md` when that is the only matching file.
@@ -84,7 +82,6 @@ All notable repository changes should be recorded here.
 - Included failed edit tool details in blocked no-change answers instead of only returning the generic corrected-payload message.
 - Verification: `PYTHONPATH=src .venv/bin/mana-agent --help` passed; `PYTHONPATH=src .venv/bin/python - <<'PY' ... from mana_agent.commands.cli import app ... PY` passed; targeted target-resolution regressions passed; `PYTHONPATH=src .venv/bin/python -m compileall src/mana_agent/llm/tools_manager.py src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/agent_work_queue_adapters.py src/mana_agent/commands/cli.py src/mana_agent/commands/cli_internal.py` passed; `git diff --check` passed. Full `tests/test_agent_work_queue.py tests/test_tools_manager.py` was not green on this branch due existing MutationCommand queue behavior outside this startup fix.
 
->>>>>>> ac61abe (Fix no-op edit error)
 ## 2026-07-04 (executor-backed agent sessions)
 
 - Added explicit `AgentSession` / `AgentRoute` models for coding-agent routing metadata and chat turn route decisions.
