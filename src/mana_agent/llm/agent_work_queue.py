@@ -1570,11 +1570,7 @@ class QueueManager:
             repo_root=self.repo_root,
             request=request,
             emit_edit=requires_edit,
-<<<<<<< HEAD
-            target_files=[str(item).strip() for item in (resolved_target_files or target_files) if str(item).strip()],
-=======
             target_files=sniffer_target_files,
->>>>>>> ac61abe (Fix no-op edit error)
             relevant=_relevant,
         )
         runner = WorkQueueRunner(
@@ -1603,36 +1599,6 @@ class QueueManager:
         # were named, when nothing was mutated) re-run the worker under a strict
         # MUTATION_REQUIRED prompt that forbids natural-language-only answers.
         if mutation_required and not mutation_state.get("no_op_reason"):
-<<<<<<< HEAD
-            with _mutation_lock(flow_id, store.run_id):
-                if deliverables:
-                    missing_targets = _missing_required_files(
-                        self.repo_root, deliverables, changed=set(mutation_state.get("changed_files") or [])
-                    )
-                    forced_targets = missing_targets
-                    if not mutation_state.get("mutation_succeeded"):
-                        forced_targets = forced_targets or list(deliverables)
-                elif not mutation_state.get("mutation_succeeded"):
-                    forced_targets = [resolved_target_path]
-                else:
-                    forced_targets = []
-                for target_file in forced_targets:
-                    forced_retry_ran = True
-                    forced_policy = {
-                        **resolved_tool_policy,
-                        "mutation_required": True,
-                        "mutation_strict": True,
-                        "allowed_tools": [
-                            "edit_file",
-                            "multi_edit_file",
-                            "apply_patch",
-                            "write_file",
-                            "create_file",
-                            "delete_file",
-                        ],
-                        "verify_requires_mutation": True,
-                    }
-=======
             if deliverables:
                 forced_targets = _missing_required_files(
                     self.repo_root, deliverables, changed=set(mutation_state.get("changed_files") or [])
@@ -1679,7 +1645,6 @@ class QueueManager:
                         default_max_steps=max(1, int(max_steps)),
                     )
                 else:
->>>>>>> 9919886 (Add batch-tools prompt)
                     forced_execute = make_worker_executor(
                         worker_client=self.worker_client,
                         repo_root=self.repo_root,
@@ -1688,133 +1653,6 @@ class QueueManager:
                         default_k=int(k),
                         default_max_steps=max(1, int(max_steps)),
                         tool_policy=forced_policy,
-<<<<<<< HEAD
-                        index_dir=str(index_dir) if index_dir else None,
-                        flow_id=flow_id,
-                        run_id=store.run_id,
-                    )
-                    forced_item = WorkItem(
-                        kind="edit",
-                        tool_name="write_file" if target_file and (self.repo_root / target_file).exists() else ("create_file" if target_file else ""),
-                        tool_args={"path": target_file} if target_file else {},
-                        question=_forced_mutation_prompt(
-                            request,
-                            target_file,
-                            target_exists=bool(target_file and (self.repo_root / target_file).exists()),
-                        ),
-                        gate="apply_changes",
-                        priority=1,
-                        created_by="forced_mutation_retry",
-                    )
-                    read_files = sorted(
-                        dict.fromkeys(
-                            path
-                            for queued in queue.items()
-                            if queued.status == "done"
-                            for path in (queued.files_read or [])
-                            if path
-                        )
-                    )
-                    plan = build_mutation_plan(
-                        repo_root=self.repo_root,
-                        user_goal=request,
-                        target_files=[target_file] if target_file else deliverables,
-                        evidence_files_read=read_files,
-                    )
-                    plan_errors = validate_mutation_plan(plan, repo_root=self.repo_root)
-                    if plan_errors:
-                        forced_result = WorkResult(
-                            ok=False,
-                            summary="mutation plan validation failed",
-                            error="mutation_plan_validation_failed: " + "; ".join(plan_errors),
-                            trace=[
-                                {
-                                    "tool_name": forced_item.tool_name or "mutation",
-                                    "status": "blocked",
-                                    "error": "mutation_plan_validation_failed",
-                                    "details": plan_errors,
-                                    "mutation_plan_id": plan.plan_id,
-                                }
-                            ],
-                        )
-                    else:
-                        approved_mutation_plan = plan
-                        command = self._synthesize_mutation_command(
-                            base_execute=forced_execute,
-                            plan=plan,
-                            target_file=target_file,
-                        )
-                        if command is None:
-                            forced_result = WorkResult(
-                                ok=False,
-                                summary="mutation command missing",
-                                error="mutation_command_missing",
-                                trace=[
-                                    {
-                                        "tool_name": "mutation_command",
-                                        "status": "blocked",
-                                        "error": "mutation_command_missing",
-                                        "mutation_plan_id": plan.plan_id,
-                                        "target_files": list(plan.target_files),
-                                        "changed_files": [],
-                                        "created_by": "mutation_command_executor",
-                                    }
-                                ],
-                            )
-                        else:
-                            command_errors = validate_mutation_command(command)
-                            if command_errors:
-                                forced_result = WorkResult(
-                                    ok=False,
-                                    summary="mutation command incomplete",
-                                    error="mutation_command_incomplete: " + "; ".join(command_errors),
-                                    trace=[
-                                        {
-                                            "tool_name": command.tool_name,
-                                            "status": "blocked",
-                                            "error": "mutation_command_incomplete",
-                                            "details": command_errors,
-                                            "mutation_plan_id": command.plan_id,
-                                            "target_files": list(command.target_files),
-                                            "changed_files": [],
-                                            "created_by": "mutation_command_executor",
-                                        }
-                                    ],
-                                )
-                            else:
-                                forced_result = execute_registered_mutation_command(repo_root=self.repo_root, command=command)
-                    if forced_result.answer:
-                        answers.append(forced_result.answer)
-                    sources.extend(forced_result.sources)
-                    trace.extend(forced_result.trace)
-                    changed_files.extend(forced_result.files_changed)
-                    changed_files.extend(_extract_changed_files_from_value(forced_result.trace))
-                    _refresh_mutation_state()
-                if forced_retry_ran:
-                    forced_retry_mutation_attempted = bool(mutation_state.get("mutation_attempted"))
-                    forced_retry_changed_files = bool(mutation_state.get("changed_files"))
-                    if not forced_retry_mutation_attempted:
-                        fallback_allowed = bool(resolved_tool_policy.get("fallback_decision")) and not is_architecture_docs_update(request, deliverables)
-                        if fallback_allowed:
-                            for target_file in forced_targets:
-                                if self._try_docs_markdown_mutation_fallback(
-                                    request=request,
-                                    target_file=target_file,
-                                    trace=trace,
-                                    changed_files=changed_files,
-                                    warnings=warnings,
-                                ):
-                                    break
-                        _refresh_mutation_state()
-                        forced_retry_mutation_attempted = bool(mutation_state.get("mutation_attempted"))
-                        forced_retry_changed_files = bool(mutation_state.get("changed_files"))
-                    if not forced_retry_mutation_attempted:
-                        warnings.append("forced_mutation_retry_no_mutation_tool_attempted")
-                    elif not forced_retry_changed_files:
-                        warnings.append("forced_mutation_retry_no_changed_files")
-        if mutation_required and not forced_retry_ran and not mutation_state.get("mutation_attempted"):
-            raise AgentFlowError("Invariant violation: mutation_required=True but no mutation tool was attempted")
-=======
                         index_dir=forced_session.index_dir,
                         flow_id=forced_session.flow_id,
                         run_id=forced_session.run_id,
@@ -1843,7 +1681,6 @@ class QueueManager:
                     warnings.append("forced_mutation_retry_no_mutation_tool_attempted")
                 elif not forced_retry_changed_files:
                     warnings.append("forced_mutation_retry_no_changed_files")
->>>>>>> 9919886 (Add batch-tools prompt)
 
         # --- Path reconciliation: salvage content written to the wrong path. ---
         # The worker sometimes writes "01-overview.md" at the repo root instead of
@@ -1933,11 +1770,7 @@ class QueueManager:
             worker_answer=_latest_useful_answer(answers),
             fallback=board.render(),
             missing_required_files=missing_required_files,
-<<<<<<< HEAD
-            mutation_tools_used=mutation_tool_stats["mutation_tools_called"],
-=======
             tool_failures=failed_calls,
->>>>>>> ac61abe (Fix no-op edit error)
         )
         if mutation_required and approved_mutation_plan is not None:
             final_answer = f"{final_answer}\nMutation plan: {approved_mutation_plan.plan_id}"
