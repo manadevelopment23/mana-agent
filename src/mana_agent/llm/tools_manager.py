@@ -2634,6 +2634,14 @@ def _compose_final_answer(
             lines.append(
                 "Mutation was required, but no mutation tool was attempted. Blocker: the mutation-only edit step returned without selecting a registered mutation tool."
             )
+        elif reason == "mutation_command_missing":
+            lines.append(
+                "Mutation plan was approved, but no executable MutationCommand could be built. No mutation tool executed and no files changed."
+            )
+        elif reason == "mutation_command_incomplete":
+            lines.append(
+                "Mutation plan was approved, but the MutationCommand was incomplete. No mutation tool executed and no files changed."
+            )
         elif reason == "mutation_required_but_no_changed_files":
             lines.append(
                 "An edit tool ran but produced no file changes. Retry with a corrected edit payload."

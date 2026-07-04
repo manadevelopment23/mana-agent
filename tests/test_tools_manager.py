@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from mana_agent.llm.tool_worker_process import ToolRunResponse
@@ -53,7 +54,7 @@ def test_no_fabricated_content_when_worker_writes_nothing(tmp_path: Path) -> Non
 
     assert not (tmp_path / "docs" / "analyze.md").exists()
     assert result.run_status == "blocked"
-    assert result.terminal_reason == "mutation_required_but_no_mutation_tool_attempted"
+    assert result.terminal_reason in {"mutation_command_missing", "mutation_required_but_no_changed_files"}
     assert result.planner_decisions[0]["forced_mutation_retry_ran"] is True
     assert result.planner_decisions[0]["verification_passed"] is False
 
@@ -111,16 +112,18 @@ def test_edit_pass_uses_mutation_only_policy(tmp_path: Path) -> None:
         def run_tools(self, request, on_event=None):  # noqa: ANN001
             _ = on_event
             policy = dict(request.tool_policy or {})
-            if policy.get("mutation_required"):
+            if "MutationCommand" in str(request.question):
                 self.edit_policies.append(policy)
-            path = str((request.tool_args or {}).get("path") or "")
-            if path == "docs/overview.md":
-                (tmp_path / path).write_text(body, encoding="utf-8")
                 return ToolRunResponse(
-                    answer="wrote overview",
+                    answer=json.dumps(
+                        {
+                            "tool_name": "create_file",
+                            "tool_args": {"path": "docs/overview.md", "content": body},
+                        }
+                    ),
                     sources=[],
                     mode="agent-tools",
-                    trace=[{"tool_name": "create_file", "status": "ok", "files_changed": [path]}],
+                    trace=[],
                     warnings=[],
                 )
             return ToolRunResponse(answer="ok", sources=[], mode="agent-tools", trace=[], warnings=[])
@@ -134,9 +137,9 @@ def test_edit_pass_uses_mutation_only_policy(tmp_path: Path) -> None:
         max_steps=1,
     )
 
-    assert worker.edit_policies, "expected at least one mutation-required edit pass"
+    assert worker.edit_policies, "expected command synthesis before direct mutation execution"
     allowed = set(worker.edit_policies[0].get("allowed_tools") or [])
-    assert allowed == {"edit_file", "multi_edit_file", "create_file", "write_file", "apply_patch", "delete_file"}
+    assert not allowed.intersection({"edit_file", "multi_edit_file", "create_file", "write_file", "apply_patch", "delete_file"})
 
 
 def test_mutation_fallback_allowlist_blocks_discovery_tools() -> None:
@@ -796,17 +799,22 @@ def test_two_files_authored_under_docs_complete_the_run(tmp_path: Path) -> None:
 
         def run_tools(self, request, on_event=None):  # noqa: ANN001
             _ = on_event
-            path = str((request.tool_args or {}).get("path") or "")
+            if "MutationCommand" in str(request.question):
+                path = request.question.split("Target file:", 1)[1].split(". User goal", 1)[0].strip()
+            else:
+                path = str((request.tool_args or {}).get("path") or "")
             if path in bodies and path not in self.seen:
                 self.seen.add(path)
-                target = tmp_path / path
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(bodies[path], encoding="utf-8")
                 return ToolRunResponse(
-                    answer=f"wrote {path}",
+                    answer=json.dumps(
+                        {
+                            "tool_name": "create_file",
+                            "tool_args": {"path": path, "content": bodies[path]},
+                        }
+                    ),
                     sources=[],
                     mode="agent-tools",
-                    trace=[{"tool_name": "create_file", "status": "ok", "files_changed": [path]}],
+                    trace=[],
                     warnings=[],
                 )
             return ToolRunResponse(answer="ok", sources=[], mode="agent-tools", trace=[], warnings=[])

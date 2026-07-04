@@ -71,16 +71,22 @@ from mana_agent.llm.tools_manager import (
     resolve_target_state,
 )
 from mana_agent.llm.mutation_plan import (
+    REGISTERED_MUTATION_TOOLS,
+    MutationCommand,
     MutationPlan,
     build_mutation_plan,
     changed_files_match_plan,
+    compile_mutation_command,
     is_architecture_docs_update,
     mutation_trace_has_plan,
+    validate_mutation_command,
     validate_mutation_plan,
 )
 from mana_agent.services.coding_memory_service import CodingMemoryService
 from mana_agent.services.coding_todo_service import TodoService
-from mana_agent.tools.write_file import safe_write_file
+from mana_agent.tools.apply_patch import safe_apply_patch
+from mana_agent.tools.repository import apply_patch_batch
+from mana_agent.tools.write_file import safe_create_file, safe_delete_file, safe_write_file
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +126,110 @@ def _mutation_lock(flow_id: str | None, run_id: str | None) -> threading.Lock:
             lock = threading.Lock()
             _MUTATION_LOCKS[key] = lock
         return lock
+
+
+def _command_changed_files(result: dict[str, Any], args: dict[str, Any]) -> list[str]:
+    changed = _extract_changed_files_from_value(result)
+    if not changed:
+        changed.extend(str(path).strip() for path in result.get("touched_files") or [] if str(path).strip())
+    if not changed and args.get("path"):
+        changed.append(str(args.get("path")))
+    return sorted(dict.fromkeys(path.replace("\\", "/").lstrip("./") for path in changed if path))
+
+
+def _latest_mutation_command_error(trace: Sequence[dict[str, Any]]) -> str:
+    for row in reversed(list(trace)):
+        if not isinstance(row, dict):
+            continue
+        error = str(row.get("error") or "").strip()
+        if error in {"mutation_command_missing", "mutation_command_incomplete"}:
+            return error
+    return ""
+
+
+def execute_registered_mutation_command(
+    *,
+    repo_root: Path,
+    command: MutationCommand,
+) -> WorkResult:
+    errors = validate_mutation_command(command)
+    if errors:
+        trace = [
+            {
+                "tool_name": command.tool_name,
+                "status": "blocked",
+                "error": "mutation_command_incomplete",
+                "details": errors,
+                "mutation_plan_id": command.plan_id,
+                "target_files": list(command.target_files),
+                "changed_files": [],
+                "created_by": "mutation_command_executor",
+            }
+        ]
+        return WorkResult(
+            ok=False,
+            summary="mutation command incomplete",
+            error="mutation_command_incomplete: " + "; ".join(errors),
+            trace=trace,
+        )
+    tool = command.tool_name
+    args = dict(command.tool_args or {})
+    if tool == "write_file":
+        result = safe_write_file(
+            repo_root=repo_root,
+            path=str(args["path"]),
+            content=str(args["content"]),
+            force=bool(args.get("force", True)),
+        )
+    elif tool == "create_file":
+        result = safe_create_file(repo_root=repo_root, path=str(args["path"]), content=str(args["content"]))
+    elif tool == "delete_file":
+        result = safe_delete_file(repo_root=repo_root, path=str(args["path"]))
+    elif tool == "apply_patch":
+        result = safe_apply_patch(repo_root=repo_root, patch=str(args["patch"]))
+    elif tool == "apply_patch_batch":
+        result = apply_patch_batch(repo_root, patches=list(args["patches"]))
+    else:
+        trace = [
+            {
+                "tool_name": tool,
+                "status": "blocked",
+                "error": "unsupported_registered_mutation_tool",
+                "mutation_plan_id": command.plan_id,
+                "target_files": list(command.target_files),
+                "changed_files": [],
+                "created_by": "mutation_command_executor",
+            }
+        ]
+        return WorkResult(
+            ok=False,
+            summary="unsupported registered mutation tool",
+            error=f"unsupported_registered_mutation_tool:{tool}",
+            trace=trace,
+        )
+    ok = bool(result.get("ok"))
+    changed = _command_changed_files(result, args) if ok else []
+    trace = [
+        {
+            "tool_name": tool,
+            "status": "ok" if ok else "error",
+            "tool_args": args,
+            "changed_files": changed,
+            "files_changed": changed,
+            "target_files": list(command.target_files),
+            "mutation_plan_id": command.plan_id,
+            "created_by": "mutation_command_executor",
+            "error": "" if ok else str(result.get("error") or result.get("stderr") or "mutation command failed"),
+        }
+    ]
+    return WorkResult(
+        ok=ok,
+        summary="mutation command executed" if ok else "mutation command failed",
+        error="" if ok else str(trace[0]["error"]),
+        files_changed=changed,
+        answer="",
+        trace=trace,
+    )
 
 
 def compute_fingerprint(*, kind: str, tool_name: str, tool_args: dict[str, Any], question: str = "") -> str:
@@ -648,6 +758,121 @@ class QueueManager:
             TodoService(memory=coding_memory_service) if coding_memory_service is not None else None
         )
         self._decision_provider = decision_provider
+
+    def _read_current_files(self, targets: Sequence[str]) -> dict[str, str]:
+        current: dict[str, str] = {}
+        for raw in targets:
+            rel = str(raw or "").replace("\\", "/").lstrip("./")
+            if not rel:
+                continue
+            try:
+                path = (self.repo_root / rel).resolve()
+                path.relative_to(self.repo_root)
+                if path.is_file():
+                    current[rel] = path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+        return current
+
+    @staticmethod
+    def _json_object_from_answer(answer: str) -> dict[str, Any] | None:
+        text = str(answer or "").strip()
+        if not text:
+            return None
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if len(lines) >= 2 and lines[-1].strip() == "```":
+                text = "\n".join(lines[1:-1]).strip()
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if not match:
+                return None
+            try:
+                value = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return None
+        return value if isinstance(value, dict) else None
+
+    def _command_from_payload(
+        self,
+        *,
+        plan: MutationPlan,
+        payload: dict[str, Any],
+        current_files: dict[str, str],
+    ) -> MutationCommand | None:
+        tool_name = str(payload.get("tool_name") or "").strip()
+        tool_args = payload.get("tool_args") if isinstance(payload.get("tool_args"), dict) else {}
+        if tool_name:
+            try:
+                return MutationCommand(
+                    plan_id=str(payload.get("plan_id") or payload.get("mutation_plan_id") or plan.plan_id),
+                    tool_name=tool_name,  # type: ignore[arg-type]
+                    tool_args=dict(tool_args),
+                    target_files=list(payload.get("target_files") or plan.target_files),
+                    reason=str(payload.get("reason") or "worker synthesized mutation command"),
+                )
+            except Exception:
+                return None
+        content = tool_args.get("content") if isinstance(tool_args, dict) else payload.get("content")
+        patch = tool_args.get("patch") if isinstance(tool_args, dict) else payload.get("patch")
+        return compile_mutation_command(
+            repo_root=self.repo_root,
+            plan=plan,
+            current_files=current_files,
+            synthesized_content=str(content) if content is not None else None,
+            patch=str(patch) if patch is not None else None,
+        )
+
+    def _synthesize_mutation_command(
+        self,
+        *,
+        base_execute: Callable[[WorkItem], WorkResult],
+        plan: MutationPlan,
+        target_file: str,
+    ) -> MutationCommand | None:
+        current_files = self._read_current_files(plan.target_files)
+        schema = (
+            'Return only JSON: {"tool_name":"write_file|create_file|apply_patch",'
+            '"tool_args":{"path":"<repo-relative path>","content":"<complete file content>"}'
+            '} or {"tool_name":"apply_patch","tool_args":{"patch":"*** Begin Patch\\n..."}}.'
+        )
+        prompts = [
+            (
+                f"Generate the executable MutationCommand for approved MutationPlan {plan.plan_id}. "
+                f"Target file: {target_file}. User goal: {plan.user_goal}. Evidence summary: {plan.evidence_summary}. "
+                f"Intended changes: {'; '.join(plan.intended_changes)}. Patch strategy: {plan.patch_strategy}. {schema}"
+            ),
+            (
+                f"Retry MutationCommand synthesis for MutationPlan {plan.plan_id}. The previous response was not valid. "
+                f"{schema} Do not include prose."
+            ),
+        ]
+        last_command: MutationCommand | None = None
+        for prompt in prompts:
+            result = base_execute(
+                WorkItem(
+                    kind="summarize",
+                    tool_name="",
+                    tool_args={},
+                    question=prompt,
+                    gate="synthesize_mutation_command",
+                    priority=1,
+                    created_by="mutation_command_synthesizer",
+                    max_attempts=1,
+                )
+            )
+            payload = self._json_object_from_answer(result.answer)
+            if not payload:
+                continue
+            command = self._command_from_payload(plan=plan, payload=payload, current_files=current_files)
+            if command is None:
+                continue
+            last_command = command
+            if not validate_mutation_command(command):
+                return command
+        return last_command
 
     def _git_diff_names(self) -> set[str]:
         try:
@@ -1214,7 +1439,7 @@ class QueueManager:
                 if plan_errors:
                     blocked_trace = [
                         {
-                            "tool_name": item.tool_name or "mutation",
+                            "tool_name": "mutation_command",
                             "status": "blocked",
                             "error": "mutation_plan_validation_failed",
                             "details": plan_errors,
@@ -1228,20 +1453,79 @@ class QueueManager:
                         error="mutation_plan_validation_failed: " + "; ".join(plan_errors),
                         trace=blocked_trace,
                     )
-                item.tool_args = {
-                    **dict(item.tool_args or {}),
-                    "path": str((deliverables or [resolved_target_path])[0] or ""),
-                    "mutation_plan": plan.model_dump(),
-                    "mutation_plan_id": plan.plan_id,
-                }
-                item.question = (
-                    f"Execute approved MutationPlan {plan.plan_id}. "
-                    f"User goal: {plan.user_goal}. Evidence summary: {plan.evidence_summary}. "
-                    f"Intended changes: {'; '.join(plan.intended_changes)}. "
-                    f"Patch strategy: {plan.patch_strategy}. "
-                    f"Quality checks: {'; '.join(plan.quality_checks)}."
-                )
                 approved_mutation_plan = plan
+                target = str((deliverables or [resolved_target_path])[0] or "")
+                tool_args = dict(item.tool_args or {})
+                command: MutationCommand | None = None
+                if (item.tool_name or "").strip().lower() in REGISTERED_MUTATION_TOOLS:
+                    try:
+                        command = MutationCommand(
+                            plan_id=plan.plan_id,
+                            tool_name=(item.tool_name or "").strip().lower(),  # type: ignore[arg-type]
+                            tool_args={**tool_args, "path": tool_args.get("path") or target},
+                            target_files=list(plan.target_files),
+                            reason="compiled from queued edit work item",
+                        )
+                    except Exception:
+                        command = None
+                    if command and validate_mutation_command(command):
+                        command = None
+                if command is None:
+                    command = self._synthesize_mutation_command(
+                        base_execute=base_execute,
+                        plan=plan,
+                        target_file=target,
+                    )
+                if command is None:
+                    blocked_trace = [
+                        {
+                            "tool_name": "mutation_command",
+                            "status": "blocked",
+                            "error": "mutation_command_missing",
+                            "mutation_plan_id": plan.plan_id,
+                            "target_files": list(plan.target_files),
+                            "changed_files": [],
+                            "created_by": "mutation_command_executor",
+                        }
+                    ]
+                    trace.extend(blocked_trace)
+                    return WorkResult(
+                        ok=False,
+                        summary="mutation command missing",
+                        error="mutation_command_missing",
+                        trace=blocked_trace,
+                    )
+                command_errors = validate_mutation_command(command)
+                if command_errors:
+                    blocked_trace = [
+                        {
+                            "tool_name": command.tool_name,
+                            "status": "blocked",
+                            "error": "mutation_command_incomplete",
+                            "details": command_errors,
+                            "mutation_plan_id": command.plan_id,
+                            "target_files": list(command.target_files),
+                            "changed_files": [],
+                            "created_by": "mutation_command_executor",
+                        }
+                    ]
+                    trace.extend(blocked_trace)
+                    return WorkResult(
+                        ok=False,
+                        summary="mutation command incomplete",
+                        error="mutation_command_incomplete: " + "; ".join(command_errors),
+                        trace=blocked_trace,
+                    )
+                result = execute_registered_mutation_command(repo_root=self.repo_root, command=command)
+                if result.answer:
+                    answers.append(result.answer)
+                sources.extend(result.sources)
+                trace.extend(result.trace)
+                changed_files.extend(result.files_changed)
+                changed_files.extend(_extract_changed_files_from_value(result.trace))
+                changed_files[:] = sorted(dict.fromkeys(path for path in changed_files if path))
+                mutation_state = _mutation_state_from_trace(trace, changed_files)
+                return result
             result = base_execute(item)
             if result.answer:
                 answers.append(result.answer)
@@ -1374,19 +1658,50 @@ class QueueManager:
                         )
                     else:
                         approved_mutation_plan = plan
-                        forced_item.tool_args = {
-                            **dict(forced_item.tool_args or {}),
-                            "mutation_plan": plan.model_dump(),
-                            "mutation_plan_id": plan.plan_id,
-                        }
-                        forced_item.question = (
-                            f"Execute approved MutationPlan {plan.plan_id}. "
-                            f"User goal: {plan.user_goal}. Evidence summary: {plan.evidence_summary}. "
-                            f"Intended changes: {'; '.join(plan.intended_changes)}. "
-                            f"Patch strategy: {plan.patch_strategy}. "
-                            f"Quality checks: {'; '.join(plan.quality_checks)}."
+                        command = self._synthesize_mutation_command(
+                            base_execute=forced_execute,
+                            plan=plan,
+                            target_file=target_file,
                         )
-                        forced_result = forced_execute(forced_item)
+                        if command is None:
+                            forced_result = WorkResult(
+                                ok=False,
+                                summary="mutation command missing",
+                                error="mutation_command_missing",
+                                trace=[
+                                    {
+                                        "tool_name": "mutation_command",
+                                        "status": "blocked",
+                                        "error": "mutation_command_missing",
+                                        "mutation_plan_id": plan.plan_id,
+                                        "target_files": list(plan.target_files),
+                                        "changed_files": [],
+                                        "created_by": "mutation_command_executor",
+                                    }
+                                ],
+                            )
+                        else:
+                            command_errors = validate_mutation_command(command)
+                            if command_errors:
+                                forced_result = WorkResult(
+                                    ok=False,
+                                    summary="mutation command incomplete",
+                                    error="mutation_command_incomplete: " + "; ".join(command_errors),
+                                    trace=[
+                                        {
+                                            "tool_name": command.tool_name,
+                                            "status": "blocked",
+                                            "error": "mutation_command_incomplete",
+                                            "details": command_errors,
+                                            "mutation_plan_id": command.plan_id,
+                                            "target_files": list(command.target_files),
+                                            "changed_files": [],
+                                            "created_by": "mutation_command_executor",
+                                        }
+                                    ],
+                                )
+                            else:
+                                forced_result = execute_registered_mutation_command(repo_root=self.repo_root, command=command)
                     if forced_result.answer:
                         answers.append(forced_result.answer)
                     sources.extend(forced_result.sources)
@@ -1463,12 +1778,13 @@ class QueueManager:
         terminal_reason = report.terminal_reason
         run_status = "completed"
         if mutation_required and not mutation_state.get("no_op_reason"):
+            command_error = _latest_mutation_command_error(trace)
             if not mutation_state.get("mutation_attempted"):
                 run_status = "blocked"
-                terminal_reason = "mutation_required_but_no_mutation_tool_attempted"
+                terminal_reason = command_error or "mutation_required_but_no_mutation_tool_attempted"
             elif not mutation_state.get("changed_files"):
                 run_status = "blocked"
-                terminal_reason = "mutation_required_but_no_changed_files"
+                terminal_reason = command_error or "mutation_required_but_no_changed_files"
             elif missing_required_files:
                 run_status = "blocked"
                 terminal_reason = "mutation_required_but_missing_files"

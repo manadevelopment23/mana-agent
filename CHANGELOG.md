@@ -2,6 +2,13 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-03 (mutation command execution wiring)
+
+- Added `MutationCommand` compilation and validation so approved `MutationPlan` work produces an executable registered mutation-tool payload before edit execution.
+- Wired queue edit jobs, forced mutation retries, and direct edit `WorkItem` adapter execution through the command executor instead of asking the worker/model to select `write_file`, `create_file`, or `apply_patch`.
+- Added command-missing and command-incomplete blocked reasons, plan-linked mutation executor traces, and regression coverage for structured command synthesis, direct registered-tool execution, incomplete commands, and prose-only synthesis rejection.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py tests/test_tools_manager.py tests/test_tool_worker_process.py::test_run_tool_request_expands_file_system_alias -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/llm/mutation_plan.py src/mana_agent/llm/agent_work_queue.py src/mana_agent/llm/agent_work_queue_adapters.py src/mana_agent/llm/tools_manager.py tests/test_agent_work_queue.py tests/test_tools_manager.py` passed; `git diff --check` passed.
+
 ## 2026-07-03 (mutation plan execution gate)
 
 - Added a structured `MutationPlan` model and validation path so mutation-required queue work builds an approved, evidence-backed decision before edit tools run.

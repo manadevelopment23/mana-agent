@@ -25,12 +25,15 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from mana_agent.llm.agent_work_queue import TaskBoard, WorkItem, WorkResult
+from mana_agent.llm.agent_work_queue import TaskBoard, WorkItem, WorkResult, execute_registered_mutation_command
 from mana_agent.llm.mutation_plan import (
+    REGISTERED_MUTATION_TOOLS,
+    MutationCommand,
     build_mutation_plan,
     is_architecture_docs_update,
     mutation_trace_has_plan,
     representative_architecture_sources,
+    validate_mutation_command,
     validate_mutation_plan,
 )
 from mana_agent.llm.tool_worker_process import ToolRunRequest, ToolRunResponse
@@ -248,6 +251,55 @@ def make_worker_executor(
                         }
                     ],
                 )
+            tool = (item.tool_name or "").strip().lower()
+            if tool in REGISTERED_MUTATION_TOOLS:
+                command_args = {
+                    key: value
+                    for key, value in tool_args.items()
+                    if key not in {"mutation_plan", "mutation_plan_id"}
+                }
+                try:
+                    command = MutationCommand(
+                        plan_id=plan_id,
+                        tool_name=tool,  # type: ignore[arg-type]
+                        tool_args=command_args,
+                        target_files=list(plan_payload.get("target_files") or []),
+                        reason="compiled from registered edit WorkItem",
+                    )
+                except Exception as exc:
+                    return WorkResult(
+                        ok=False,
+                        summary="mutation command invalid",
+                        error=f"mutation_command_incomplete: {exc}",
+                        trace=[
+                            {
+                                "tool_name": tool,
+                                "status": "blocked",
+                                "error": "mutation_command_incomplete",
+                                "mutation_plan_id": plan_id,
+                            }
+                        ],
+                    )
+                command_errors = validate_mutation_command(command)
+                if command_errors:
+                    return WorkResult(
+                        ok=False,
+                        summary="mutation command incomplete",
+                        error="mutation_command_incomplete: " + "; ".join(command_errors),
+                        trace=[
+                            {
+                                "tool_name": tool,
+                                "status": "blocked",
+                                "error": "mutation_command_incomplete",
+                                "details": command_errors,
+                                "mutation_plan_id": plan_id,
+                                "target_files": list(command.target_files),
+                                "changed_files": [],
+                                "created_by": "mutation_command_executor",
+                            }
+                        ],
+                    )
+                return execute_registered_mutation_command(repo_root=repo_root, command=command)
         if (item.tool_name or "").strip().lower() == "read_file" and tool_args.get("path"):
             tool_args["path"] = _normalized_path(str(tool_args.get("path")))
         request = ToolRunRequest(
