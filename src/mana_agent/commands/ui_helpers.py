@@ -880,23 +880,23 @@ def _render_direct_command(
             "Otherwise just ask: I search the project (semantic index when available,\n"
             "ripgrep/static search otherwise), read files, and can edit/fix code."
         )
+    elif normalized == "status":
         if ui_state is not None:
             full = str(raw_question or "").strip().lower() in {"/status full", "status full"}
             console.print(render_status(ui_state, full=full))
             return "Displayed full status." if full else "Displayed status."
-        else:
-            index_line = (
-                "available (semantic search enabled)"
-                if index_available
-                else "missing (using direct project search fallback; run `mana-agent index` to enable)"
-            )
-            answer = (
-                "mana-agent chat status\n"
-                f"- project root: {project_root}\n"
-                f"- semantic index: {index_line}\n"
-                f"- coding agent: {'active' if coding_agent_active else 'inactive'}\n"
-                f"- tool worker: {'active' if tool_worker_active else 'inactive'}"
-            )
+        index_line = (
+            "available (semantic search enabled)"
+            if index_available
+            else "missing (using direct project search fallback; run `mana-agent index` to enable)"
+        )
+        answer = (
+            "mana-agent chat status\n"
+            f"- project root: {project_root}\n"
+            f"- semantic index: {index_line}\n"
+            f"- coding agent: {'active' if coding_agent_active else 'inactive'}\n"
+            f"- tool worker: {'active' if tool_worker_active else 'inactive'}"
+        )
     elif normalized == "model":
         if ui_state is not None:
             answer = f"provider: {ui_state.provider}\nmodel: {ui_state.model}"

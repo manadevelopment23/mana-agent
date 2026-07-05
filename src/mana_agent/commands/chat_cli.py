@@ -834,18 +834,7 @@ def chat(
 
             chat_service.set_index_dirs(selected_indexes)
             dir_mode_index_dirs = selected_indexes
-            
-            _emit_text(
-                "mana-agent chat (dir-mode)\n"
-                f"- root: {root}\n"
-                f"- indexes: {len(selected_indexes)}\n"
-                f"- auto-indexed: {auto_indexed_count}\n"
-                f"- skipped: {skipped_missing_count}\n"
-                f"- ephemeral-index: {ephemeral_index}\n"
-                f"- coding-agent: {coding_agent}\n"
-                f"- coding-memory: {coding_memory and coding_agent}",
-                output_file=output_file,
-            )
+            chat_ui_state.index_path = f"{len(selected_indexes)} dir-mode index(es)"
             if warnings:
                 _emit_text("Warnings:\n" + "\n".join(f"- {w}" for w in warnings), output_file=output_file)
 
@@ -886,15 +875,7 @@ def chat(
                 index_state = "ready"
             else:
                 index_state = "missing (run `mana-agent index`; using direct project search fallback)"
-            _emit_text(
-                "mana-agent chat\n"
-                f"- index: {resolved_index_dir} ({index_state})\n"
-                f"- k: {resolved_k}\n"
-                f"- ephemeral-index: {ephemeral_index}\n"
-                f"- coding-agent: {coding_agent}\n"
-                f"- coding-memory: {coding_memory and coding_agent}",
-                output_file=output_file,
-            )
+            chat_ui_state.index_path = f"{resolved_index_dir} ({index_state})"
 
         # -----------------------------
         # Tool-first retry logic
@@ -1674,7 +1655,7 @@ def chat(
                 break
             if question.lower() == "/clear":
                 console.clear()
-                console.print("[green]Screen cleared. Session preserved.[/green]")
+                console.print("[green]Chat history cleared. Session preserved.[/green]")
                 continue
             if pending_conflict_question is None and _is_new_topic_command(question):
                 reset_id = _start_new_topic()
