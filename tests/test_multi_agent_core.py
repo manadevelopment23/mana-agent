@@ -377,6 +377,36 @@ def test_queue_manager_runs_batch_read_through_tools_manager(tmp_path):
     assert job.result["files"][0]["path"] == "README.md"
 
 
+def test_tool_result_reused_when_args_same(tmp_path):
+    (tmp_path / "README.md").write_text("# Test\n", encoding="utf-8")
+    board = TaskBoard(tmp_path)
+    task = board.create_task(title="Cached read", user_request="read docs twice")
+    queue = QueueManager(tmp_path, taskboard=board)
+
+    first = queue.enqueue(
+        task_id=task.task_id,
+        requested_by_agent_id="agent_coding_0001",
+        approved_by_agent_id="agent_head_decision_0001",
+        job_type=QueueJobType.REPO_BATCH_READ,
+        payload={"files": ["README.md"]},
+        purpose="Batch read selected repository files.",
+    )
+    second = queue.enqueue(
+        task_id=task.task_id,
+        requested_by_agent_id="agent_coding_0001",
+        approved_by_agent_id="agent_head_decision_0001",
+        job_type=QueueJobType.REPO_BATCH_READ,
+        payload={"files": ["README.md"]},
+        purpose="Batch read selected repository files again.",
+    )
+
+    queue.run_until_idle()
+
+    assert first.result and first.result["cache_hit"] is False
+    assert second.result and second.result["cache_hit"] is True
+    assert second.result["files"][0]["path"] == "README.md"
+
+
 def test_patch_context_failure_requires_fresh_read(tmp_path):
     (tmp_path / "README.md").write_text("current\n", encoding="utf-8")
     board = TaskBoard(tmp_path)

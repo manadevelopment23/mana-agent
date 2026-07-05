@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import copy
+import json
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from mana_agent.multi_agent.core.ids import new_message_id
 from mana_agent.multi_agent.core.types import QueueJob, QueueJobType, ToolResult
@@ -13,6 +16,7 @@ from mana_agent.tools import repo_batch_read, safe_apply_patch
 class ToolsManager:
     def __init__(self, root: str | Path = ".", *, memory_service: MultiAgentMemoryService | None = None) -> None:
         self.root = Path(root).resolve()
+<<<<<<< HEAD
         self.memory_service = memory_service
 
     def execute_job(self, job: QueueJob) -> ToolResult:
@@ -24,9 +28,29 @@ class ToolsManager:
                 return self._record(job, self._shell(job, "git status --short"))
             if job.job_type == QueueJobType.GIT_DIFF:
                 return self._record(job, self._shell(job, "git diff"))
+=======
+        self._result_cache: dict[str, dict[str, Any]] = {}
+
+    def execute_job(self, job: QueueJob) -> ToolResult:
+        try:
+            cache_key = self._cache_key(job)
+            if cache_key:
+                cached = self._result_cache.get(cache_key)
+                if cached is not None:
+                    result = copy.deepcopy(cached)
+                    result["cache_hit"] = True
+                    result["cache_source"] = "tool_result_cache"
+                    return ToolResult(new_message_id(), job.task_id, True, result)
+
+            if job.job_type == QueueJobType.GIT_STATUS:
+                return self._cache_result(job, self._shell(job, "git status --short"), cache_key)
+            if job.job_type == QueueJobType.GIT_DIFF:
+                return self._cache_result(job, self._shell(job, "git diff"), cache_key)
+>>>>>>> f504359 (Fix cache_hit KeyError)
             if job.job_type in {QueueJobType.SHELL, QueueJobType.RUN_TESTS, QueueJobType.RUN_LINT}:
                 return self._record(job, self._shell(job, str(job.payload.get("command", ""))))
             if job.job_type == QueueJobType.REPO_READ:
+<<<<<<< HEAD
                 raw_path = str(job.payload.get("path", ""))
                 if self.memory_service is not None:
                     content, record, cache_hit = self.memory_service.read_file_with_memory(
@@ -49,6 +73,14 @@ class ToolsManager:
                     return self._record(job, result)
                 path = self._resolve_path(raw_path)
                 return self._record(job, ToolResult(new_message_id(), job.task_id, True, {"content": path.read_text(encoding="utf-8"), "path": str(path)}))
+=======
+                path = self._resolve_path(str(job.payload.get("path", "")))
+                return self._cache_result(
+                    job,
+                    ToolResult(new_message_id(), job.task_id, True, {"content": path.read_text(encoding="utf-8"), "path": str(path)}),
+                    cache_key,
+                )
+>>>>>>> f504359 (Fix cache_hit KeyError)
             if job.job_type == QueueJobType.REPO_BATCH_READ:
                 paths = job.payload.get("files") or job.payload.get("paths") or []
                 if self.memory_service is not None:
@@ -76,7 +108,15 @@ class ToolsManager:
                     return self._record(job, ToolResult(new_message_id(), job.task_id, ok, {"ok": ok, "files": files}, None if ok else "one or more batch reads failed"))
                 result = repo_batch_read(self.root, files=[str(item) for item in paths])
                 ok = bool(result.get("ok"))
+<<<<<<< HEAD
                 return self._record(job, ToolResult(new_message_id(), job.task_id, ok, result, None if ok else "one or more batch reads failed"))
+=======
+                return self._cache_result(
+                    job,
+                    ToolResult(new_message_id(), job.task_id, ok, result, None if ok else "one or more batch reads failed"),
+                    cache_key,
+                )
+>>>>>>> f504359 (Fix cache_hit KeyError)
             if job.job_type == QueueJobType.APPLY_PATCH:
                 patch = str(job.payload.get("patch", ""))
                 result = safe_apply_patch(repo_root=self.root, patch=patch, check_only=False)
@@ -88,8 +128,22 @@ class ToolsManager:
             if job.job_type == QueueJobType.REPO_SEARCH:
                 query = str(job.payload.get("query", ""))
                 result = subprocess.run(["rg", "-n", query, str(self.root)], cwd=self.root, text=True, capture_output=True, timeout=30)
+<<<<<<< HEAD
                 return self._record(job, ToolResult(new_message_id(), job.task_id, result.returncode in {0, 1}, {"stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode}))
             return self._record(job, ToolResult(new_message_id(), job.task_id, False, error=f"unsupported tool job: {job.job_type.value}"))
+=======
+                return self._cache_result(
+                    job,
+                    ToolResult(
+                        new_message_id(),
+                        job.task_id,
+                        result.returncode in {0, 1},
+                        {"stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode},
+                    ),
+                    cache_key,
+                )
+            return ToolResult(new_message_id(), job.task_id, False, error=f"unsupported tool job: {job.job_type.value}")
+>>>>>>> f504359 (Fix cache_hit KeyError)
         except Exception as exc:
             return ToolResult(new_message_id(), job.task_id, False, error=str(exc))
 
@@ -104,6 +158,7 @@ class ToolsManager:
             raise ValueError("path escapes repository root")
         return resolved
 
+<<<<<<< HEAD
     def _cached_tool_result(self, job: QueueJob) -> ToolResult | None:
         if self.memory_service is None:
             return None
@@ -129,4 +184,25 @@ class ToolsManager:
                 result_summary="ok" if result.ok else str(result.error or "failed"),
                 result=result.result,
             )
+=======
+    def _cache_key(self, job: QueueJob) -> str:
+        if job.job_type not in {
+            QueueJobType.GIT_STATUS,
+            QueueJobType.GIT_DIFF,
+            QueueJobType.REPO_READ,
+            QueueJobType.REPO_BATCH_READ,
+            QueueJobType.REPO_SEARCH,
+        }:
+            return ""
+        payload = json.dumps(job.payload, ensure_ascii=False, sort_keys=True, default=str)
+        return f"{job.job_type.value}:{payload}"
+
+    def _cache_result(self, job: QueueJob, result: ToolResult, cache_key: str) -> ToolResult:
+        if cache_key and result.ok:
+            payload = copy.deepcopy(result.result)
+            payload.setdefault("cache_hit", False)
+            payload.setdefault("cache_source", "tool")
+            self._result_cache[cache_key] = copy.deepcopy(payload)
+            result.result = payload
+>>>>>>> f504359 (Fix cache_hit KeyError)
         return result
