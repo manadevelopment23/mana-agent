@@ -724,6 +724,7 @@ class AskAgent:
         flow_id: str | None,
         row: dict[str, Any],
         ephemeral_read_cache: dict[str, list[dict[str, Any]]] | None,
+        persist_flow_cache: bool = False,
     ) -> None:
         file_path = str(row.get("file_path", "")).strip()
         if not file_path:
@@ -736,7 +737,7 @@ class AskAgent:
             ephemeral_read_cache[file_path] = existing[:20]
         resolved_flow = str(flow_id or "").strip()
         service = getattr(self, "coding_memory_service", None)
-        if resolved_flow and service is not None:
+        if persist_flow_cache and resolved_flow and service is not None:
             try:
                 service.upsert_read_cache_row(
                     flow_id=resolved_flow,
@@ -1061,6 +1062,7 @@ class AskAgent:
                         flow_id=flow_id,
                         row=cache_row,
                         ephemeral_read_cache=ephemeral_read_cache,
+                        persist_flow_cache=read_telemetry is not None or ephemeral_read_cache is not None,
                     )
                     evidence_memory.store(
                         original_path=path,
@@ -1109,6 +1111,7 @@ class AskAgent:
                     flow_id=flow_id,
                     row=cache_row,
                     ephemeral_read_cache=ephemeral_read_cache,
+                    persist_flow_cache=read_telemetry is not None or ephemeral_read_cache is not None,
                 )
                 segment_text = "\n".join(segment)
                 evidence_memory.store(
