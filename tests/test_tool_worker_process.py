@@ -397,6 +397,10 @@ def test_tool_worker_server_accepts_successful_tool_trace(monkeypatch) -> None:
     assert emitted[-1].payload["answer"] == "done"
 
 
+def test_tools_only_strict_does_not_fail_successful_tool_trace(monkeypatch) -> None:
+    test_tool_worker_server_accepts_successful_tool_trace(monkeypatch)
+
+
 def test_tool_worker_server_allows_no_tool_success_when_override_disabled(monkeypatch) -> None:
     class _FakeAskAgent:
         def run(self, **_kwargs):

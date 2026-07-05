@@ -2,6 +2,14 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-05 (document-update evidence and loop guards)
+
+- Added mandatory source-evidence discovery for README and project architecture/structure documentation updates, including a document evidence manifest that blocks mutation when source files from `src/` were not read.
+- Prevented document-update runs from taking the single-target read shortcut or early evidence short-circuit before architecture evidence is gathered.
+- Added bounded mutation-command deduplication, apply-patch hunk-mismatch re-read traces, non-tool synthesis strict-mode overrides, planning-question auth failure log-once behavior, and guarded worker lifecycle calls.
+- Added regression coverage for README evidence manifests, no-src blocking, fake worker lifecycle, planning auth fallback, Redis fallback logging, duplicate log handlers, strict tool traces, plain content synthesis, patch mismatch re-reads, and once-per-plan mutation execution.
+- Verification: focused regression tests passed with `.venv/bin/python -m pytest -q ...` (11 tests); broader affected suite passed with `.venv/bin/python -m pytest -q tests/test_agent_work_queue.py tests/test_agent_orchestrator.py tests/test_chat_planning_mode.py tests/test_logging_setup.py tests/test_tool_worker_process.py tests/test_tools_manager.py` (148 tests); full `.venv/bin/python -m pytest -q` passed with 560 tests and 16 warnings; `.venv/bin/python -m compileall src`, `PYTHONPATH=src .venv/bin/mana-agent --help`, and `PYTHONPATH=src .venv/bin/mana-agent chat --help` passed. Full `.venv/bin/ruff check src tests` was not clean because of pre-existing F403/F405 star-import lint in `chat_cli.py`/`main_cli.py`, duplicate `DependencyPackageRef` in `models.py`, and `utils/guards.py` E401; touched runtime/test files passed `ruff --select F,E9`.
+
 ## 2026-07-05 (all-command multi-agent routing and runtime migration)
 
 - Routed every public CLI command surface through the mandatory `MainAgent` boundary, including root mode/menu dispatch, `chat`, `analyze`, `plan`, `continue`, and `skills init/list/show`, with a route-once guard for root-dispatched commands.

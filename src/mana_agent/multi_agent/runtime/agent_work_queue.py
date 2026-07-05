@@ -73,6 +73,7 @@ from mana_agent.multi_agent.runtime.tools_manager import (
 )
 from mana_agent.multi_agent.runtime.mutation_plan import (
     REGISTERED_MUTATION_TOOLS,
+    build_document_evidence_manifest,
     MutationCommand,
     MutationPlan,
     build_mutation_plan,
@@ -80,6 +81,7 @@ from mana_agent.multi_agent.runtime.mutation_plan import (
     compile_mutation_command,
     is_architecture_docs_update,
     mutation_trace_has_plan,
+    requires_document_evidence_discovery,
     validate_mutation_command,
     validate_mutation_plan,
 )
@@ -136,6 +138,54 @@ def _command_changed_files(result: dict[str, Any], args: dict[str, Any]) -> list
     if not changed and args.get("path"):
         changed.append(str(args.get("path")))
     return sorted(dict.fromkeys(path.replace("\\", "/").lstrip("./") for path in changed if path))
+
+
+def _mutation_command_hash(command: MutationCommand) -> str:
+    payload = json.dumps(
+        {
+            "plan_id": command.plan_id,
+            "tool_name": command.tool_name,
+            "tool_args": command.tool_args,
+            "target_files": command.target_files,
+        },
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _patch_context_mismatch(result: dict[str, Any]) -> bool:
+    text = " ".join(str(result.get(key) or "") for key in ("error_code", "error", "stderr", "stdout")).lower()
+    return "patch_context_not_found" in text or "re-read the target file" in text or "hunk" in text
+
+
+def _reread_patch_targets_trace(*, repo_root: Path, touched_files: Sequence[str]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for rel in sorted(dict.fromkeys(str(path).replace("\\", "/").lstrip("./") for path in touched_files if str(path).strip())):
+        target = repo_root / rel
+        try:
+            content = target.read_text(encoding="utf-8", errors="replace")
+            rows.append(
+                {
+                    "tool_name": "read_file",
+                    "status": "ok",
+                    "path": rel,
+                    "bytes_read": len(content.encode("utf-8")),
+                    "output_preview": content[:1200],
+                    "created_by": "apply_patch_hunk_mismatch_reread",
+                }
+            )
+        except OSError as exc:
+            rows.append(
+                {
+                    "tool_name": "read_file",
+                    "status": "error",
+                    "path": rel,
+                    "error": str(exc),
+                    "created_by": "apply_patch_hunk_mismatch_reread",
+                }
+            )
+    return rows
 
 
 def _latest_mutation_command_error(trace: Sequence[dict[str, Any]]) -> str:
@@ -223,6 +273,9 @@ def execute_registered_mutation_command(
             "error": "" if ok else str(result.get("error") or result.get("stderr") or "mutation command failed"),
         }
     ]
+    if not ok and tool == "apply_patch" and _patch_context_mismatch(result):
+        touched = list(result.get("touched_files") or command.target_files or [])
+        trace.extend(_reread_patch_targets_trace(repo_root=repo_root, touched_files=touched))
     return WorkResult(
         ok=ok,
         summary="mutation command executed" if ok else "mutation command failed",
@@ -667,6 +720,7 @@ class WorkQueueRunner:
         sniffer: JobSniffer | None = None,
         board: TaskBoard | None = None,
         orchestrator: AgentOrchestrator | None = None,
+        disable_evidence_short_circuit: bool = False,
         max_steps: int = 60,
     ) -> None:
         self._queue = queue
@@ -674,6 +728,7 @@ class WorkQueueRunner:
         self._sniffer = sniffer
         self._board = board or TaskBoard(queue=queue)
         self._orchestrator = orchestrator
+        self._disable_evidence_short_circuit = bool(disable_evidence_short_circuit)
         self._max_steps = max(1, int(max_steps))
 
     @property
@@ -734,6 +789,8 @@ class WorkQueueRunner:
     def _before_item(self, item: WorkItem) -> str:
         if self._orchestrator is None:
             return "execute"
+        if self._disable_evidence_short_circuit and item.kind in {"discover", "search", "read"}:
+            return "execute"
         target = str((item.tool_args or {}).get("path") or (item.tool_args or {}).get("file") or "")
         gate = self._orchestrator.before_tool(tool_name=item.tool_name or item.kind, target=target)
         if gate.decision == "skip_tool":
@@ -750,7 +807,7 @@ class WorkQueueRunner:
             changed_files=list(result.files_changed),
             error=str(result.error or ""),
         )
-        if gate.decision in {"start_mutation", "stop_discovery"}:
+        if gate.decision in {"start_mutation", "stop_discovery"} and not self._disable_evidence_short_circuit:
             targets = set(self._orchestrator.decision.target_files)
             self._queue.skip_where(
                 lambda queued: queued.kind in {"discover", "search", "read"}
@@ -1403,6 +1460,7 @@ class QueueManager:
             and bool(direct_read_targets)
             and all((self.repo_root / path).is_file() for path in direct_read_targets)
             and not is_architecture_docs_update(request, direct_read_targets)
+            and not requires_document_evidence_discovery(request, direct_read_targets)
         )
         if explicit_direct_read:
             for target in orchestrator.decision.target_files:
@@ -1457,6 +1515,7 @@ class QueueManager:
         sources: list[dict[str, Any]] = []
         trace: list[dict[str, Any]] = []
         changed_files: list[str] = []
+        executed_mutation_commands: set[str] = set()
         approved_mutation_plan: MutationPlan | None = None
         mutation_state: dict[str, Any] = {
             "mutation_attempted": False,
@@ -1546,6 +1605,23 @@ class QueueManager:
                     target_files=plan_targets,
                     evidence_files_read=read_files,
                 )
+                if requires_document_evidence_discovery(request, plan_targets):
+                    manifest = build_document_evidence_manifest(
+                        repo_root=self.repo_root,
+                        target_document=plan_targets[0] if plan_targets else "",
+                        user_goal=request,
+                        evidence_files_read=read_files,
+                    )
+                    plan = plan.model_copy(update={"document_evidence_manifest": manifest})
+                    trace.append(
+                        {
+                            "tool_name": "document_evidence_manifest",
+                            "status": "ok" if any(str(path).startswith("src/") for path in manifest.get("source_files_read", [])) else "blocked",
+                            "manifest": manifest,
+                            "target_files": list(plan.target_files),
+                            "created_by": "document_evidence_discovery",
+                        }
+                    )
                 plan_errors = validate_mutation_plan(plan, repo_root=self.repo_root)
                 if plan_errors:
                     blocked_trace = [
@@ -1683,6 +1759,27 @@ class QueueManager:
                         error="mutation_command_incomplete: " + "; ".join(command_errors),
                         trace=blocked_trace,
                     )
+                command_key = f"{store.run_id}:{flow_id or ''}:{command.plan_id}:{','.join(command.target_files)}:{_mutation_command_hash(command)}"
+                if command_key in executed_mutation_commands:
+                    blocked_trace = [
+                        {
+                            "tool_name": command.tool_name,
+                            "status": "blocked",
+                            "error": "duplicate_mutation_command_suppressed",
+                            "mutation_plan_id": command.plan_id,
+                            "target_files": list(command.target_files),
+                            "changed_files": [],
+                            "created_by": "mutation_command_executor",
+                        }
+                    ]
+                    trace.extend(blocked_trace)
+                    return WorkResult(
+                        ok=False,
+                        summary="duplicate mutation command suppressed",
+                        error="duplicate_mutation_command_suppressed",
+                        trace=blocked_trace,
+                    )
+                executed_mutation_commands.add(command_key)
                 result = execute_registered_mutation_command(repo_root=self.repo_root, command=command)
                 if result.answer:
                     answers.append(result.answer)
@@ -1725,6 +1822,7 @@ class QueueManager:
             sniffer=sniffer,
             board=board,
             orchestrator=orchestrator,
+            disable_evidence_short_circuit=requires_document_evidence_discovery(request, sniffer_target_files or required_files),
             max_steps=max(12, int(pass_cap) * 8),
         )
         report = runner.run()

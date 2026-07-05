@@ -30,7 +30,9 @@ from mana_agent.multi_agent.runtime.agent_work_queue import TaskBoard, WorkItem,
 from mana_agent.multi_agent.runtime.mutation_plan import (
     is_architecture_docs_update,
     mutation_trace_has_plan,
+    representative_document_sources,
     representative_architecture_sources,
+    requires_document_evidence_discovery,
 )
 from mana_agent.multi_agent.runtime.tool_worker_process import ToolRunRequest, ToolRunResponse
 from mana_agent.multi_agent.runtime.tools_executor import BatchToolRequest, ToolsExecutor
@@ -335,6 +337,7 @@ def build_tool_run_request(
         max_steps=int(max_steps),
         timeout_seconds=int(timeout_seconds),
         tool_policy=_policy_for_item(item, tool_policy),
+        tools_only_strict_override=False if item.kind == "summarize" and not (item.tool_name or "").strip() else None,
         tool_name=item.tool_name or "",
         tool_args=tool_args,
     )
@@ -471,8 +474,18 @@ class CodingAgentSniffer:
             for item in (target_files or [])
             if str(item).strip()
         ]
-        if is_architecture_docs_update(self._request, self._target_files):
-            self._max_reads = max(self._max_reads, len(representative_architecture_sources(self._repo_root)) + len(self._target_files))
+        if requires_document_evidence_discovery(self._request, self._target_files):
+            extra_architecture_reads = (
+                len(representative_architecture_sources(self._repo_root))
+                if is_architecture_docs_update(self._request, self._target_files)
+                else 0
+            )
+            self._max_reads = max(
+                self._max_reads,
+                len(representative_document_sources(self._repo_root, readme="readme.md" in self._request.lower()))
+                + extra_architecture_reads
+                + len(self._target_files),
+            )
 
     def _normalize_repo_path(self, path: str) -> str:
         text = str(path or "").strip()
@@ -593,6 +606,12 @@ class CodingAgentSniffer:
             path for path in self._target_files
             if (self._repo_root / path).is_file() or not create_intent
         ]
+        if requires_document_evidence_discovery(self._request, self._target_files):
+            ranked.extend(
+                path
+                for path in representative_document_sources(self._repo_root, readme="readme.md" in self._request.lower())
+                if path not in ranked
+            )
         if is_architecture_docs_update(self._request, self._target_files):
             ranked.extend(path for path in representative_architecture_sources(self._repo_root) if path not in ranked)
         ranked.extend(path for path in self._rank_candidates(paths) if path not in ranked)

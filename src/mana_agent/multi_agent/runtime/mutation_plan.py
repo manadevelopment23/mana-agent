@@ -34,14 +34,45 @@ REGISTERED_MUTATION_TOOLS = {
 ARCHITECTURE_SOURCE_DIRS = (
     "src/mana_agent/commands/",
     "src/mana_agent/multi_agent/runtime/",
+    "src/mana_agent/multi_agent/",
     "src/mana_agent/agent/",
     "src/mana_agent/services/",
     "src/mana_agent/tools/",
+    "src/mana_agent/config/",
     "src/mana_agent/prompting/",
     "src/mana_agent/skills/",
     "src/mana_agent/vector_store/",
     "src/mana_agent/ui/",
     "src/mana_agent/renderers/",
+)
+
+DOCUMENT_UPDATE_PHRASES = (
+    "update document",
+    "update docs",
+    "update readme",
+    "sync docs",
+    "fix docs",
+    "architecture changed",
+    "structure changed",
+    "document new project structure",
+    "document new structure",
+)
+
+DOCUMENT_EVIDENCE_DIRS = (
+    "src/mana_agent/commands/",
+    "src/mana_agent/multi_agent/",
+    "src/mana_agent/tools/",
+    "src/mana_agent/services/",
+    "src/mana_agent/config/",
+    "tests/",
+    "docs/",
+    ".github/workflows/",
+)
+
+DOCUMENT_EVIDENCE_ROOT_FILES = (
+    "pyproject.toml",
+    "requirements.txt",
+    "README.md",
 )
 
 ARCHITECTURE_INTENDED_CHANGES = (
@@ -73,6 +104,7 @@ class MutationPlan(BaseModel):
     allowed_to_mutate: bool = False
     blocked_reason: str | None = None
     quality_checks: list[str] = Field(default_factory=list)
+    document_evidence_manifest: dict[str, Any] = Field(default_factory=dict)
 
     def model_post_init(self, _ctx: Any) -> None:
         if not self.plan_id:
@@ -100,13 +132,54 @@ def normalize_repo_path(path: str) -> str:
     return str(path or "").replace("\\", "/").strip().lstrip("./")
 
 
+def _is_markdown_doc_target(path: str) -> bool:
+    text = normalize_repo_path(path).lower()
+    if not text:
+        return False
+    return (
+        text == "readme.md"
+        or text.endswith(".md")
+        or text.startswith("docs/")
+        or "architecture" in text
+        or "workflow" in text
+        or "command" in text
+        or "install" in text
+        or "tool" in text
+    )
+
+
+def is_document_update_request(request: str, target_files: Sequence[str]) -> bool:
+    text = str(request or "").lower()
+    target_hit = any(_is_markdown_doc_target(item) for item in target_files)
+    phrase_hit = any(phrase in text for phrase in DOCUMENT_UPDATE_PHRASES)
+    markdown_in_text = bool(re.search(r"\b(?:readme\.md|docs/[\w./-]+\.md|[\w.-]+\.md)\b", text))
+    mutation_word = bool(re.search(r"\b(update|edit|write|fix|change|modify|replace|sync|document)\b", text))
+    return (target_hit or markdown_in_text or phrase_hit) and mutation_word
+
+
+def is_readme_document_update(request: str, target_files: Sequence[str]) -> bool:
+    text = str(request or "").lower()
+    return is_document_update_request(request, target_files) and (
+        "readme.md" in text or any(normalize_repo_path(item).lower() == "readme.md" for item in target_files)
+    )
+
+
 def is_architecture_docs_update(request: str, target_files: Sequence[str]) -> bool:
     text = str(request or "").lower()
     targets = " ".join(str(item).lower() for item in target_files)
     return (
-        "architecture" in text
-        and "src" in text
-        and any("08-architecture.md" in item or "architecture.md" in item for item in (text, targets))
+        is_document_update_request(request, target_files)
+        and "architecture" in f"{text} {targets}"
+        and ("src" in text or "structure changed" in text or "architecture changed" in text or "project structure" in text)
+    )
+
+
+def requires_document_evidence_discovery(request: str, target_files: Sequence[str]) -> bool:
+    text = str(request or "").lower()
+    return (
+        is_readme_document_update(request, target_files)
+        or is_architecture_docs_update(request, target_files)
+        or any(phrase in text for phrase in ("sync docs", "document new project structure", "document new structure"))
     )
 
 
@@ -127,6 +200,86 @@ def representative_architecture_sources(repo_root: Path) -> list[str]:
     return out
 
 
+def _first_files(repo_root: Path, dirname: str, *, suffixes: tuple[str, ...], limit: int = 2) -> list[str]:
+    root = repo_root / dirname
+    if not root.exists():
+        return []
+    try:
+        candidates = sorted(
+            path
+            for path in root.rglob("*")
+            if path.is_file()
+            and "__pycache__" not in path.parts
+            and path.suffix.lower() in suffixes
+        )
+    except OSError:
+        return []
+    non_init = [path for path in candidates if path.name != "__init__.py"]
+    selected = (non_init or candidates)[:limit]
+    out: list[str] = []
+    for path in selected:
+        try:
+            out.append(path.resolve().relative_to(repo_root.resolve()).as_posix())
+        except Exception:
+            continue
+    return out
+
+
+def representative_document_sources(repo_root: Path, *, readme: bool = False) -> list[str]:
+    out: list[str] = []
+    for root_file in DOCUMENT_EVIDENCE_ROOT_FILES:
+        if (repo_root / root_file).is_file():
+            out.append(root_file)
+    for dirname in DOCUMENT_EVIDENCE_DIRS:
+        suffixes = (".py",) if dirname.startswith(("src/", "tests/")) else (".md", ".yml", ".yaml", ".toml", ".json")
+        limit = 3 if readme and dirname.startswith("src/mana_agent/multi_agent/") else 2
+        out.extend(_first_files(repo_root, dirname, suffixes=suffixes, limit=limit))
+    return sorted(dict.fromkeys(out))
+
+
+def build_document_evidence_manifest(
+    *,
+    repo_root: Path,
+    target_document: str,
+    user_goal: str,
+    evidence_files_read: Sequence[str],
+    commands_checked: Sequence[str] = (),
+) -> dict[str, Any]:
+    read = sorted(dict.fromkeys(normalize_repo_path(path) for path in evidence_files_read if normalize_repo_path(path)))
+    source_files = [path for path in read if path.startswith("src/") or path in {"pyproject.toml", "requirements.txt"}]
+    docs = [path for path in read if path.startswith("docs/") or path.lower() == "readme.md"]
+    tests = [path for path in read if path.startswith("tests/")]
+    workflows = [path for path in read if path.startswith(".github/workflows/")]
+    requested = representative_document_sources(
+        repo_root,
+        readme=normalize_repo_path(target_document).lower() == "readme.md",
+    )
+    missing = [path for path in requested if path not in read]
+    summary = [
+        "current CLI commands",
+        "current runtime layout",
+        "current tool system",
+        "current generated artifacts",
+        "current config/env vars",
+    ]
+    gaps = []
+    if missing:
+        gaps.append(f"not read yet: {missing[:8]}")
+    if not any(path.startswith("src/") for path in source_files):
+        gaps.append("missing src/ evidence")
+    return {
+        "target_document": normalize_repo_path(target_document),
+        "request_type": "documentation_update",
+        "source_files_read": source_files,
+        "docs_read": docs,
+        "tests_read": tests,
+        "workflows_read": workflows,
+        "commands_checked": list(commands_checked),
+        "architecture_summary": summary,
+        "gaps_or_unverified_items": gaps,
+    }
+
+
 def build_mutation_plan(
     *,
     repo_root: Path,
@@ -136,26 +289,37 @@ def build_mutation_plan(
 ) -> MutationPlan:
     targets = [normalize_repo_path(path) for path in target_files if normalize_repo_path(path)]
     read = sorted(dict.fromkeys(normalize_repo_path(path) for path in evidence_files_read if normalize_repo_path(path)))
+    readme_update = is_readme_document_update(user_goal, targets)
     arch_update = is_architecture_docs_update(user_goal, targets)
     required = list(targets)
     intended: list[str]
     checks: list[str]
-    if arch_update:
-        required.extend(representative_architecture_sources(repo_root))
+    manifest: dict[str, Any] = {}
+    evidence_discovery_required = requires_document_evidence_discovery(user_goal, targets)
+    if evidence_discovery_required:
+        required.extend(representative_document_sources(repo_root, readme=readme_update))
+        if arch_update:
+            required.extend(representative_architecture_sources(repo_root))
+        manifest = build_document_evidence_manifest(
+            repo_root=repo_root,
+            target_document=targets[0] if targets else "",
+            user_goal=user_goal,
+            evidence_files_read=read,
+        )
         intended = list(ARCHITECTURE_INTENDED_CHANGES)
         checks = [
             "file contains real src/mana_agent/... paths",
-            "file contains source-backed architecture sections",
+            "file contains source-backed documentation sections",
             "file does not only append a request note",
             "file is meaningfully rewritten or expanded",
-            "diff includes architecture content, not only metadata",
+            "diff includes current source architecture/content, not only metadata",
             "no duplicate heading noise",
             "no accidental pyproject/changelog dump in final answer",
         ]
         edit_type: EditType = "docs_update"
         strategy = (
-            "Patch docs/08-architecture.md from current target content using the source-read architecture evidence; "
-            "rewrite or expand concrete architecture sections instead of appending a request note."
+            "Patch the markdown document from current target content using source-read project evidence; "
+            "rewrite or expand concrete current-source sections instead of appending a request note."
         )
     else:
         intended = [f"Implement the requested change in {path}" for path in targets] or ["Implement the requested repository change"]
@@ -176,6 +340,7 @@ def build_mutation_plan(
         allowed_to_mutate=True,
         blocked_reason=None,
         quality_checks=checks,
+        document_evidence_manifest=manifest,
     )
     errors = validate_mutation_plan(plan, repo_root=repo_root)
     if errors:
@@ -214,6 +379,13 @@ def validate_mutation_plan(plan: MutationPlan | dict[str, Any], *, repo_root: Pa
     ]
     if missing:
         errors.append(f"required evidence files not read: {missing[:8]}")
+    if requires_document_evidence_discovery(plan.user_goal, targets):
+        manifest = dict(plan.document_evidence_manifest or {})
+        source_files = [normalize_repo_path(path) for path in manifest.get("source_files_read") or []]
+        if not manifest:
+            errors.append("document evidence manifest is missing")
+        if not any(path.startswith("src/") for path in source_files):
+            errors.append("document evidence manifest has no src/ source files")
     if not plan.evidence_summary.strip():
         errors.append("evidence summary is empty")
     specific_changes = [item for item in plan.intended_changes if len(str(item).strip().split()) >= 3]

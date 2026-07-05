@@ -722,10 +722,12 @@ def continue_command(
             if max_resume_cycles > 0 and resume_cycles >= max_resume_cycles:
                 break
     finally:
-        try:
-            worker.stop()
-        except Exception:
-            pass
+        stop = getattr(worker, "stop", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
 
     assert result is not None
     console.print(str(result.answer or "").strip() or "Continuation finished without a direct answer.")

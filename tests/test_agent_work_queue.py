@@ -14,6 +14,7 @@ from mana_agent.multi_agent.runtime.agent_work_queue import (
     WorkQueueRunner,
     WorkResult,
     compute_fingerprint,
+    execute_registered_mutation_command,
 )
 from mana_agent.multi_agent.runtime.agent_work_queue_adapters import (
     CodingAgentSniffer,
@@ -24,6 +25,7 @@ from mana_agent.multi_agent.runtime.agent_work_queue_adapters import (
 )
 from mana_agent.multi_agent.runtime.tool_worker_process import ToolRunResponse
 from mana_agent.multi_agent.runtime.tools_executor import BatchExecutionResult, ToolsExecutionConfig
+from mana_agent.multi_agent.runtime.mutation_plan import MutationCommand, build_mutation_plan
 
 
 # Edit/forced passes run with mutation tools only; discovery/read jobs gather
@@ -105,6 +107,18 @@ def test_duplicate_mutation_work_items_same_target_collapse() -> None:
     assert q.submit(first) is True
     assert q.submit(second) is False
     assert len(q.items()) == 1
+
+
+def test_tools_only_strict_not_used_for_plain_content_generation(tmp_path: Path) -> None:
+    request = build_tool_run_request(
+        WorkItem(kind="summarize", tool_name="", question="Generate the full content for README.md"),
+        repo_root=tmp_path,
+        index_dir=str(tmp_path),
+    )
+
+    assert request.tools_only_strict_override is False
+    assert request.tool_policy is not None
+    assert request.tool_policy.get("mutation_required") is None
 
 
 # --------------------------------------------------------------------------- #
@@ -1041,8 +1055,6 @@ def test_source_architecture_update_reads_src_evidence_before_mutation(tmp_path:
 
 
 def test_source_architecture_update_rejects_tests_changelog_only_evidence(tmp_path: Path):
-    from mana_agent.multi_agent.runtime.mutation_plan import build_mutation_plan
-
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "08-architecture.md").write_text("# Architecture\n", encoding="utf-8")
     (tmp_path / "src/mana_agent/multi_agent/runtime").mkdir(parents=True)
@@ -1057,6 +1069,173 @@ def test_source_architecture_update_rejects_tests_changelog_only_evidence(tmp_pa
 
     assert plan.allowed_to_mutate is False
     assert "required evidence files not read" in str(plan.blocked_reason)
+
+
+def test_document_update_requires_source_evidence_for_readme(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Old\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    (tmp_path / "src" / "mana_agent" / "commands").mkdir(parents=True)
+    (tmp_path / "src" / "mana_agent" / "commands" / "cli.py").write_text("def main(): pass\n", encoding="utf-8")
+
+    plan = build_mutation_plan(
+        repo_root=tmp_path,
+        user_goal="update README.md for the current project structure",
+        target_files=["README.md"],
+        evidence_files_read=["README.md"],
+    )
+
+    assert plan.allowed_to_mutate is False
+    assert "document evidence manifest has no src/ source files" in str(plan.blocked_reason)
+
+
+def test_readme_update_discovers_project_architecture_when_diff_empty(tmp_path: Path) -> None:
+    from mana_agent.multi_agent.runtime.agent_work_queue import QueueManager
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    (tmp_path / "README.md").write_text("# Old\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\nversion='1.2.3'\n", encoding="utf-8")
+    for rel in (
+        "src/mana_agent/commands/cli.py",
+        "src/mana_agent/multi_agent/runtime/agent_work_queue.py",
+        "src/mana_agent/tools/apply_patch.py",
+        "src/mana_agent/services/ask_service.py",
+        "src/mana_agent/config/settings.py",
+        "tests/test_cli.py",
+        "docs/04-commands.md",
+    ):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# evidence for {rel}\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "commit", "-m", "baseline"], cwd=tmp_path, check=False, capture_output=True, text=True)
+
+    class _ReadmeWorker:
+        def __init__(self) -> None:
+            self.requests: list[object] = []
+
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            self.requests.append(request)
+            tool = request.tool_name or ""
+            if tool == "repo_search":
+                return ToolRunResponse(answer="README.md", mode="agent-tools", trace=[{"tool_name": "repo_search", "status": "ok"}])
+            if tool == "read_file":
+                path = str(request.tool_args.get("path"))
+                return ToolRunResponse(
+                    answer=(tmp_path / path).read_text(encoding="utf-8"),
+                    mode="agent-tools",
+                    trace=[{"tool_name": "read_file", "status": "ok", "path": path}],
+                )
+            if "MutationCommand" in str(request.question):
+                return ToolRunResponse(
+                    answer=json.dumps(
+                        {
+                            "tool_name": "write_file",
+                            "tool_args": {
+                                "path": "README.md",
+                                "content": "# Demo\n\nCurrent CLI and runtime are documented from src evidence. " + ("Project architecture detail. " * 8) + "\n",
+                            },
+                        }
+                    ),
+                    mode="agent-tools",
+                    trace=[],
+                )
+            return ToolRunResponse(answer="ok", mode="agent-tools", trace=[])
+
+    worker = _ReadmeWorker()
+    result = QueueManager(worker_client=worker, repo_root=tmp_path).run(
+        request="update README.md because the project structure changed",
+        index_dir=str(tmp_path),
+        requires_edit=True,
+        pass_cap=4,
+    )
+
+    read_paths = [str(req.tool_args.get("path")) for req in worker.requests if (req.tool_name or "") == "read_file"]
+    assert result.run_status == "completed"
+    assert "README.md" in read_paths
+    assert any(path.startswith("src/mana_agent/commands/") for path in read_paths)
+    assert any(path.startswith("src/mana_agent/multi_agent/") for path in read_paths)
+    manifest_rows = [row for row in result.trace if row.get("tool_name") == "document_evidence_manifest"]
+    assert manifest_rows
+    assert manifest_rows[-1]["manifest"]["source_files_read"]
+
+
+def test_document_update_blocks_mutation_without_src_evidence(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Old\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "04-commands.md").write_text("# Commands\n", encoding="utf-8")
+
+    plan = build_mutation_plan(
+        repo_root=tmp_path,
+        user_goal="sync docs and update README.md",
+        target_files=["README.md"],
+        evidence_files_read=["README.md", "docs/04-commands.md"],
+    )
+
+    assert plan.allowed_to_mutate is False
+    assert "document evidence manifest has no src/ source files" in str(plan.blocked_reason)
+
+
+def test_apply_patch_hunk_mismatch_rereads_before_retry(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Current\n\nFresh content.\n", encoding="utf-8")
+    patch = """*** Begin Patch
+*** Update File: README.md
+@@
+-# Old
++# New
+*** End Patch
+"""
+    command = MutationCommand(
+        plan_id="mp_test",
+        tool_name="apply_patch",
+        tool_args={"patch": patch},
+        target_files=["README.md"],
+        reason="test stale hunk",
+    )
+
+    result = execute_registered_mutation_command(repo_root=tmp_path, command=command)
+
+    assert result.ok is False
+    assert any(row.get("created_by") == "apply_patch_hunk_mismatch_reread" for row in result.trace)
+
+
+def test_mutation_command_executes_once_per_plan(tmp_path: Path) -> None:
+    from mana_agent.multi_agent.runtime.agent_work_queue import QueueManager
+
+    (tmp_path / "README.md").write_text("# Old\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    (tmp_path / "src" / "mana_agent" / "commands").mkdir(parents=True)
+    (tmp_path / "src" / "mana_agent" / "commands" / "cli.py").write_text("def main(): pass\n", encoding="utf-8")
+
+    class _DuplicateCommandWorker:
+        def __init__(self) -> None:
+            self.command_calls = 0
+
+        def run_tools(self, request, on_event=None):  # noqa: ANN001
+            tool = request.tool_name or ""
+            if tool == "repo_search":
+                return ToolRunResponse(answer="README.md", mode="agent-tools", trace=[{"tool_name": "repo_search", "status": "ok"}])
+            if tool == "read_file":
+                path = str(request.tool_args.get("path"))
+                return ToolRunResponse(answer=(tmp_path / path).read_text(encoding="utf-8"), mode="agent-tools", trace=[{"tool_name": "read_file", "status": "ok", "path": path}])
+            if "MutationCommand" in str(request.question):
+                self.command_calls += 1
+                return ToolRunResponse(
+                    answer=json.dumps({"tool_name": "write_file", "tool_args": {"path": "README.md", "content": "# New\n\nSource-backed README. " + ("Project architecture detail. " * 8) + "\n"}}),
+                    mode="agent-tools",
+                    trace=[],
+                )
+            return ToolRunResponse(answer="ok", mode="agent-tools", trace=[])
+
+    worker = _DuplicateCommandWorker()
+    result = QueueManager(worker_client=worker, repo_root=tmp_path).run(
+        request="update README.md",
+        index_dir=str(tmp_path),
+        requires_edit=True,
+        pass_cap=4,
+    )
+
+    assert result.run_status == "completed"
+    assert worker.command_calls == 1
 
 
 def test_approved_mutation_plan_compiles_to_registered_tool(tmp_path: Path):

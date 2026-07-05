@@ -32,3 +32,16 @@ def test_setup_logging_uses_date_project_name(tmp_path: Path, monkeypatch) -> No
     handlers = logging.getLogger().handlers
     assert handlers
     assert all(type(item) is logging.FileHandler for item in handlers)
+
+
+def test_no_duplicate_log_handlers(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    setup_logging(verbose=True, log_dir=tmp_path / "logs")
+    setup_logging(verbose=True, log_dir=tmp_path / "logs")
+
+    handlers = logging.getLogger().handlers
+    file_handlers = [item for item in handlers if isinstance(item, logging.FileHandler)]
+    stream_handlers = [item for item in handlers if type(item) is logging.StreamHandler]
+    assert len(file_handlers) == 1
+    assert len(stream_handlers) == 1
+    assert logging.getLogger().propagate is False
