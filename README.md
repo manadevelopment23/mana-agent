@@ -162,7 +162,7 @@ To execute an approved mutation plan id, use the following `MutationCommand(...)
 > Note: `MutationCommand(...)` is the internal executable representation for the plan. In normal usage you typically run the plan via `mana-agent run`.
 
 ```text
-MutationCommand(mp_9dda1b3c9115)
+MutationCommand(mp_9f9e6a7d49ba)
 ```
 
 Example:
