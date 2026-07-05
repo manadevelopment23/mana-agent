@@ -3,13 +3,13 @@ from __future__ import annotations
 from contextlib import nullcontext
 
 from .cli_internal import *
-from .cli_internal import _build_project_llm_analyzer
+from .cli_internal import _build_project_llm_analyzer, _record_multi_agent_request
 from .chat_analyze_command import (
     analyze_command_args,
     handle_analyze_command,
     is_analyze_command,
 )
-from mana_agent.llm.auto_chat import (
+from mana_agent.multi_agent.runtime.auto_chat import (
     AutoChatMode,
     AutoChatSessionState,
     apply_auto_chat_tool_policy,
@@ -19,9 +19,9 @@ from mana_agent.llm.auto_chat import (
     resolve_auto_followup,
     save_auto_chat_state,
 )
-from mana_agent.llm.agent_session import route_for_turn
-from mana_agent.llm.small_direct_edit import handle_small_direct_edit
-from mana_agent.llm.tools_executor import build_tools_executor_with_fallback
+from mana_agent.multi_agent.runtime.agent_session import route_for_turn
+from mana_agent.multi_agent.runtime.small_direct_edit import handle_small_direct_edit
+from mana_agent.multi_agent.runtime.tools_executor import build_tools_executor_with_fallback
 from mana_agent.ui.banner import render_mode_header
 
 
@@ -124,6 +124,11 @@ def _generate_planning_question_llm(
     if not content:
         raise RuntimeError("planning question LLM returned an empty question")
     return content
+
+
+def _is_planning_question_auth_failure(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return any(marker in text for marker in ("error code: 401", "status code: 401", "incorrect api key", "unauthorized"))
 
 
 def _should_use_coding_agent_turn(
@@ -539,8 +544,12 @@ def chat(
     if root.is_file():
         root = root.parent
     render_mode_header("Chat", "Ask about your repository or request edits", console)
+    _record_multi_agent_request(root, "chat command", entrypoint="chat", command_scope=True)
 
+    recorded_initial_prompt = False
     if prompt:
+        _record_multi_agent_request(root, prompt, entrypoint="chat")
+        recorded_initial_prompt = True
         direct_edit_result = handle_small_direct_edit(root, prompt)
         if direct_edit_result.handled:
             console.print(f"[bold cyan]mana ❯[/bold cyan] {prompt}")
@@ -923,8 +932,12 @@ def chat(
             status_rows.append(("diagram rendering", f"{diagram_format} → {resolved_diagram_output_dir}"))
         if tool_worker_client is not None and (coding_agent_instance is not None or tools_manager_orchestrator is not None):
             try:
-                tool_worker_client.start()
-                tool_worker_client.health()
+                start = getattr(tool_worker_client, "start", None)
+                if callable(start):
+                    start()
+                health = getattr(tool_worker_client, "health", None)
+                if callable(health):
+                    health()
                 status_rows.append(
                     (
                         "tool worker",
@@ -948,6 +961,8 @@ def chat(
         planning_questions: list[str] = []
         planning_question_source: str = "none"
         planning_questions_asked_count: int = 0
+        planning_question_llm_disabled = False
+        planning_question_failure_logged = False
         active_flow_id: str | None = _ca_flow if isinstance(_ca_flow, str) and _ca_flow.strip() else None
         pending_conflict_question: str | None = None
         pending_ui_selection: dict[str, Any] | None = None
@@ -1025,8 +1040,12 @@ def chat(
                     tools_only_strict=tool_worker_strict,
                 )
             try:
-                tool_worker_client.start()
-                tool_worker_client.health()
+                start = getattr(tool_worker_client, "start", None)
+                if callable(start):
+                    start()
+                health = getattr(tool_worker_client, "health", None)
+                if callable(health):
+                    health()
             except Exception as exc:
                 _log_exception("tool_worker_client.start", exc)
                 return None
@@ -1610,6 +1629,11 @@ def chat(
                 plan_args = question.strip()[len("/plan"):].strip()
                 question = f"plan {plan_args}" if plan_args else "plan the next repository change"
 
+            if recorded_initial_prompt and question == prompt:
+                recorded_initial_prompt = False
+            else:
+                _record_multi_agent_request(root, question, entrypoint="chat")
+
             # -----------------------------
             # /analyze slash command (read-only; writes only .mana/ artifacts).
             # Handled before any LLM/CodingAgent routing.
@@ -1972,18 +1996,26 @@ def chat(
                     planning_answers = []
                     planning_questions = []
                     planning_questions_asked_count = 0
-                    try:
-                        llm_question = _generate_planning_question_llm(
-                            ask_service=ask_service,
-                            planning_request=planning_request,
-                            prior_questions=planning_questions,
-                            prior_answers=planning_answers,
-                            asked_count=0,
-                            max_questions=planning_question_limit,
-                        )
-                        planning_question_source = "llm"
-                    except Exception as exc:
-                        logger.warning("Planning question generation failed; using static fallback: %s", exc)
+                    if not planning_question_llm_disabled:
+                        try:
+                            llm_question = _generate_planning_question_llm(
+                                ask_service=ask_service,
+                                planning_request=planning_request,
+                                prior_questions=planning_questions,
+                                prior_answers=planning_answers,
+                                asked_count=0,
+                                max_questions=planning_question_limit,
+                            )
+                            planning_question_source = "llm"
+                        except Exception as exc:
+                            if _is_planning_question_auth_failure(exc):
+                                planning_question_llm_disabled = True
+                            if not planning_question_failure_logged:
+                                logger.warning("Planning question generation failed; using static fallback: %s", exc)
+                                planning_question_failure_logged = True
+                            llm_question = _planning_questions(planning_question_limit)[0]
+                            planning_question_source = "fallback_static"
+                    else:
                         llm_question = _planning_questions(planning_question_limit)[0]
                         planning_question_source = "fallback_static"
                     planning_questions.append(llm_question)
@@ -1997,18 +2029,26 @@ def chat(
                 planning_answers.append(question)
                 if len(planning_answers) < planning_question_limit:
                     asked_count = len(planning_answers)
-                    try:
-                        llm_question = _generate_planning_question_llm(
-                            ask_service=ask_service,
-                            planning_request=planning_request,
-                            prior_questions=planning_questions,
-                            prior_answers=planning_answers,
-                            asked_count=asked_count,
-                            max_questions=planning_question_limit,
-                        )
-                        planning_question_source = "llm"
-                    except Exception as exc:
-                        logger.warning("Planning question generation failed; using static fallback: %s", exc)
+                    if not planning_question_llm_disabled:
+                        try:
+                            llm_question = _generate_planning_question_llm(
+                                ask_service=ask_service,
+                                planning_request=planning_request,
+                                prior_questions=planning_questions,
+                                prior_answers=planning_answers,
+                                asked_count=asked_count,
+                                max_questions=planning_question_limit,
+                            )
+                            planning_question_source = "llm"
+                        except Exception as exc:
+                            if _is_planning_question_auth_failure(exc):
+                                planning_question_llm_disabled = True
+                            if not planning_question_failure_logged:
+                                logger.warning("Planning question generation failed; using static fallback: %s", exc)
+                                planning_question_failure_logged = True
+                            llm_question = _planning_questions(planning_question_limit)[asked_count]
+                            planning_question_source = "fallback_static"
+                    else:
                         llm_question = _planning_questions(planning_question_limit)[asked_count]
                         planning_question_source = "fallback_static"
                     planning_questions.append(llm_question)
@@ -2691,7 +2731,9 @@ def chat(
                 continue
     finally:
         if tool_worker_client is not None:
-            tool_worker_client.stop()
+            stop = getattr(tool_worker_client, "stop", None)
+            if callable(stop):
+                stop()
         if tmp_root is not None:
             tmp_root.cleanup()
         if tmp_base is not None:

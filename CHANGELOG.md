@@ -2,6 +2,35 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-05 (multi-agent routing hardening)
+
+- Added explicit task-size classification and route evidence for simple, medium, and large multi-agent requests, including dynamic repo-inventory/docs subagent creation and deactivation recorded on the TaskBoard.
+- Added configurable model-tier assignment for multi-agent roles via `MANA_MODEL_*` environment variables, documented the tier placeholders in `.env.example`, added richer queue-job metadata, queued-job schema helpers, batch-read execution, and queued apply-patch execution with stale-context failure guidance.
+- Made planned verifier commands explicitly non-passing until actually executed, with ReviewerAgent weak-evidence rejection records, and added focused regression coverage for routing, subagents, queue metadata, batch reads, patch-context failures, model tiers, and verification honesty.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py -q` passed with 21 tests; `PYTHONPATH=src .venv/bin/python -m compileall src` passed; `PYTHONPATH=src .venv/bin/python - <<'PY' ... import mana_agent ... PY` passed; `PYTHONPATH=src .venv/bin/mana-agent --help` and `PYTHONPATH=src .venv/bin/mana-agent chat --help` passed; touched-file `ruff --select F,E9` and `git diff --check` passed.
+
+## 2026-07-05 (document-update evidence and loop guards)
+
+- Added mandatory source-evidence discovery for README and project architecture/structure documentation updates, including a document evidence manifest that blocks mutation when source files from `src/` were not read.
+- Prevented document-update runs from taking the single-target read shortcut or early evidence short-circuit before architecture evidence is gathered.
+- Added bounded mutation-command deduplication, apply-patch hunk-mismatch re-read traces, non-tool synthesis strict-mode overrides, planning-question auth failure log-once behavior, and guarded worker lifecycle calls.
+- Added regression coverage for README evidence manifests, no-src blocking, fake worker lifecycle, planning auth fallback, Redis fallback logging, duplicate log handlers, strict tool traces, plain content synthesis, patch mismatch re-reads, and once-per-plan mutation execution.
+- Verification: focused regression tests passed with `.venv/bin/python -m pytest -q ...` (11 tests); broader affected suite passed with `.venv/bin/python -m pytest -q tests/test_agent_work_queue.py tests/test_agent_orchestrator.py tests/test_chat_planning_mode.py tests/test_logging_setup.py tests/test_tool_worker_process.py tests/test_tools_manager.py` (148 tests); full `.venv/bin/python -m pytest -q` passed with 560 tests and 16 warnings; `.venv/bin/python -m compileall src`, `PYTHONPATH=src .venv/bin/mana-agent --help`, and `PYTHONPATH=src .venv/bin/mana-agent chat --help` passed. Full `.venv/bin/ruff check src tests` was not clean because of pre-existing F403/F405 star-import lint in `chat_cli.py`/`main_cli.py`, duplicate `DependencyPackageRef` in `models.py`, and `utils/guards.py` E401; touched runtime/test files passed `ruff --select F,E9`.
+
+## 2026-07-05 (all-command multi-agent routing and runtime migration)
+
+- Routed every public CLI command surface through the mandatory `MainAgent` boundary, including root mode/menu dispatch, `chat`, `analyze`, `plan`, `continue`, and `skills init/list/show`, with a route-once guard for root-dispatched commands.
+- Moved the live LLM runtime package from `mana_agent.llm` to `mana_agent.multi_agent.runtime`, retargeted runtime imports, tests, docs, and the worker subprocess module path, and removed the old `src/mana_agent/llm` package.
+- Added regression coverage for command-level routing, stale legacy import guards, and command compatibility.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py tests/test_cli_modes_skills.py tests/test_cli_smoke.py::test_continue_command_uses_root_dir_and_loops_until_complete tests/test_chat_console_logging.py tests/test_agent_work_queue.py tests/test_coding_agent.py tests/test_tool_worker_process.py tests/test_tools_executor_redis.py tests/test_prompts_contract.py -q` passed with 163 tests; `PYTHONPATH=src .venv/bin/python -m compileall src` passed; stale `mana_agent.llm` import search returned no matches; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/multi_agent tests --select F,E9` passed; `PYTHONPATH=src .venv/bin/python -m pytest -q` passed with 549 tests and 16 warnings.
+
+## 2026-07-05 (hierarchical multi-agent core)
+
+- Added the mandatory `mana_agent.multi_agent` hierarchy with readable IDs, TaskBoard persistence, MessageBus, DecisionRoom, AgentRegistry, Router, QueueManager, ToolsManager permissions, specialized agents, prompt files, and trace/memory helpers.
+- Routed chat, `/analyze`, `/plan`, `mana-agent analyze`, and `mana-agent plan` through `MainAgent.run_user_request(...)` before existing command behavior continues; no multi-agent disable flag or environment bypass was added.
+- Documented the architecture in `docs/multi-agent-routing.md` and added focused tests for IDs, taskboard transitions, messages, decisions, registry hierarchy, routing, queue/tool enforcement, CodingAgent tool restrictions, VerifierAgent records, CLI command continuity, and disable-switch absence.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py -q` passed; `PYTHONPATH=src .venv/bin/python -m compileall src/mana_agent/multi_agent src/mana_agent/commands/cli_internal.py src/mana_agent/commands/chat_cli.py` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py tests/test_agent_work_queue.py tests/test_chat_planning_mode.py -q` passed; `PYTHONPATH=src .venv/bin/python -m compileall src` passed; `PYTHONPATH=src .venv/bin/python -m pytest -q` passed with 546 tests and 16 warnings; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/multi_agent tests/test_multi_agent_core.py --select F,E9` passed.
+
 ## 2026-07-04 (agent decision and evidence gate)
 
 - Added a central agent orchestrator with task classification, evidence queue items, an evaluation gate state machine, post-tool critic tracing, and verification-profile selection.

@@ -6,9 +6,9 @@ from pathlib import Path
 from mana_agent.agent.orchestrator import AgentOrchestrator
 from mana_agent.agent.task_classifier import classify_task
 from mana_agent.agent.verification_planner import plan_verification
-from mana_agent.llm.agent_work_queue import AgentWorkQueue, WorkItem, WorkQueueRunner, WorkResult
-from mana_agent.llm.tool_worker_process import ToolRunRequest, ToolRunResponse
-from mana_agent.llm.tools_executor import (
+from mana_agent.multi_agent.runtime.agent_work_queue import AgentWorkQueue, WorkItem, WorkQueueRunner, WorkResult
+from mana_agent.multi_agent.runtime.tool_worker_process import ToolRunRequest, ToolRunResponse
+from mana_agent.multi_agent.runtime.tools_executor import (
     ToolsExecutionConfig,
     _FALLBACK_WARNINGS_EMITTED,
     build_tools_executor_with_fallback,
@@ -103,6 +103,19 @@ def test_fake_worker_implements_lifecycle_protocol(caplog) -> None:
     assert "AttributeError" not in caplog.text
 
 
+def test_fake_worker_client_has_start_stop() -> None:
+    class _FakeWorkerClient:
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+    worker = _FakeWorkerClient()
+    worker.start()
+    worker.stop()
+
+
 def test_redis_fallback_warning_is_deduped(caplog) -> None:
     class _Local:
         def __init__(self, *, worker_client) -> None:  # noqa: ANN001
@@ -138,3 +151,7 @@ def test_redis_fallback_warning_is_deduped(caplog) -> None:
     assert second.__class__.__name__ == "_Local"
     assert len(warnings) == 1
     assert caplog.text.count("redis executor unavailable") == 1
+
+
+def test_redis_fallback_logs_once(caplog) -> None:
+    test_redis_fallback_warning_is_deduped(caplog)

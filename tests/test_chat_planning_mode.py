@@ -1,3 +1,4 @@
+import logging
 import types
 from pathlib import Path
 
@@ -232,3 +233,46 @@ def test_chat_planning_mode_falls_back_to_static_on_llm_question_failure(monkeyp
 
     assert result.exit_code == 0
     assert "What is the concrete goal and the success criteria?" in result.stdout
+
+
+def test_planning_question_auth_failure_logs_once_and_uses_static_fallback(monkeypatch, tmp_path: Path, caplog) -> None:
+    calls: list[str] = []
+    llm_calls = 0
+
+    monkeypatch.setattr("mana_agent.commands.chat_cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr(
+        "mana_agent.commands.chat_cli.build_ask_service",
+        lambda _s, model_override=None: RecordingAskService(calls),
+    )
+
+    def _raise_auth(**_kwargs):
+        nonlocal llm_calls
+        llm_calls += 1
+        raise RuntimeError("Error code: 401 - Incorrect API key provided: test")
+
+    monkeypatch.setattr("mana_agent.commands.chat_cli._generate_planning_question_llm", _raise_auth)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.ToolWorkerClient", FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.chat_cli.CodingAgent", RecordingCodingAgent)
+
+    user_input = "\n".join(
+        [
+            "plan auth module",
+            "answer one",
+            "answer two",
+            "answer three",
+            "quit",
+        ]
+    ) + "\n"
+
+    with caplog.at_level(logging.WARNING, logger="mana_agent.commands.chat_cli"):
+        result = runner.invoke(
+            cli.app,
+            ["chat", "--planning-max-questions", "3"],
+            input=user_input,
+        )
+
+    assert result.exit_code == 0
+    assert llm_calls == 1
+    assert result.stdout.count("What is the concrete goal and the success criteria?") == 1
+    assert "What should be in scope and out of scope?" in result.stdout
+    assert caplog.text.count("Planning question generation failed; using static fallback") == 1
