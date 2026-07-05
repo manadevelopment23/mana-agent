@@ -16,11 +16,23 @@ from mana_agent.tools import repo_batch_read, safe_apply_patch
 class ToolsManager:
     def __init__(self, root: str | Path = ".", *, memory_service: MultiAgentMemoryService | None = None) -> None:
         self.root = Path(root).resolve()
+        self.memory_service = memory_service
         self._result_cache: dict[str, dict[str, Any]] = {}
 
     def execute_job(self, job: QueueJob) -> ToolResult:
         try:
             cache_key = self._cache_key(job)
+            if cache_key and self.memory_service is not None:
+                cached_tool = self.memory_service.get_reusable_tool_result(
+                    tool_name=job.job_type.value,
+                    args=job.payload,
+                )
+                if cached_tool is not None:
+                    result = copy.deepcopy(cached_tool.result)
+                    result["cache_hit"] = True
+                    result["source"] = "memory"
+                    result["cache_source"] = "memory"
+                    return ToolResult(new_message_id(), job.task_id, True, result)
             if cache_key:
                 cached = self._result_cache.get(cache_key)
                 if cached is not None:
@@ -34,7 +46,7 @@ class ToolsManager:
             if job.job_type == QueueJobType.GIT_DIFF:
                 return self._cache_result(job, self._shell(job, "git diff"), cache_key)
             if job.job_type in {QueueJobType.SHELL, QueueJobType.RUN_TESTS, QueueJobType.RUN_LINT}:
-                return self._record(job, self._shell(job, str(job.payload.get("command", ""))))
+                return self._shell(job, str(job.payload.get("command", "")))
             if job.job_type == QueueJobType.REPO_READ:
                 path = self._resolve_path(str(job.payload.get("path", "")))
                 return self._cache_result(
@@ -66,7 +78,11 @@ class ToolsManager:
                         except Exception as exc:
                             ok = False
                             files.append({"path": str(raw), "ok": False, "error": str(exc)})
-                    return self._record(job, ToolResult(new_message_id(), job.task_id, ok, {"ok": ok, "files": files}, None if ok else "one or more batch reads failed"))
+                    return self._cache_result(
+                        job,
+                        ToolResult(new_message_id(), job.task_id, ok, {"ok": ok, "files": files}, None if ok else "one or more batch reads failed"),
+                        cache_key,
+                    )
                 result = repo_batch_read(self.root, files=[str(item) for item in paths])
                 ok = bool(result.get("ok"))
                 return self._cache_result(
@@ -81,7 +97,7 @@ class ToolsManager:
                 error = None if ok else str(result.get("error") or result.get("message") or "patch failed")
                 if not ok and result.get("error_code") == "patch_context_not_found":
                     error = "patch_context_not_found; reread target file before rebuilding patch"
-                return self._record(job, ToolResult(new_message_id(), job.task_id, ok, result, error))
+                return ToolResult(new_message_id(), job.task_id, ok, result, error)
             if job.job_type == QueueJobType.REPO_SEARCH:
                 query = str(job.payload.get("query", ""))
                 result = subprocess.run(["rg", "-n", query, str(self.root)], cwd=self.root, text=True, capture_output=True, timeout=30)
@@ -126,7 +142,18 @@ class ToolsManager:
         if cache_key and result.ok:
             payload = copy.deepcopy(result.result)
             payload.setdefault("cache_hit", False)
-            payload.setdefault("cache_source", "tool")
+            payload.setdefault("source", "tool")
+            payload.setdefault("cache_source", payload["source"])
             self._result_cache[cache_key] = copy.deepcopy(payload)
+            if self.memory_service is not None:
+                self.memory_service.record_tool_execution(
+                    tool_name=job.job_type.value,
+                    args=job.payload,
+                    task_id=job.task_id,
+                    agent_id=job.requested_by_agent_id,
+                    status="ok",
+                    result_summary="ok",
+                    result=copy.deepcopy(payload),
+                )
             result.result = payload
         return result

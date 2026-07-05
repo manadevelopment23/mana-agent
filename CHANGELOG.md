@@ -2,24 +2,13 @@
 
 All notable repository changes should be recorded here.
 
-<<<<<<< HEAD
 ## 2026-07-05 (memory-first multi-agent cache integration)
 
 - Added a shared multi-agent memory service with normalized task fingerprints, task/file/tool/decision/verification records, scoped memory bundles, and hierarchy-based privilege filtering.
 - Wired memory into MainAgent routing, TaskBoard memory status, QueueManager duplicate rejection, runtime AgentWorkQueue duplicate traces, and ToolsManager file/tool cache reuse while keeping write tools non-reusable.
 - Added regression coverage for duplicate task detection and merge markers, queue duplicate rejection, file read cache hit/miss behavior, scoped bundles, lower-agent access limits, reusable read-only tool results, write-tool history only, and verifier memory reuse.
-- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py -q` passed with 31 tests; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py tests/test_multi_agent_core.py -q` passed with 88 tests; `PYTHONPATH=src .venv/bin/python -m compileall src/mana_agent/multi_agent` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/multi_agent tests/test_multi_agent_core.py --select F,E9` passed.
-=======
-## 2026-07-05 (queue tool result cache metadata)
-
-- Added read-only tool result reuse metadata for the lightweight multi-agent queue so repeated same-argument reads return `cache_hit=true` instead of omitting the cache contract.
-- Added regression coverage for same-argument tool result reuse in `tests/test_multi_agent_core.py`.
-<<<<<<< HEAD
-- Verification: Pending.
->>>>>>> f504359 (Fix cache_hit KeyError)
-=======
-- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py::test_tool_result_reused_when_args_same -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py -q` passed with 22 tests; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/multi_agent/tools/tool_manager.py tests/test_multi_agent_core.py` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/multi_agent/tools/tool_manager.py tests/test_multi_agent_core.py --select F,E9` passed; `git diff --check -- CHANGELOG.md src/mana_agent/multi_agent/tools/tool_manager.py tests/test_multi_agent_core.py` passed.
->>>>>>> 44e2990 (Fix cache_hit KeyError)
+- Fixed the lightweight ToolsManager memory wiring and stale `_record` calls so batch reads, same-argument cache reuse, and patch context errors return the expected result payloads.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py::test_tool_result_reused_when_args_same tests/test_multi_agent_core.py::test_batch_read_result_reused_when_args_same tests/test_multi_agent_core.py::test_queue_manager_runs_batch_read_through_tools_manager tests/test_multi_agent_core.py::test_patch_context_failure_requires_fresh_read -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_multi_agent_core.py -q` passed with 32 tests; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/multi_agent/tools/tool_manager.py tests/test_multi_agent_core.py` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/multi_agent/tools/tool_manager.py tests/test_multi_agent_core.py --select F,E9` passed; `git diff --check -- CHANGELOG.md src/mana_agent/multi_agent/tools/tool_manager.py tests/test_multi_agent_core.py` passed.
 
 ## 2026-07-05 (multi-agent routing hardening)
 
@@ -166,8 +155,6 @@ All notable repository changes should be recorded here.
 - Implemented base `ToolsExecutor.run_batch` as a structured fail-closed backend instead of raising, so accidental base-executor use returns ordered `BatchExecutionResult` failures.
 - Added batch adapter coverage for WorkItem-to-ToolRunRequest conversion, failed batch results, base executor failures, executor-preferred QueueManager runs, and forced mutation retry through the executor.
 - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_agent_work_queue.py -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_tools_executor_redis.py tests/test_agent_work_queue.py tests/test_tools_manager.py -q` passed; `PYTHONPATH=src .venv/bin/python -m compileall src` passed; `rg "tool_worker_client\\.run_tools|ask_agent\\.run|run_multi" src/mana_agent/llm/coding_agent.py src/mana_agent/llm/agent_work_queue.py` returned no matches. `PYTHONPATH=src .venv/bin/python -m pytest tests/test_coding_agent.py tests/test_cli_smoke.py -q` was run and still has the existing 8 `tests/test_cli_smoke.py` chat-routing/fake-agent failures.
->>>>>>> 9919886 (Add batch-tools prompt)
-
 ## 2026-07-02 (mutation tool reliability)
 
 - Added exact-string `edit_file` and atomic sequential `multi_edit_file` mutation tools, registered them across coding-agent, worker, policies, prompts, contracts, and tests, and made them the preferred edit path before patching or whole-file writes.

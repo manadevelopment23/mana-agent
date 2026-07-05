@@ -377,7 +377,7 @@ def test_queue_manager_runs_batch_read_through_tools_manager(tmp_path):
     assert job.result["files"][0]["path"] == "README.md"
 
 
-def test_tool_result_reused_when_args_same(tmp_path):
+def test_batch_read_result_reused_when_args_same(tmp_path):
     (tmp_path / "README.md").write_text("# Test\n", encoding="utf-8")
     board = TaskBoard(tmp_path)
     task = board.create_task(title="Cached read", user_request="read docs twice")
