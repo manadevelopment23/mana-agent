@@ -10,7 +10,7 @@ from mana_agent.multi_agent.core.ids import new_message_id
 from mana_agent.multi_agent.core.types import QueueJob, QueueJobType, ToolResult
 from mana_agent.multi_agent.memory.service import MultiAgentMemoryService
 from mana_agent.multi_agent.tools.permissions import assert_shell_allowed
-from mana_agent.tools import repo_batch_read, safe_apply_patch
+from mana_agent.tools import repo_batch_read, repo_search, safe_apply_patch
 
 
 class ToolsManager:
@@ -100,14 +100,30 @@ class ToolsManager:
                 return ToolResult(new_message_id(), job.task_id, ok, result, error)
             if job.job_type == QueueJobType.REPO_SEARCH:
                 query = str(job.payload.get("query", ""))
-                result = subprocess.run(["rg", "-n", query, str(self.root)], cwd=self.root, text=True, capture_output=True, timeout=30)
+                result = repo_search(
+                    self.root,
+                    query=query,
+                    glob=str(job.payload.get("glob") or "**/*"),
+                    regex=bool(job.payload.get("regex", False)),
+                    limit=int(job.payload.get("limit") or 100),
+                )
+                stdout = "\n".join(
+                    f"{item.get('file')}:{item.get('line')}:{item.get('text')}"
+                    for item in result.get("matches", [])
+                    if isinstance(item, dict)
+                )
                 return self._cache_result(
                     job,
                     ToolResult(
                         new_message_id(),
                         job.task_id,
-                        result.returncode in {0, 1},
-                        {"stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode},
+                        bool(result.get("ok")),
+                        {
+                            **result,
+                            "stdout": stdout,
+                            "stderr": str(result.get("error") or ""),
+                            "returncode": 0 if bool(result.get("ok")) else 1,
+                        },
                     ),
                     cache_key,
                 )
