@@ -19,7 +19,9 @@ from mana_agent.multi_agent.queue.queue_manager import QueueManager
 from mana_agent.multi_agent.registry.agent_registry import AgentRegistry
 from mana_agent.multi_agent.routing.router import Router
 from mana_agent.multi_agent.taskboard.taskboard import TaskBoard
-
+from mana_agent.multi_agent.memory.memory_bundle import AgentMemoryBundle
+from mana_agent.multi_agent.memory.repo_context import RepoContext
+from mana_agent.multi_agent.memory.task_memory import TaskMemory
 
 @dataclass
 class MainAgentResult:
@@ -34,6 +36,10 @@ class MainAgentResult:
 class MainAgent:
     def __init__(self, root: str | Path = ".") -> None:
         self.root = Path(root).resolve()
+        self.memory = AgentMemoryBundle(
+            repo_context=RepoContext(root=str(self.root)),
+            task_memory=TaskMemory(),
+        )
         self.taskboard = TaskBoard(self.root)
         self.message_bus = MessageBus(self.root)
         self.registry = AgentRegistry()
@@ -44,6 +50,8 @@ class MainAgent:
 
     def run_user_request(self, user_request: str, *, entrypoint: str = "chat") -> MainAgentResult:
         request = str(user_request or "").strip()
+        self.memory.remember_task(f"User request received via {entrypoint}: {request[:500]}")
+        self.memory.remember_repo_fact(f"Repository root: {self.root}")
         title = request[:80] or entrypoint
         main_node = self.registry.find_by_role(AgentRole.MAIN)
         task = self.taskboard.create_task(
@@ -53,6 +61,12 @@ class MainAgent:
             owner_agent_id=main_node.agent_id,
         )
         route = self.router.route(task_id=task.task_id, user_request=f"{entrypoint} {request}")
+        self.memory.remember_task(
+            "Route selected: "
+            f"{route.route_name}; size={route.task_size}; "
+            f"agents={', '.join(route.required_agents)}; "
+            f"subagents={', '.join(route.required_subagents)}"
+        )
         self.taskboard.add_evidence(task.task_id, f"HeadDecisionAgent classified task size as {route.task_size}.")
         for role_name in route.required_agents:
             node = self._node_by_role_name(role_name)
@@ -65,6 +79,10 @@ class MainAgent:
         head.decide(task.task_id, route, self.decision_room)
         planner = self._agent(AgentRole.PLANNER, PlannerAgent)
         plan = planner.plan(task.task_id, request, route.route_name)
+        self.memory.remember_task(
+            f"Plan created for task {task.task_id}; verification commands: "
+            f"{', '.join(getattr(plan, 'verification_commands', []) or [])}"
+        )
         self.taskboard.update_status(task.task_id, TaskStatus.IN_PROGRESS, reason="Specialist agents are handling the routed workflow.")
         if route.route_name == "analyze":
             self._agent(AgentRole.RESEARCH, ResearchAgent).collect_evidence(task.task_id, "Analyze flow delegated to existing analyzer after multi-agent route creation.")
@@ -75,11 +93,15 @@ class MainAgent:
         if route.requires_verification:
             self.taskboard.update_status(task.task_id, TaskStatus.VERIFYING, reason="VerifierAgent records verification plan.")
             verification = self._agent(AgentRole.VERIFIER, VerifierAgent).verify_no_mutation(task.task_id, plan.verification_commands)
+            self.memory.remember_task(
+            f"Verification recorded: passed={verification.passed}; summary={verification.summary}"
+            )
             if not verification.passed:
                 self._agent(AgentRole.REVIEWER, ReviewerAgent).reject_weak_evidence(task.task_id, verification.summary)
         self._deactivate_subagents(task.task_id, subagent_ids)
         self.taskboard.update_status(task.task_id, TaskStatus.DONE, reason="Multi-agent route completed; legacy entrypoint continues concrete command behavior.")
         answer = self._agent(AgentRole.SUMMARIZER, SummarizerAgent).summarize(task.task_id)
+        self.memory.remember_task(f"Final summary produced for task {task.task_id}: {answer[:500]}")
         return MainAgentResult(task.task_id, route.route_name, route.task_size, answer, route.required_agents, route.required_subagents)
 
     def _create_required_subagents(self, task_id: str, subagent_names: list[str]) -> list[str]:
@@ -127,6 +149,7 @@ class MainAgent:
                 taskboard=self.taskboard,
                 message_bus=self.message_bus,
                 registry=self.registry,
+                memory=self.memory,
                 **kwargs,
             )
         return agents

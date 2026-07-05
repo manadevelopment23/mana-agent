@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from mana_agent.multi_agent.memory.agent_memory import AgentMemory
+from mana_agent.multi_agent.memory.repo_context import RepoContext
+from mana_agent.multi_agent.memory.task_memory import TaskMemory
+
+
+def _clean(text: object, *, max_chars: int = 1200) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    if "secret" in value.lower():
+        return ""
+    return value[:max_chars]
+
+
+@dataclass
+class AgentMemoryBundle:
+    repo_context: RepoContext
+    task_memory: TaskMemory
+    agent_memories: dict[str, AgentMemory] = field(default_factory=dict)
+
+    def for_agent(self, agent_id: str) -> AgentMemory:
+        key = str(agent_id or "").strip()
+        if not key:
+            key = "unknown_agent"
+        if key not in self.agent_memories:
+            self.agent_memories[key] = AgentMemory()
+        return self.agent_memories[key]
+
+    def remember_agent(self, agent_id: str, summary: str) -> None:
+        text = _clean(summary)
+        if text:
+            self.for_agent(agent_id).remember(text)
+
+    def remember_task(self, summary: str) -> None:
+        text = _clean(summary)
+        if text:
+            self.task_memory.remember(text)
+
+    def remember_repo_fact(self, fact: str) -> None:
+        text = _clean(fact)
+        if text:
+            self.repo_context.facts.append(text)
+
+    def snapshot(
+        self,
+        agent_id: str | None = None,
+        *,
+        max_items: int = 8,
+        max_chars: int = 2000,
+    ) -> str:
+        lines: list[str] = ["Multi-Agent Memory Snapshot"]
+
+        repo_facts = self.repo_context.facts[-max_items:]
+        lines.append("Repo facts:")
+        lines.extend(f"- {item}" for item in repo_facts)
+        if not repo_facts:
+            lines.append("- none")
+
+        task_items = self.task_memory.summaries[-max_items:]
+        lines.append("Task memory:")
+        lines.extend(f"- {item}" for item in task_items)
+        if not task_items:
+            lines.append("- none")
+
+        lines.append("Agent memory:")
+        if agent_id:
+            agent_items = self.for_agent(agent_id).summaries[-max_items:]
+            lines.extend(f"- {item}" for item in agent_items)
+            if not agent_items:
+                lines.append("- none")
+        else:
+            for aid, memory in sorted(self.agent_memories.items()):
+                for item in memory.summaries[-max_items:]:
+                    lines.append(f"- {aid}: {item}")
+            if len(lines) == 1:
+                lines.append("- none")
+
+        text = "\n".join(lines).strip()
+        return text[:max_chars]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "repo_context": {
+                "root": self.repo_context.root,
+                "facts": list(self.repo_context.facts),
+            },
+            "task_memory": list(self.task_memory.summaries),
+            "agent_memories": {
+                agent_id: list(memory.summaries)
+                for agent_id, memory in self.agent_memories.items()
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AgentMemoryBundle":
+        repo_data = data.get("repo_context") or {}
+        bundle = cls(
+            repo_context=RepoContext(
+                root=str(repo_data.get("root") or "."),
+                facts=list(repo_data.get("facts") or []),
+            ),
+            task_memory=TaskMemory(),
+        )
+        for item in data.get("task_memory") or []:
+            bundle.task_memory.remember(str(item))
+
+        for agent_id, summaries in (data.get("agent_memories") or {}).items():
+            memory = bundle.for_agent(str(agent_id))
+            for item in summaries or []:
+                memory.remember(str(item))
+
+        return bundle
