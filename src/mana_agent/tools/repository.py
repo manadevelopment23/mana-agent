@@ -191,7 +191,7 @@ def repo_batch_read(
             raw_bytes = target.read_bytes()
             truncated = len(raw_bytes) > per_file_cap or len(raw_bytes) > remaining
             chunk = raw_bytes[: min(per_file_cap, remaining)]
-            content = chunk.decode("utf-8")
+            content = chunk.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
             out.append(
                 {
                     "path": rel,

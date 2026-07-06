@@ -897,7 +897,7 @@ def _render_direct_command(
         )
         answer = (
             "mana-agent chat status\n"
-            f"- project root: {project_root}\n"
+            f"- project root: {str(project_root).replace(chr(92), '/')}\n"
             f"- semantic index: {index_line}\n"
             f"- coding agent: {'active' if coding_agent_active else 'inactive'}\n"
             f"- tool worker: {'active' if tool_worker_active else 'inactive'}"

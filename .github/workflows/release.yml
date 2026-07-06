@@ -38,7 +38,7 @@ jobs:
           set -euo pipefail
           if uv sync --all-extras --dev; then
             echo "MANA_PYTHON=uv run python" >> "$GITHUB_ENV"
-            uv pip install build pytest
+            uv pip install --python .venv build pytest
           else
             python -m pip install --upgrade pip
             if ! python -m pip install -e ".[dev]"; then
@@ -56,7 +56,7 @@ jobs:
           if grep -q '^\[tool\.ruff' pyproject.toml || [ -f ruff.toml ] || [ -f .ruff.toml ]; then
             echo "HAS_RUFF=1" >> "$GITHUB_ENV"
             if [ "${MANA_PYTHON}" = "uv run python" ]; then
-              uv pip install ruff
+              uv pip install --python .venv ruff
             else
               python -m pip install ruff
             fi
@@ -150,7 +150,7 @@ jobs:
           if uv sync --all-extras --dev; then
             echo "MANA_PYTHON=uv run python" >> "$GITHUB_ENV"
             echo "MANA_PYINSTALLER=uv run pyinstaller" >> "$GITHUB_ENV"
-            uv pip install build pyinstaller pytest
+            uv pip install --python .venv build pyinstaller pytest
           else
             python -m pip install --upgrade pip
             if ! python -m pip install -e ".[dev]"; then
@@ -169,7 +169,7 @@ jobs:
           if grep -q '^\[tool\.ruff' pyproject.toml || [ -f ruff.toml ] || [ -f .ruff.toml ]; then
             echo "HAS_RUFF=1" >> "$GITHUB_ENV"
             if [ "${MANA_PYTHON}" = "uv run python" ]; then
-              uv pip install ruff
+              uv pip install --python .venv ruff
             else
               python -m pip install ruff
             fi

@@ -84,7 +84,7 @@ class DependencyService:
             dev_dependencies=sorted(dev_deps),
             module_edges=sorted(module_edges, key=lambda e: (e.source, e.target, e.kind)),
             dependency_edges=sorted(dependency_edges, key=lambda e: (e.source, e.target, e.kind)),
-            manifests=sorted(str(item.relative_to(project_root)) for item in manifests),
+            manifests=sorted(item.relative_to(project_root).as_posix() for item in manifests),
             languages=self._detect_languages(files),
         )
 

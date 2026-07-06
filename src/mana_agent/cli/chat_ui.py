@@ -5,7 +5,7 @@ import subprocess
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from rich.console import Console
@@ -187,12 +187,16 @@ def default_ui_mode(console: Console, *, as_json: bool = False) -> str:
 
 
 def compact_path(path: str | Path, *, width: int = 72) -> str:
-    text = str(path)
+    text = str(path).replace("\\", "/")
     if len(text) <= width:
         return text
-    parts = Path(text).parts
+    parts = PurePosixPath(text).parts
     if len(parts) >= 4:
-        candidate = str(Path(parts[0], parts[1], "...", parts[-2], parts[-1])) if parts[0] == "/" else str(Path(parts[0], "...", parts[-2], parts[-1]))
+        candidate = (
+            str(PurePosixPath(parts[0], parts[1], "...", parts[-2], parts[-1]))
+            if parts[0] == "/"
+            else str(PurePosixPath(parts[0], "...", parts[-2], parts[-1]))
+        )
         if len(candidate) <= width:
             return candidate
     return text[: max(0, width - 1)] + "…"

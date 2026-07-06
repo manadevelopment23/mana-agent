@@ -7,7 +7,8 @@ All notable repository changes should be recorded here.
 - Added a GitHub Actions release workflow for main-branch `latest-dev` prereleases, version-tag stable releases, Python package artifacts, platform standalone binaries, and SHA256 checksums.
 - Added a PyInstaller launcher that calls the existing Mana-Agent Typer CLI without duplicating command logic.
 - Updated README installation instructions with pipx and latest development binary download examples.
-- Verification: `PYTHONPATH=src .venv/bin/python -m compileall -q src scripts/mana_agent_entry.py` passed; `PYTHONPATH=src .venv/bin/python -m pytest -q` passed with 608 tests and 18 warnings; `.venv/bin/python -m build` passed; `.venv/bin/pyinstaller --onefile --clean --collect-data mana_agent --name mana-agent scripts/mana_agent_entry.py` passed; `dist/mana-agent --help` passed; release workflow YAML parsed with PyYAML; `git diff --check` passed.
+- Hardened Windows CI behavior by normalizing repository-facing paths/newlines and using Windows-safe Python command rewriting during release tests.
+- Verification: `PYTHONPATH=src .venv/bin/python -m compileall -q src scripts/mana_agent_entry.py` passed; the eight Windows-failing tests from the release job passed locally; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_ask_agent.py tests/test_chat_direct_commands.py tests/test_chat_ui_events_tokens.py tests/test_dependency_service.py tests/test_describe_service.py tests/test_multi_agent_core.py tests/test_repository_tools.py -q` passed with 109 tests; `PYTHONPATH=src .venv/bin/python -m pytest -q` passed with 608 tests and 18 warnings; `.venv/bin/python -m build` passed; `.venv/bin/pyinstaller --onefile --clean --collect-data mana_agent --name mana-agent scripts/mana_agent_entry.py` passed; `dist/mana-agent --help` passed; release workflow YAML parsed with PyYAML; `git diff --check` passed.
 
 ## 2026-07-06 (full-screen chat answer history)
 

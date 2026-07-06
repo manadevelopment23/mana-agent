@@ -478,7 +478,7 @@ class MultiAgentMemoryService:
             normalize_file_path(resolved, root=self.root),
             hashlib.sha256(content).hexdigest(),
             resolved.stat().st_mtime,
-            content.decode("utf-8", errors="replace"),
+            content.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n"),
         )
 
     def read_file_with_memory(self, *, file_path: str, task_id: str, agent_id: str) -> tuple[str, FileReadMemoryRecord, bool]:

@@ -215,7 +215,7 @@ class AskAgent:
             parts[0] = str(venv_python)
         else:
             parts[0] = "python3"
-        rewritten = shlex.join(parts)
+        rewritten = subprocess.list2cmdline(parts) if os.name == "nt" else shlex.join(parts)
         return rewritten, rewritten != raw
 
     @staticmethod

@@ -60,7 +60,7 @@ class DescribeService:
         for path in selected:
             language = language_for_path(path)
             source = self._read_source(path)
-            rel_path = str(path.relative_to(project_root))
+            rel_path = path.relative_to(project_root).as_posix()
             mtime_ns = path.stat().st_mtime_ns
             cached = cache.get(rel_path)
             if cached and cached.get("mtime_ns") == mtime_ns:
