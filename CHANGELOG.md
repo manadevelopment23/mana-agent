@@ -2,6 +2,12 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-06 (full-screen chat answer history)
+
+- Added explicit chat conversation history to `ChatUIState` and made the full-screen Chat pane render user/assistant turns before low-level routing events.
+- Wired completed chat turns, including direct commands and exact-search fast paths, into the full-screen conversation history so final answers remain visible in the UI.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_cli_ux_helpers.py::test_fullscreen_conversation_text_prefers_answer_history -q` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_cli_ux_helpers.py tests/test_chat_ui_events_tokens.py -q` passed; `PYTHONPATH=src .venv/bin/python -m py_compile src/mana_agent/cli/chat_ui.py src/mana_agent/cli/fullscreen_chat.py src/mana_agent/commands/chat_cli.py tests/test_cli_ux_helpers.py` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/cli/chat_ui.py src/mana_agent/cli/fullscreen_chat.py tests/test_cli_ux_helpers.py --select F,E9` passed.
+
 ## 2026-07-06 (full-screen chat TUI)
 
 - Added a prompt_toolkit full-screen chat surface with structured chat, step, tool, subagent, token, and boxed input panes plus a startup pet animation for interactive terminals.
