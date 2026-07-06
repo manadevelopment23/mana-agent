@@ -21,3 +21,5 @@ logs/
 .mana/
 .ruff_cache/
 *.py[cod]
+*.pyc
+__pycache__/
