@@ -156,15 +156,22 @@ def default_ui_mode(console: Console, *, as_json: bool = False) -> str:
     if as_json:
         return "json"
     env_mode = str(os.getenv("MANA_CHAT_UI", "") or "").strip().lower()
-    if env_mode in {"rich", "compact", "plain", "json"}:
+    if env_mode in {"fullscreen", "rich", "compact", "plain", "json"}:
         return env_mode
+    if not bool(getattr(console, "is_terminal", False)) or os.getenv("CI"):
+        return "plain"
     width = int(getattr(console, "width", 100) or 100)
     if width < 80:
         return "plain"
     if width < 100:
         return "compact"
-    if not bool(getattr(console, "is_terminal", False)) or os.getenv("CI"):
-        return "plain"
+    try:
+        from mana_agent.cli.fullscreen_chat import fullscreen_available
+
+        if fullscreen_available():
+            return "fullscreen"
+    except Exception:
+        pass
     return "rich"
 
 
@@ -202,6 +209,34 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
         ).finish(status="success")
         state.record_event(ready)
         console.print(state.renderer.render_event(ready))
+        return
+    if state.ui_mode == "fullscreen":
+        try:
+            from mana_agent.cli.fullscreen_chat import show_startup_pet_animation
+
+            show_startup_pet_animation()
+        except Exception:
+            pass
+        state.record_event(
+            make_event(
+                "session.started",
+                title="Mana-Agent session started",
+                status="success",
+                session_id=state.session_id,
+                message=str(state.repo_root),
+                metadata=startup_metadata(state),
+            ).finish(status="success")
+        )
+        state.record_event(
+            make_event(
+                "session.ready",
+                title="Ready",
+                status="success",
+                session_id=state.session_id,
+                message="Ready for chat input.",
+                metadata={"prompt": "mana >"},
+            ).finish(status="success")
+        )
         return
 
     branch = git_branch(state.repo_root)

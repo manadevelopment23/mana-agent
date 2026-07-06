@@ -4,6 +4,7 @@ import warnings
 
 from .cli_internal import *
 from .output import build_output_sink
+from mana_agent.cli.fullscreen_chat import MenuOption, select_option
 from mana_agent.ui.banner import render_banner, render_repository
 
 
@@ -86,21 +87,25 @@ def main(
         if not no_banner:
             render_banner(console)
         render_repository(root, console)
-        console.print("\n[bold cyan]Choose what you want to do:[/bold cyan]\n")
-        console.print("1. Chat with repo (mana-agent chat)")
-        console.print("2. Analyze repo")
-        console.print("3. Create implementation plan")
-        console.print("4. Exit")
         try:
-            choice = input("\nMana Agent ❯ ").strip().lower()
+            choice = select_option(
+                title="Mana Agent",
+                text="Choose what you want to do:",
+                options=[
+                    MenuOption("chat", "Chat with repo (mana-agent chat)", ("1", "c")),
+                    MenuOption("analyze", "Analyze repo", ("2", "a")),
+                    MenuOption("plan", "Create implementation plan", ("3", "p")),
+                    MenuOption("exit", "Exit", ("4", "q", "quit")),
+                ],
+            ).strip().lower()
         except (EOFError, KeyboardInterrupt):
             console.print("\nGoodbye!")
             return
-        if choice in {"1", "chat", "c"}:
+        if choice in {"chat", "1", "c"}:
             _invoke_with_multi_agent_route(ctx, "chat", ["--root-dir", str(root)], root=root, request="root menu chat", entrypoint="root")
-        elif choice in {"2", "analyze", "a"}:
+        elif choice in {"analyze", "2", "a"}:
             _invoke_with_multi_agent_route(ctx, "analyze", ["--repo", str(root)], root=root, request="root menu analyze", entrypoint="root")
-        elif choice in {"3", "plan", "p"}:
+        elif choice in {"plan", "3", "p"}:
             _invoke_with_multi_agent_route(ctx, "plan", ["--repo", str(root)], root=root, request="root menu plan", entrypoint="root")
         else:
             console.print("Goodbye!")

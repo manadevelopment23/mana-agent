@@ -515,6 +515,11 @@ def set_active_chat_ui_state(state: ChatUIState | None) -> None:
     _ACTIVE_CHAT_UI_STATE = state
 
 
+def fullscreen_chat_ui_active() -> bool:
+    state = _ACTIVE_CHAT_UI_STATE
+    return bool(state is not None and state.ui_mode == "fullscreen")
+
+
 def emit_chat_event(event: ChatEvent) -> ChatEvent:
     state = _ACTIVE_CHAT_UI_STATE
     if state is not None:
@@ -978,11 +983,36 @@ def _run_with_live_buffer(
     root_logger.addHandler(log_buf)
     if manage_live:
         set_active_tool_activity(live_activity)
-    use_live_activity = bool(manage_live and _use_live_tool_activity(console))
+    use_live_activity = bool(
+        manage_live
+        and not fullscreen_chat_ui_active()
+        and _use_live_tool_activity(console)
+    )
 
     try:
         if manage_live:
-            if use_live_activity:
+            if fullscreen_chat_ui_active():
+                state = _ACTIVE_CHAT_UI_STATE
+                if state is None:
+                    result = fn(callbacks=callbacks or [])
+                else:
+                    from mana_agent.cli.fullscreen_chat import run_fullscreen_worker
+
+                    old_quiet = bool(getattr(console, "quiet", False))
+
+                    def _worker() -> object:
+                        console.quiet = True
+                        try:
+                            return fn(callbacks=callbacks or [])
+                        finally:
+                            console.quiet = old_quiet
+
+                    result = run_fullscreen_worker(
+                        state,
+                        title=spinner_text,
+                        worker=_worker,
+                    )
+            elif use_live_activity:
                 with Live(live_activity, console=console, refresh_per_second=12, transient=True):
                     result = fn(callbacks=callbacks or [])
             else:
@@ -993,7 +1023,8 @@ def _run_with_live_buffer(
         root_logger.removeHandler(log_buf)
         if manage_live:
             set_active_tool_activity(None)
-            console.print(live_activity)
+            if not fullscreen_chat_ui_active():
+                console.print(live_activity)
 
     return result, ""
 
@@ -1880,6 +1911,17 @@ def _read_chat_input(
     to plain ``input()`` collection (tests, pipes, CI, or when prompt_toolkit is
     unavailable), preserving the legacy ``/paste`` + terminator behavior.
     """
+    state = _ACTIVE_CHAT_UI_STATE
+    if state is not None and state.ui_mode == "fullscreen":
+        try:
+            from mana_agent.cli.fullscreen_chat import read_fullscreen_chat_input
+
+            return read_fullscreen_chat_input(state)
+        except (EOFError, KeyboardInterrupt):
+            raise
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.debug("full-screen chat input unavailable; using prompt fallback", extra={"error": str(exc)})
+
     if multiline_enabled:
         try:
             from mana_agent.commands.chat_input import (
