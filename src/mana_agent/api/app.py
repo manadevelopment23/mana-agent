@@ -10,7 +10,7 @@ from mana_agent.api.routes.analyze import router as analyze_router
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Mana-Agent API",
-        version="0.0.9",
+        version="0.0.10",
         description="HTTP API for Mana-Agent repository intelligence workflows.",
     )
 
