@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from rich.console import Console
 
-from mana_agent.cli.chat_ui import ChatUIState, compact_path, render_startup_header, render_status
+from mana_agent.cli.chat_ui import ChatUIState, compact_path, default_ui_mode, render_startup_header, render_status
 from mana_agent.cli.events import make_event
+from mana_agent.cli.fullscreen_chat import MenuOption, select_option, token_bar
 from mana_agent.cli.renderers import EventRenderer
 from mana_agent.telemetry.tokens import TokenUsageTracker, token_usage_from_provider
 
@@ -124,6 +126,28 @@ def test_event_renderer_modes_render_without_raw_json_noise() -> None:
     assert "Agent decision" in compact_text
     assert "inspect CLI renderer" in plain_text
     assert json.loads(json_text)["type"] == "agent.decision"
+    assert EventRenderer.normalize_mode("fullscreen") == "fullscreen"
+
+
+def test_default_ui_mode_keeps_non_tty_plain(monkeypatch) -> None:
+    monkeypatch.delenv("MANA_CHAT_UI", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    console = Console(record=True, width=140)
+
+    assert default_ui_mode(console) == "plain"
+
+
+def test_env_ui_mode_accepts_fullscreen() -> None:
+    console = Console(record=True, width=100)
+    old = os.environ.get("MANA_CHAT_UI")
+    try:
+        os.environ["MANA_CHAT_UI"] = "fullscreen"
+        assert default_ui_mode(console) == "fullscreen"
+    finally:
+        if old is None:
+            os.environ.pop("MANA_CHAT_UI", None)
+        else:
+            os.environ["MANA_CHAT_UI"] = old
 
 
 def test_tools_and_subagents_render_from_events_only() -> None:
@@ -178,6 +202,41 @@ def test_chat_ui_startup_header_and_token_command_render() -> None:
     assert "~" in rendered
     assert "Chat Mode" not in rendered
     assert "[INFO]" not in rendered
+
+
+def test_fullscreen_token_renderer_includes_progress_bars() -> None:
+    state = ChatUIState(
+        repo_root=Path.cwd(),
+        provider="openai",
+        model="gpt-test",
+        skills_status="indexed",
+        ui_mode="fullscreen",
+    )
+    state.tracker.start_turn("turn-1")
+    state.tracker.record_model_call(
+        "call-1",
+        usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        step_id="05",
+        turn_id="turn-1",
+    )
+    state.tracker.record_tool_result("tool-1", "tool output", step_id="08", turn_id="turn-1")
+
+    rendered = _render_to_text(state.renderer.render_tokens(state.tracker))
+
+    assert "turn bar" in rendered
+    assert "session bar" in rendered
+    assert "step 05" in rendered
+    assert token_bar(3, 6, width=6) == "[###---] 3/6"
+
+
+def test_arrow_menu_helper_fallback_accepts_number_and_alias() -> None:
+    options = [
+        MenuOption("chat", "Chat with repo", ("1", "c")),
+        MenuOption("exit", "Exit", ("2", "q")),
+    ]
+
+    assert select_option(title="Menu", text="Pick", options=options, input_func=lambda _p: "1") == "chat"
+    assert select_option(title="Menu", text="Pick", options=options, input_func=lambda _p: "q") == "exit"
 
 
 def test_startup_header_is_compact_and_uses_clean_prompt() -> None:

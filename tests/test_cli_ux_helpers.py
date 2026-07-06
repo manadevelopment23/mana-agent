@@ -6,16 +6,19 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from mana_agent.commands import cli
+from mana_agent.cli.chat_ui import ChatUIState
 from mana_agent.commands.chat_cli import _should_use_coding_agent_turn
 from mana_agent.commands.ui_helpers import (
     ChatLog,
     ChatLogRenderer,
     LiveToolActivity,
+    _render_direct_command,
     _looks_like_edit_request,
     _looks_like_plan_trigger_request,
     _run_with_live_buffer,
     _use_live_tool_activity,
     emit_tool_event,
+    set_active_chat_ui_state,
     set_active_tool_activity,
 )
 from mana_agent.multi_agent.runtime.coding_agent import CodingAgent
@@ -71,6 +74,30 @@ def test_coding_agent_mode_routes_general_analysis_turns_to_coding_agent() -> No
         has_pending_prechecklist=False,
         coding_agent_is_custom=False,
     )
+
+
+def test_direct_ui_command_accepts_fullscreen_mode() -> None:
+    console = Console(record=True)
+    state = ChatUIState(
+        repo_root=Path.cwd(),
+        provider="openai",
+        model="gpt-test",
+        ui_mode="plain",
+    )
+
+    answer = _render_direct_command(
+        console,
+        "/ui",
+        project_root=Path.cwd(),
+        index_available=False,
+        coding_agent_active=False,
+        tool_worker_active=False,
+        ui_state=state,
+        raw_question="/ui fullscreen",
+    )
+
+    assert answer == "ui mode: fullscreen"
+    assert state.ui_mode == "fullscreen"
 
 
 def test_render_turn_summary_and_transparency_sections() -> None:
@@ -219,6 +246,40 @@ def test_tool_activity_can_use_live_without_fallback_duplicate(monkeypatch) -> N
     rendered = console.export_text()
     assert "Tool activity" not in rendered
     assert rendered.count("─ tools ") == 1
+
+
+def test_fullscreen_mode_suppresses_legacy_tool_activity_box() -> None:
+    console = Console(record=True)
+    state = ChatUIState(
+        repo_root=Path.cwd(),
+        provider="openai",
+        model="gpt-test",
+        ui_mode="fullscreen",
+    )
+    state.tracker.start_turn("turn-1")
+    set_active_chat_ui_state(state)
+
+    def _call(callbacks):
+        _ = callbacks
+        emit_tool_event("start", "read_file", args='{"path":"README.md"}')
+        emit_tool_event("end", "read_file", duration=0.0)
+        return {"ok": True}
+
+    try:
+        result, _debug_tail = _run_with_live_buffer(
+            console,
+            spinner_text="Coding…",
+            fn=_call,
+            callbacks=[],
+        )
+    finally:
+        set_active_chat_ui_state(None)
+
+    assert result == {"ok": True}
+    assert state.tool_runs
+    rendered = console.export_text()
+    assert "─ tools " not in rendered
+    assert "read_file" not in rendered
 
 
 def test_tool_activity_can_share_one_box_across_request_cycles() -> None:

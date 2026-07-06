@@ -31,6 +31,7 @@ from mana_agent.cli.chat_ui import (
     render_status,
 )
 from mana_agent.cli.events import make_event
+from mana_agent.cli.fullscreen_chat import MenuOption, select_option
 from mana_agent.ui.banner import render_mode_header
 
 
@@ -1229,6 +1230,27 @@ def chat(
                 else None
             )
             preview_warning = str(preview_payload.get("prechecklist_warning", "") or "").strip()
+            preview_steps = (
+                preview_checklist.get("steps", [])
+                if isinstance(preview_checklist, dict) and isinstance(preview_checklist.get("steps"), list)
+                else []
+            )
+            chat_ui_state.record_event(
+                make_event(
+                    "agent.planning",
+                    title="Planner preview",
+                    message=f"Prepared {len(preview_steps)} planned step(s).",
+                    status="success" if not preview_warning else "skipped",
+                    session_id=chat_ui_state.session_id,
+                    turn_id=chat_ui_state.tracker.current_turn_id,
+                    step_id="06",
+                    metadata={
+                        "flow_id": active_flow_id or "",
+                        "prechecklist_source": str(preview_payload.get("prechecklist_source", "") or ""),
+                        "warning": preview_warning,
+                    },
+                ).finish(status="success" if not preview_warning else "skipped")
+            )
             if render_progress and preview_checklist is not None:
                 _render_prechecklist_preview(
                     console,
@@ -1305,6 +1327,25 @@ def chat(
                         batch_reason=str(item.get("batch_reason", "") or ""),
                         expected_progress=str(item.get("expected_progress", "") or ""),
                     )
+            for item in payload.get("pass_logs", []) if isinstance(payload.get("pass_logs"), list) else []:
+                if not isinstance(item, dict):
+                    continue
+                pass_index = int(item.get("pass_index", 0) or 0)
+                step_title = str(item.get("planner_step_title", "") or item.get("planner_step_id", "") or "planner pass")
+                decision = str(item.get("planner_decision", "") or "").strip()
+                expected = str(item.get("expected_progress", "") or "").strip()
+                chat_ui_state.record_event(
+                    make_event(
+                        "agent.routing",
+                        title=f"Pass {pass_index}",
+                        message="; ".join(part for part in (step_title, decision, expected) if part),
+                        status="success",
+                        session_id=chat_ui_state.session_id,
+                        turn_id=chat_ui_state.tracker.current_turn_id,
+                        step_id="07",
+                        metadata=dict(item),
+                    ).finish(status="success")
+                )
             return payload, debug_tail
 
         def _build_full_auto_resume_request(
@@ -1980,6 +2021,27 @@ def chat(
                 if pending_ui_selection is None:
                     pass
                 else:
+                    if (
+                        chat_ui_state.ui_mode == "fullscreen"
+                        and not bool(pending_ui_selection.get("allow_free_text", False))
+                        and isinstance(pending_ui_selection.get("options"), list)
+                    ):
+                        selection_id = str(pending_ui_selection.get("id", "selection") or "selection")
+                        menu_options: list[MenuOption] = []
+                        for idx, item in enumerate(pending_ui_selection.get("options") or [], start=1):
+                            if not isinstance(item, dict):
+                                continue
+                            option_id = str(item.get("id", "") or item.get("value", "") or idx)
+                            label = str(item.get("label", "") or item.get("title", "") or option_id)
+                            value = str(item.get("value", option_id) or option_id)
+                            menu_options.append(MenuOption(option_id, label, (str(idx), value)))
+                        selected_option = select_option(
+                            title="Selection",
+                            text=str(pending_ui_selection.get("prompt", "") or pending_ui_selection.get("title", "") or "Choose an option."),
+                            options=menu_options,
+                        )
+                        if selected_option:
+                            question = selected_option
                     selection_kind, selection_payload = _resolve_ui_selection_input(pending_ui_selection, question)
                     selection_id = str(pending_ui_selection.get("id", "selection") or "selection")
 
@@ -2253,6 +2315,26 @@ def chat(
                             "Full-auto flow conflict auto-continued",
                             extra={"flow_id": active_flow_id, "question": question},
                         )
+                    elif chat_ui_state.ui_mode == "fullscreen":
+                        selected_flow_action = select_option(
+                            title="Active flow",
+                            text="This request appears to diverge from the active flow.",
+                            options=[
+                                MenuOption("continue", "Continue current flow", ("1", "c")),
+                                MenuOption("new", "Start new topic", ("2", "n", "new topic", "/new-topic")),
+                            ],
+                        )
+                        if selected_flow_action in {"continue", "1", "c"}:
+                            pass
+                        elif selected_flow_action in {"new", "2", "n", "new topic", "/new-topic"}:
+                            _start_new_topic()
+                        else:
+                            pending_conflict_question = question
+                            console.print(
+                                "[yellow]This request appears to diverge from the active flow.[/yellow] "
+                                "Type [bold]continue[/bold] to keep current flow or [bold]new/new topic[/bold] to start a new flow."
+                            )
+                            continue
                     else:
                         pending_conflict_question = question
                         console.print(
@@ -2544,7 +2626,8 @@ def chat(
                                 continue
                     finally:
                         set_active_tool_activity(None)
-                        console.print(activity)
+                        if not fullscreen_chat_ui_active():
+                            console.print(activity)
 
                 except ToolWorkerProcessError as exc:
                     _log_exception("coding_agent.generate.worker", exc)

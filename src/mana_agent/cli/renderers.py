@@ -6,6 +6,7 @@ from typing import Any
 from rich import box
 from rich.console import Group
 from rich.panel import Panel
+from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
@@ -62,7 +63,7 @@ class EventRenderer:
     @staticmethod
     def normalize_mode(mode: str) -> str:
         value = str(mode or "rich").strip().lower()
-        return value if value in {"rich", "compact", "plain", "json"} else "rich"
+        return value if value in {"fullscreen", "rich", "compact", "plain", "json"} else "rich"
 
     @staticmethod
     def normalize_trace_mode(mode: str) -> str:
@@ -134,11 +135,19 @@ class EventRenderer:
         current = tracker.by_turn.get(tracker.current_turn_id, TokenUsage())
         table.add_row("turn", self.format_usage(current))
         table.add_row("session", self.format_usage(tracker.session_total))
-        cache = tracker.session_total.cached_input_tokens + tracker.session_total.cache_creation_tokens
         table.add_row("cache", f"read {tracker.session_total.cached_input_tokens} · write {tracker.session_total.cache_creation_tokens}")
         table.add_row("subagents", str(sum(item.total_tokens for item in tracker.by_subagent.values())))
         table.add_row("tools injected", str(sum(item.tool_result_tokens for item in tracker.by_tool_result.values())))
         table.add_row("accounting", "estimated values are prefixed with ~; exact values require provider usage")
+        if self.mode == "fullscreen":
+            max_total = max(1, tracker.session_total.total_tokens)
+            table.add_row("turn bar", ProgressBar(total=max_total, completed=min(max_total, current.total_tokens), width=24))
+            table.add_row("session bar", ProgressBar(total=max_total, completed=tracker.session_total.total_tokens, width=24))
+            for step_id, usage in list(tracker.by_step.items())[-5:]:
+                table.add_row(
+                    f"step {step_id}",
+                    ProgressBar(total=max_total, completed=min(max_total, usage.total_tokens), width=24),
+                )
         return Panel(table, title="Token usage", border_style="magenta", box=box.ROUNDED)
 
     def render_tool_activity(self, events: list[ChatEvent]) -> Any:

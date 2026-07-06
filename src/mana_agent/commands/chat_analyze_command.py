@@ -27,6 +27,7 @@ from mana_agent.services.structure_service import StructureService
 from mana_agent.services.vulnerability_service import VulnerabilityService
 from mana_agent.analysis.checks import PythonStaticAnalyzer
 from mana_agent.utils.io import iter_python_files
+from mana_agent.cli.fullscreen_chat import MenuOption, select_option
 
 from .analyze_formats import (
     ANALYZE_ARTIFACTS,
@@ -411,7 +412,21 @@ def prompt_analyze_format_menu(
     Returns an empty list when the user cancels (blank input). Raises
     ``ValueError`` for invalid menu input (the caller renders the error).
     """
-    raw = input_func(ANALYZE_MENU_TEXT)
+    selected = select_option(
+        title="Analyze output",
+        text="Select output format:",
+        options=[
+            MenuOption("1", "JSON", ("json",)),
+            MenuOption("2", "Markdown", ("markdown", "md")),
+            MenuOption("3", "HTML", ("html",)),
+            MenuOption("4", "DOT graph", ("dot",)),
+            MenuOption("5", "GraphML", ("graphml",)),
+            MenuOption("6", "Mermaid diagram", ("mermaid",)),
+            MenuOption("7", "All formats", ("all",)),
+        ],
+        input_func=input_func,
+    )
+    raw = selected or ""
     return parse_menu_choice(raw)
 
 
