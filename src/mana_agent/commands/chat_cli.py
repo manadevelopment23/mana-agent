@@ -682,7 +682,7 @@ def chat(
             )
         if hasattr(ask_service.ask_agent, "update_model"):
             ask_service.ask_agent.update_model(coding_model_assignment.resolved_model)
-        elif getattr(ask_service, "ask_agent", None) is not None:
+        elif hasattr(ask_service.ask_agent, "model"):
             ask_service.ask_agent.model = coding_model_assignment.resolved_model
         if tool_worker_process:
             tool_worker_client_cls = _public_symbol("ToolWorkerClient", ToolWorkerClient)

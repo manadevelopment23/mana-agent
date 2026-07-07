@@ -2,6 +2,11 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-07 (chat model routing smoke fix)
+
+- Guarded chat coding-model propagation so lightweight `AskService.ask_agent` stubs without a mutable `model` attribute no longer crash chat startup while real `AskAgent` instances still use `update_model`.
+- Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_cli_smoke.py -q` passed with 64 tests.
+
 ## 2026-07-06 (chat subagent visibility and model routing)
 
 - Made chat tool activity render subagent-owned tool events with stable event rows, nested subagent/tool labels, compact one-line subagent activity, model level/model labels, and an optional agents-used execution summary.
