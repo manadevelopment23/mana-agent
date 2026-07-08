@@ -48,6 +48,7 @@ from mana_agent.tools.repository import (
     verify_project as repo_verify_project,
 )
 from mana_agent.skills.manager import SkillManager
+from mana_agent.multi_agent.tools import git_tools
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,49 @@ class _CallGraphInput(BaseModel):
 
 class _GitDiffInput(BaseModel):
     path: str = ""
+
+class _GitGenericInput(BaseModel):
+    args: list[str]
+    repo_path: str | None = None
+    timeout: int | None = None
+    allow_protected: bool = False
+
+class _GitHelpInput(BaseModel):
+    command: str | None = None
+    all: bool = False
+    refresh: bool = False
+    repo_path: str | None = None
+    timeout: int | None = None
+
+class _GitBranchInput(BaseModel):
+    all: bool = False
+
+class _GitCreateBranchInput(BaseModel):
+    branch_name: str
+    switch_to: bool = True
+
+class _GitSwitchInput(BaseModel):
+    branch_name: str
+
+class _GitAddInput(BaseModel):
+    paths: list[str]
+
+class _GitCommitInput(BaseModel):
+    message: str
+    amend: bool = False
+
+class _GitPushInput(BaseModel):
+    remote: str = ""
+    branch_name: str = ""
+    set_upstream: bool = False
+    force: bool = False
+
+class _GitRemoteInput(BaseModel):
+    verbose: bool = True
+
+class _GitLogInput(BaseModel):
+    limit: int = 10
+    oneline: bool = True
 
 class _VerifyProjectInput(BaseModel):
     quick: bool = False
@@ -1288,6 +1332,36 @@ class AskAgent:
         def git_diff(path: str = "") -> str:
             return dumps_tool_result(repo_git_diff(self.project_root, path=path))
 
+        def git_help(command: str | None = None, all: bool = False, refresh: bool = False, repo_path: str | None = None, timeout: int | None = None) -> str:
+            return dumps_tool_result(git_tools.git_help(command=command, all=all, refresh=refresh, repo_path=repo_path or self.project_root, timeout=timeout))
+
+        def git_generic(args: list[str], repo_path: str | None = None, timeout: int | None = None, allow_protected: bool = False) -> str:
+            return dumps_tool_result(git_tools.generic(args=args, repo_path=repo_path or self.project_root, timeout=timeout, allow_protected=allow_protected))
+
+        def git_log(limit: int = 10, oneline: bool = True) -> str:
+            return dumps_tool_result(git_tools.log(repo_path=self.project_root, limit=limit, oneline=oneline))
+
+        def git_branch(all: bool = False) -> str:
+            return dumps_tool_result(git_tools.branch(repo_path=self.project_root, all=all))
+
+        def git_create_branch(branch_name: str, switch_to: bool = True) -> str:
+            return dumps_tool_result(git_tools.create_branch(repo_path=self.project_root, branch_name=branch_name, switch_to=switch_to))
+
+        def git_switch(branch_name: str) -> str:
+            return dumps_tool_result(git_tools.switch(repo_path=self.project_root, branch_name=branch_name))
+
+        def git_add(paths: list[str]) -> str:
+            return dumps_tool_result(git_tools.add(repo_path=self.project_root, paths=paths))
+
+        def git_commit(message: str, amend: bool = False) -> str:
+            return dumps_tool_result(git_tools.commit(repo_path=self.project_root, message=message, amend=amend))
+
+        def git_push(remote: str = "", branch_name: str = "", set_upstream: bool = False, force: bool = False) -> str:
+            return dumps_tool_result(git_tools.push(repo_path=self.project_root, remote=remote, branch_name=branch_name, set_upstream=set_upstream, force=force))
+
+        def git_remote(verbose: bool = True) -> str:
+            return dumps_tool_result(git_tools.remote(repo_path=self.project_root, verbose=verbose))
+
         def verify_project(quick: bool = False) -> str:
             return dumps_tool_result(repo_verify_project(self.project_root, quick=quick))
 
@@ -1400,6 +1474,66 @@ class AskAgent:
                 name="git_diff",
                 description="Return git diff, optionally for one project-relative path. Read-only.",
                 args_schema=_GitDiffInput,
+            ),
+            StructuredTool.from_function(
+                func=git_help,
+                name="git_help",
+                description="Return Git help or dynamically discovered commands from git help -a. Use before git_generic for uncommon commands.",
+                args_schema=_GitHelpInput,
+            ),
+            StructuredTool.from_function(
+                func=git_generic,
+                name="git_generic",
+                description="Run a model-selected Git argv list through the shared safe executor. Omit the leading git executable.",
+                args_schema=_GitGenericInput,
+            ),
+            StructuredTool.from_function(
+                func=git_log,
+                name="git_log",
+                description="Inspect recent commit history. Read-only.",
+                args_schema=_GitLogInput,
+            ),
+            StructuredTool.from_function(
+                func=git_branch,
+                name="git_branch",
+                description="List branches. Read-only.",
+                args_schema=_GitBranchInput,
+            ),
+            StructuredTool.from_function(
+                func=git_create_branch,
+                name="git_create_branch",
+                description="Create a safely named branch after the model has inspected repository state.",
+                args_schema=_GitCreateBranchInput,
+            ),
+            StructuredTool.from_function(
+                func=git_switch,
+                name="git_switch",
+                description="Switch to an existing safely named branch.",
+                args_schema=_GitSwitchInput,
+            ),
+            StructuredTool.from_function(
+                func=git_add,
+                name="git_add",
+                description="Stage specific relevant paths only. Do not use for blanket staging unless the model verified all changes are relevant.",
+                args_schema=_GitAddInput,
+            ),
+            StructuredTool.from_function(
+                func=git_commit,
+                name="git_commit",
+                description="Create or amend a commit with a message generated from staged diff, request, files changed, and verification.",
+                args_schema=_GitCommitInput,
+            ),
+            StructuredTool.from_function(
+                func=git_push,
+                name="git_push",
+                description="Push after inspecting status, branch, remotes, and upstream. Force push is protected and blocked by default.",
+                args_schema=_GitPushInput,
+            ),
+            StructuredTool.from_function(
+                func=git_remote,
+                name="git_remote",
+                description="Inspect configured remotes. Read-only.",
+                args_schema=_GitRemoteInput,
             ),
             StructuredTool.from_function(
                 func=verify_project,

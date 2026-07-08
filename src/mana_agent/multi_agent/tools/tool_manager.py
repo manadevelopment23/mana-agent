@@ -9,6 +9,7 @@ from typing import Any
 from mana_agent.multi_agent.core.ids import new_message_id
 from mana_agent.multi_agent.core.types import QueueJob, QueueJobType, ToolResult
 from mana_agent.services.memory_service import MultiAgentMemoryService
+from mana_agent.multi_agent.tools import git_tools
 from mana_agent.multi_agent.tools.permissions import assert_shell_allowed
 from mana_agent.tools import repo_batch_read, repo_search, safe_apply_patch
 
@@ -42,9 +43,46 @@ class ToolsManager:
                     return ToolResult(new_message_id(), job.task_id, True, result)
 
             if job.job_type == QueueJobType.GIT_STATUS:
-                return self._cache_result(job, self._shell(job, "git status --short"), cache_key)
+                result = git_tools.status(repo_path=self.root)
+                return self._cache_result(
+                    job,
+                    ToolResult(
+                        new_message_id(),
+                        job.task_id,
+                        bool(result.get("ok")),
+                        result,
+                        None if result.get("ok") else str(result.get("stderr") or result.get("error") or "git status failed"),
+                    ),
+                    cache_key,
+                )
             if job.job_type == QueueJobType.GIT_DIFF:
-                return self._cache_result(job, self._shell(job, "git diff"), cache_key)
+                result = git_tools.diff(
+                    repo_path=self.root,
+                    path=str(job.payload.get("path") or ""),
+                    staged=bool(job.payload.get("staged", False)),
+                )
+                return self._cache_result(
+                    job,
+                    ToolResult(
+                        new_message_id(),
+                        job.task_id,
+                        bool(result.get("ok")),
+                        result,
+                        None if result.get("ok") else str(result.get("stderr") or result.get("error") or "git diff failed"),
+                    ),
+                    cache_key,
+                )
+            if job.job_type == QueueJobType.GIT:
+                tool_name = str(job.payload.get("tool") or job.payload.get("tool_name") or "git.generic")
+                tool_args = job.payload.get("args") if isinstance(job.payload.get("args"), dict) else dict(job.payload)
+                result = git_tools.execute_tool(tool_name, tool_args, repo_path=self.root)
+                return ToolResult(
+                    new_message_id(),
+                    job.task_id,
+                    bool(result.get("ok")),
+                    result,
+                    None if result.get("ok") else str(result.get("stderr") or result.get("error") or "git tool failed"),
+                )
             if job.job_type in {QueueJobType.SHELL, QueueJobType.RUN_TESTS, QueueJobType.RUN_LINT}:
                 return self._shell(job, str(job.payload.get("command", "")))
             if job.job_type == QueueJobType.REPO_READ:
@@ -144,6 +182,7 @@ class ToolsManager:
 
     def _cache_key(self, job: QueueJob) -> str:
         if job.job_type not in {
+            QueueJobType.GIT,
             QueueJobType.GIT_STATUS,
             QueueJobType.GIT_DIFF,
             QueueJobType.REPO_READ,

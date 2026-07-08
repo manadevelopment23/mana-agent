@@ -57,6 +57,7 @@ from mana_agent.multi_agent.runtime.tools_executor import LocalToolsExecutor, Re
 from mana_agent.multi_agent.runtime.agent_work_queue import QueueManager
 from mana_agent.multi_agent.runtime.run_logger import LlmRunLogger  # noqa: F401 - consumed by chat_cli through wildcard command wiring
 from mana_agent.utils.project_search import project_search  # noqa: F401 - consumed by chat_cli through wildcard command wiring
+from mana_agent.multi_agent.tools import git_tools
 from mana_agent.skills import SkillManager
 from mana_agent.ui.banner import render_mode_header
 from mana_agent.multi_agent import MainAgent
@@ -553,6 +554,30 @@ def api_command(
     import uvicorn
 
     uvicorn.run("mana_agent.api.app:app", host=host, port=port, reload=reload)
+
+
+@app.command(
+    "git",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def git_command(
+    ctx: typer.Context,
+    repo: str | None = typer.Option(None, "--repo", "--root-dir", help="Repository root."),
+    timeout: int = typer.Option(120, "--timeout", help="Git command timeout in seconds."),
+    allow_protected: bool = typer.Option(False, "--allow-protected", help="Allow explicitly requested protected Git commands."),
+) -> None:
+    """Run a Git argv passthrough through Mana-Agent's shared Git safety policy."""
+    root = _resolve_repo(repo)
+    args = list(ctx.args)
+    if args and args[0] == "--":
+        args = args[1:]
+    if not args:
+        args = ["help"]
+    _record_multi_agent_request(root, "git passthrough", entrypoint="git", command_scope=True)
+    result = git_tools.generic(args=args, repo_path=root, timeout=timeout, allow_protected=allow_protected)
+    console.print(json.dumps(result, ensure_ascii=False, indent=2))
+    if not result.get("ok"):
+        raise typer.Exit(code=1)
 
 
 @skills_app.command("init")
@@ -1089,7 +1114,6 @@ def build_ask_service(
     ).resolved_model
     root = project_root.resolve() if project_root else Path.cwd().resolve()
     qna_chain_cls = _public_symbol("QnAChain", QnAChain)
-    chat_openai_cls = _public_symbol("ChatOpenAI", ChatOpenAI)
     ask_agent_cls = _public_symbol("AskAgent", AskAgent)
     ask_service_cls = _public_symbol("AskService", AskService)
 
@@ -1098,14 +1122,6 @@ def build_ask_service(
         model=model,
         base_url=settings.openai_base_url,
     )
-
-    llm = chat_openai_cls(
-        api_key=settings.openai_api_key,
-        model=model,
-        base_url=settings.openai_base_url,
-        temperature=0,
-    )
-
     ask_agent = ask_agent_cls(
         api_key=settings.openai_api_key,
         model=model,
@@ -1113,8 +1129,6 @@ def build_ask_service(
         base_url=settings.openai_base_url,
         project_root=root,
     )
-    tools = getattr(ask_agent, "tools", None)
-
 
     return ask_service_cls(
         store=build_store(settings),

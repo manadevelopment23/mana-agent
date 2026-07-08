@@ -45,6 +45,11 @@ READ_TOOLS = [
     "call_graph",
     "git_status",
     "git_diff",
+    "git_help",
+    "git_generic",
+    "git_log",
+    "git_branch",
+    "git_remote",
     "tool_contracts",
     "read_skill",
 ]
@@ -53,6 +58,11 @@ EDIT_TOOLS = [
     *READ_TOOLS,
     "run_command",
     "verify_project",
+    "git_create_branch",
+    "git_switch",
+    "git_add",
+    "git_commit",
+    "git_push",
     "edit_file",
     "multi_edit_file",
     "apply_patch",
@@ -62,8 +72,8 @@ EDIT_TOOLS = [
     "delete_file",
 ]
 
-VERIFY_TOOLS = ["run_command", "run_script_once", "verify_project", "git_status", "git_diff", "read_file", "repo_batch_read", "ls", "list_files"]
-REVIEW_TOOLS = ["git_status", "git_diff", "read_file", "repo_batch_read", "ls", "list_files", "repo_search", "repo_batch_search"]
+VERIFY_TOOLS = ["run_command", "run_script_once", "verify_project", "git_status", "git_diff", "git_log", "read_file", "repo_batch_read", "ls", "list_files"]
+REVIEW_TOOLS = ["git_status", "git_diff", "git_log", "git_branch", "git_remote", "read_file", "repo_batch_read", "ls", "list_files", "repo_search", "repo_batch_search"]
 
 
 _EDIT_RE = re.compile(

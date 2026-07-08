@@ -76,6 +76,34 @@ It supports:
 * Mermaid diagram rendering
 * Multi-step coding-agent loops
 * Verification after changes when supported
+* Model-selected Git tools for status, diff, branch, commit, push, pull/fetch, remotes, and advanced Git operations
+
+---
+
+### Model-driven Git tools
+
+Mana-Agent exposes Git through a shared safety-checked tool namespace instead of chat keyword shortcuts. The model must reason from the user request, repository state, current branch, diff, remotes, and safety policy before selecting a Git tool.
+
+Core Git capabilities include `git.status`, `git.diff`, `git.log`, `git.show`, `git.branch`, `git.switch`, `git.create_branch`, `git.add`, `git.commit`, `git.push`, `git.pull`, `git.fetch`, `git.remote`, `git.rebase`, `git.merge`, `git.reset`, `git.clean`, `git.generic`, and `git.help`. `git.help(all=true)` discovers commands from the local `git help -a`; Mana-Agent does not maintain a permanent hardcoded list of every Git command.
+
+Safety policy:
+
+* Git commands run through `subprocess.run(["git", *args], shell=False)` in the resolved repository root.
+* Output is structured and redacted before being returned.
+* Commits require status/diff/staged-diff inspection, relevant-file staging, and a message generated from the actual staged change.
+* Pushes require status, current branch, remote, and upstream inspection. Force push is never the default.
+* Destructive or history-rewrite commands such as `reset --hard`, `clean -fd`, branch deletion, force push, and filter-branch are blocked unless explicit user intent is validated.
+
+Direct passthrough is available for explicit CLI use while preserving the same executor and safety policy:
+
+```bash
+mana-agent git -- status
+mana-agent git -- help -a
+mana-agent git -- branch
+mana-agent git -- push -u origin feature/example
+```
+
+Protected commands require `--allow-protected` and should only be used when the risk is intentional.
 
 ---
 

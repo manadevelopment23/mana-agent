@@ -28,6 +28,78 @@ def _schema(properties: dict[str, Any], required: list[str] | None = None) -> di
     }
 
 
+def _git_tool_contracts(common_error: dict[str, Any]) -> list[ToolContract]:
+    base_output = _schema(
+        {
+            "ok": {"type": "boolean"},
+            "command": {"type": "array"},
+            "repo_root": {"type": "string"},
+            "risk_level": {
+                "enum": [
+                    "READ_ONLY",
+                    "LOCAL_SAFE_WRITE",
+                    "LOCAL_HISTORY_WRITE",
+                    "REMOTE_WRITE",
+                    "DESTRUCTIVE",
+                    "HISTORY_REWRITE",
+                ]
+            },
+            "returncode": {"type": ["integer", "null"]},
+            "stdout": {"type": "string"},
+            "stderr": {"type": "string"},
+            "duration_ms": {"type": "number"},
+            "blocked": {"type": "boolean"},
+            "state": {"type": "object"},
+        }
+    )
+    safety = [
+        "Use only after a model decision selects a Git action.",
+        "All commands run as argv lists through subprocess.run with shell=False.",
+        "Protected destructive/history-rewrite commands are blocked unless explicit user intent is validated.",
+        "Inspect status/diff/staged diff before committing; stage only relevant files.",
+        "Inspect status/current branch/remotes/upstream before pushing; never force-push by default.",
+    ]
+    specs: list[tuple[str, str, dict[str, Any], list[str] | None]] = [
+        ("git.status", "Inspect repository status.", {"repo_path": {"type": "string"}, "short": {"type": "boolean"}, "porcelain": {"type": "boolean"}}, None),
+        ("git.diff", "Inspect unstaged or staged diff.", {"repo_path": {"type": "string"}, "path": {"type": "string"}, "staged": {"type": "boolean"}}, None),
+        ("git.log", "Inspect commit history.", {"repo_path": {"type": "string"}, "limit": {"type": "integer"}, "oneline": {"type": "boolean"}}, None),
+        ("git.show", "Inspect a revision.", {"repo_path": {"type": "string"}, "revision": {"type": "string"}, "stat": {"type": "boolean"}}, None),
+        ("git.branch", "List local or all branches.", {"repo_path": {"type": "string"}, "all": {"type": "boolean"}}, None),
+        ("git.switch", "Switch to an existing branch.", {"repo_path": {"type": "string"}, "branch_name": {"type": "string"}}, ["branch_name"]),
+        ("git.checkout", "Checkout a target or create a branch with checkout -b.", {"repo_path": {"type": "string"}, "target": {"type": "string"}, "new_branch": {"type": "boolean"}}, ["target"]),
+        ("git.create_branch", "Create a branch, optionally switching to it.", {"repo_path": {"type": "string"}, "branch_name": {"type": "string"}, "switch_to": {"type": "boolean"}}, ["branch_name"]),
+        ("git.add", "Stage specific repository paths.", {"repo_path": {"type": "string"}, "paths": {"type": "array"}}, ["paths"]),
+        ("git.restore", "Restore specific paths or unstage with --staged.", {"repo_path": {"type": "string"}, "paths": {"type": "array"}, "staged": {"type": "boolean"}}, ["paths"]),
+        ("git.stash", "Create a safety stash.", {"repo_path": {"type": "string"}, "message": {"type": "string"}, "include_untracked": {"type": "boolean"}}, None),
+        ("git.commit", "Create or amend a local commit with a model-generated message.", {"repo_path": {"type": "string"}, "message": {"type": "string"}, "amend": {"type": "boolean"}}, ["message"]),
+        ("git.push", "Push current or selected branch; protected force modes are blocked by default.", {"repo_path": {"type": "string"}, "remote": {"type": "string"}, "branch_name": {"type": "string"}, "set_upstream": {"type": "boolean"}, "force": {"type": "boolean"}}, None),
+        ("git.pull", "Pull from upstream, optionally with --rebase.", {"repo_path": {"type": "string"}, "rebase": {"type": "boolean"}}, None),
+        ("git.fetch", "Fetch from a remote.", {"repo_path": {"type": "string"}, "remote": {"type": "string"}, "prune": {"type": "boolean"}}, None),
+        ("git.remote", "Inspect remotes.", {"repo_path": {"type": "string"}, "verbose": {"type": "boolean"}}, None),
+        ("git.tag", "List or create tags.", {"repo_path": {"type": "string"}, "name": {"type": "string"}, "message": {"type": "string"}}, None),
+        ("git.merge", "Merge a selected target.", {"repo_path": {"type": "string"}, "target": {"type": "string"}, "no_ff": {"type": "boolean"}}, ["target"]),
+        ("git.rebase", "Rebase, continue, or abort according to current Git state.", {"repo_path": {"type": "string"}, "target": {"type": "string"}, "continue_": {"type": "boolean"}, "abort": {"type": "boolean"}}, None),
+        ("git.revert", "Revert a selected revision.", {"repo_path": {"type": "string"}, "revision": {"type": "string"}, "no_commit": {"type": "boolean"}}, ["revision"]),
+        ("git.reset", "Reset HEAD; --hard is protected and blocked by default.", {"repo_path": {"type": "string"}, "mode": {"type": "string"}, "target": {"type": "string"}, "allow_protected": {"type": "boolean"}}, None),
+        ("git.clean", "Clean untracked files; force directory clean is protected and blocked by default.", {"repo_path": {"type": "string"}, "force": {"type": "boolean"}, "directories": {"type": "boolean"}, "allow_protected": {"type": "boolean"}}, None),
+        ("git.config", "Inspect or set Git config.", {"repo_path": {"type": "string"}, "key": {"type": "string"}, "value": {"type": "string"}, "get": {"type": "boolean"}}, None),
+        ("git.generic", "Run a dynamically discovered Git command as an argv list.", {"repo_path": {"type": "string"}, "args": {"type": "array"}, "timeout": {"type": "integer"}, "allow_protected": {"type": "boolean"}}, ["args"]),
+        ("git.help", "Return common help, command help, or dynamically discovered git help -a commands.", {"repo_path": {"type": "string"}, "command": {"type": "string"}, "all": {"type": "boolean"}, "refresh": {"type": "boolean"}, "timeout": {"type": "integer"}}, None),
+    ]
+    return [
+        ToolContract(
+            name=name,
+            description=description,
+            input_schema=_schema(properties, required),
+            output_schema=base_output,
+            error_format=common_error,
+            safety_rules=safety,
+            examples=[{"input": {key: value for key, value in ({"args": ["status"]} if name == "git.generic" else {}).items()}}],
+        )
+        for name, description, properties, required in specs
+    ]
+
+
 def coding_tool_contracts() -> list[ToolContract]:
     """Return contracts for the built-in coding-agent tool surface."""
 
@@ -110,6 +182,7 @@ def coding_tool_contracts() -> list[ToolContract]:
             ],
             examples=[{"input": {"skill_name": "django"}}],
         ),
+        *_git_tool_contracts(common_error),
         ToolContract(
             name="repo_batch_read",
             description="Read multiple repository text files in one call with per-file errors and truncation metadata.",
