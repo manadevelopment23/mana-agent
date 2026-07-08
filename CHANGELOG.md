@@ -2,6 +2,13 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-08 (work queue decision seeds)
+
+- Fixed work queue initial seeding so automatic `WorkItem`s are selected from the classifier/planner decision before queue submission instead of blindly starting with `repo_search`.
+- Changed Git and command-style requests to begin with Git context or tool-manager decision work, while exact file requests read their target files directly and broad code requests can still use repository discovery.
+- Preserved explicit `seeds=` handling so caller-provided queue seeds bypass automatic seed decisions unchanged.
+  - Verification: Pending.
+
 ## 2026-07-08 (GitOps entry routing)
 
 - Added an explicit `gitops` ask/chat entry route so model-selected Git add, commit, push, branch, and related requests bypass repository search and execute through the Git-capable agent tool path.

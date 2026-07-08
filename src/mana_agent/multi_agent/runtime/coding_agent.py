@@ -602,6 +602,8 @@ class CodingAgent:
             index_dir=index_dir,
             flow_id=flow_id,
         )
+        # TODO: reuse the checklist produced by _seed_items_for_request without
+        # changing the helper's WorkItem-only contract.
         planned_checklist, _plan_warnings = self._plan_checklist(request, flow_context=flow_id)
         sniffer = CodingAgentSniffer(
             repo_root=self.repo_root,
@@ -646,7 +648,7 @@ class CodingAgent:
     @staticmethod
     def _checklist_requests_git_context(checklist: "FlowChecklist | None") -> bool:
         tools = CodingAgent._checklist_required_tools(checklist)
-        return bool(tool.startswith("git_") for tool in tools)
+        return any(tool.startswith("git_") for tool in tools)
 
     @staticmethod
     def _explicit_git_operation_requested(request: str) -> bool:
