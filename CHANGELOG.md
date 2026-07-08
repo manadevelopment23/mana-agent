@@ -2,6 +2,19 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-08 (TUI model-level persistence fix)
+
+- Fixed TUI model selection persistence so selected main, coding planner, and tool-worker models are saved into `MODEL_LEVEL_3_HIGH_REASONING`, `MODEL_LEVEL_2_CODING`, and `MODEL_LEVEL_1_FAST_TOOL` as actual model IDs instead of only saving role-to-level mappings.
+- Changed `~/.mana/config.toml` writes to use a stable grouped order for provider/model settings, role mappings, and search settings instead of alphabetical output.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m compileall -q src tests/test_tui_user_config.py` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_tui_user_config.py tests/test_multi_agent_core.py::test_role_specific_model_env_overrides_level_env tests/test_search_config.py -q` passed with 16 tests; `PYTHONPATH=src .venv/bin/python -m pytest -q` passed with 693 tests and 18 warnings.
+
+## 2026-07-08 (TUI first-run setup)
+
+- Added a dedicated TUI module with banner reuse, arrow-selectable menus, text/secret prompts, status panels, first-run setup, settings submenu, OpenAI-compatible model fetching/cache, model selection, model role level assignment, and search provider setup.
+- Added a `~/.mana` user config loader with separate config/secrets TOML files, secret masking, validation, model-cache helpers, and runtime integration for `Settings`, search config, and model role resolution while preserving environment and `.env` overrides.
+- Updated the root CLI menu to include Settings, added `--no-interactive` safety for CI/non-TTY use, documented the new setup flow, and extended web search provider support for Exa and Google CSE.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m compileall -q src tests/test_tui_user_config.py` passed; `PYTHONPATH=src .venv/bin/python -m pytest -q` passed with 690 tests and 18 warnings; `PYTHONPATH=src .venv/bin/mana-agent --help`, `PYTHONPATH=src .venv/bin/mana-agent chat --help`, `PYTHONPATH=src .venv/bin/mana-agent analyze --help`, and `PYTHONPATH=src .venv/bin/mana-agent plan --help` passed; `PYTHONPATH=src .venv/bin/mana-agent --no-interactive` printed the banner first and exited with the expected missing-config error in non-interactive mode.
+
 ## 2026-07-08 (work queue decision seeds)
 
 - Fixed work queue initial seeding so automatic `WorkItem`s are selected from the classifier/planner decision before queue submission instead of blindly starting with `repo_search`.
