@@ -32,6 +32,7 @@ from mana_agent.tools import (
     build_write_file_tool,
 )
 from mana_agent.tools.apply_patch import extract_patch_touched_files
+from mana_agent.multi_agent.tools import git_tools
 from mana_agent.vector_store.faiss_store import FaissStore
 from mana_agent.utils.redaction import redact_json_line, redact_secrets
 from mana_agent.utils.tool_policy import expand_tool_aliases
@@ -284,6 +285,36 @@ def _tool_arg_error(tool_name: str, args: dict[str, Any]) -> str:
             return str(touched.get("error") or "apply_patch requires a valid patch")
         if not touched.get("touched_files"):
             return "apply_patch requires at least one touched file"
+        return ""
+    if name.startswith("git.") or name.startswith("git_"):
+        canonical = name.replace("_", ".")
+        if canonical == "git.generic":
+            raw_args = args.get("args")
+            if not isinstance(raw_args, list) or not raw_args:
+                return "git.generic requires non-empty list `args`"
+            if raw_args[0] == "git":
+                return "git.generic args must omit the leading git executable"
+        if canonical == "git.add" and not isinstance(args.get("paths"), list):
+            return "git.add requires list `paths`"
+        if canonical == "git.commit" and not str(args.get("message") or "").strip():
+            return "git.commit requires `message`"
+        if canonical in {"git.switch", "git.create.branch", "git.create_branch"} and not str(args.get("branch_name") or "").strip():
+            return f"{name} requires `branch_name`"
+        if canonical == "git.checkout" and not str(args.get("target") or "").strip():
+            return "git.checkout requires `target`"
+        if canonical in {"git.merge"} and not str(args.get("target") or "").strip():
+            return f"{name} requires `target`"
+        if canonical == "git.revert" and not str(args.get("revision") or "").strip():
+            return "git.revert requires `revision`"
+        try:
+            if canonical == "git.generic":
+                risk = git_tools.classify_git_risk([str(item) for item in args["args"]]).value
+            else:
+                risk = "schema_validated"
+        except Exception as exc:
+            return str(exc)
+        if risk in {"DESTRUCTIVE", "HISTORY_REWRITE"} and not bool(args.get("allow_protected")):
+            return f"{name} is protected and requires explicit allow_protected"
         return ""
     return ""
 

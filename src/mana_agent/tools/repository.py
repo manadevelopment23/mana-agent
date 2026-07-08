@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from mana_agent.tools.apply_patch import safe_apply_patch
+from mana_agent.multi_agent.tools import git_tools
 
 _SKIP_DIRS = {
     ".git",
@@ -427,12 +428,10 @@ def call_graph(repo_root: Path, *, query: str = "", limit: int = 100) -> dict[st
 
 
 def git_status(repo_root: Path) -> dict[str, Any]:
-    completed = subprocess.run(["git", "status", "--short"], cwd=repo_root, capture_output=True, text=True, check=False)
-    return {"ok": completed.returncode == 0, "returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
+    return git_tools.status(repo_path=repo_root, short=True)
 
 
 def git_diff(repo_root: Path, *, path: str = "") -> dict[str, Any]:
-    cmd = ["git", "diff", "--"]
     if path:
         target, rel = _safe_rel(repo_root.resolve(), path)
         if target is None or rel is None:
@@ -444,9 +443,8 @@ def git_diff(repo_root: Path, *, path: str = "") -> dict[str, Any]:
                 "error": "invalid path",
                 "message": "Path resolves outside the repository root.",
             }
-        cmd.append(rel)
-    completed = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True, check=False)
-    return {"ok": completed.returncode == 0, "returncode": completed.returncode, "stdout": completed.stdout, "stderr": completed.stderr}
+        path = rel
+    return git_tools.diff(repo_path=repo_root, path=path)
 
 
 def _run_check(repo_root: Path, name: str, command: list[str], timeout: int = 120) -> VerificationCheck:

@@ -2,6 +2,14 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-08 (model-driven Git tools)
+
+- Added a shared Git tool namespace with dynamic `git help -a` command discovery, structured `git.generic` execution through `subprocess.run(["git", *args], shell=False)`, redacted output, risk classification, protected-command blocking, session Git state memory, and convenience wrappers for status, diff, log, branch, branch creation, staging, commit, push, pull/fetch, remotes, merge/rebase/revert/reset/clean/tag/config.
+- Exposed Git tools through the queue `ToolsManager`, model-visible AskAgent tools, and machine-readable tool contracts while keeping tool selection model-driven rather than keyword-routed.
+- Added `mana-agent git -- ...` passthrough using the same Git executor and safety policy, plus README and AGENTS documentation for Git decision flow, commit/push preflights, dynamic command discovery, and protected commands.
+- Added focused temporary-repository tests for discovery, generic execution, repo-root resolution, wrappers, upstream push behavior, secret redaction, protected command blocking, shell=False execution, timeout handling, memory invalidation, and queue-manager Git execution.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_git_tools.py -q` passed with 12 tests; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_repository_tools.py tests/test_tools_manager.py tests/test_tool_worker_process.py tests/test_multi_agent_core.py::test_cli_commands_exist_and_record_multi_agent_route tests/test_coding_tool_system.py -q` passed with 90 tests; `PYTHONPATH=src .venv/bin/python -m compileall -q src tests` passed; `PYTHONPATH=src .venv/bin/ruff check src/mana_agent/multi_agent/tools/git_tools.py src/mana_agent/tools/repository.py src/mana_agent/tools/contracts.py src/mana_agent/multi_agent/runtime/ask_agent.py src/mana_agent/multi_agent/runtime/auto_chat.py src/mana_agent/multi_agent/runtime/tool_worker_process.py src/mana_agent/multi_agent/tools/tool_manager.py src/mana_agent/commands/cli.py src/mana_agent/commands/cli_internal.py tests/test_git_tools.py --select F,E9` passed; `git diff --check` passed; `PYTHONPATH=src .venv/bin/mana-agent git -- status`, `PYTHONPATH=src .venv/bin/mana-agent git -- help -a`, and `PYTHONPATH=src .venv/bin/mana-agent git -- branch` passed.
+
 ## 2026-07-07 (chat TUI event panels)
 
 - Upgraded chat UI events with AgentEvent-compatible aliases (`id`, `parent_id`, `timestamp`, `kind`, `details`), normalized file/test/log collections, and persisted session JSONL history under `.mana/sessions`.

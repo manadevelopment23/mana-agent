@@ -654,7 +654,7 @@ Edit-intent flow:
 
 Mutation-only mode:
 - When enough run evidence exists for an edit, restrict tools to mutation/status/verification:
-  `edit_file`, `multi_edit_file`, `apply_patch`, `apply_patch_batch`, `create_file`, `write_file`, `delete_file`, `git_diff`, `git_status`, `run_command`, `run_script_once`,
+  `edit_file`, `multi_edit_file`, `apply_patch`, `apply_patch_batch`, `create_file`, `write_file`, `delete_file`, `git_diff`, `git_status`, `git_help`, `git_generic`, `git_log`, `git_branch`, `git_remote`, `git_create_branch`, `git_switch`, `git_add`, `git_commit`, `git_push`, `run_command`, `run_script_once`,
   `verify_project`.
 - Do not emit more search/read requests unless the attempted mutation proves the evidence stale.
 

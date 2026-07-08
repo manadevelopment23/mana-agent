@@ -835,6 +835,46 @@ Before making changes, inspect repository state:
 git status --short
 ```
 
+Mana-Agent Git operations must use the model-driven Git tool namespace when running inside the application. The model must select Git actions from task context, repository state, current changes, and safety policy; do not add keyword routing for words such as commit, push, or branch.
+
+Supported canonical Git tools include:
+
+```text
+git.status
+git.diff
+git.log
+git.show
+git.branch
+git.switch
+git.checkout
+git.create_branch
+git.add
+git.restore
+git.stash
+git.commit
+git.push
+git.pull
+git.fetch
+git.remote
+git.tag
+git.merge
+git.rebase
+git.revert
+git.reset
+git.clean
+git.config
+git.generic
+git.help
+```
+
+`git.help(all=true)` must discover local Git commands from `git help -a`; do not maintain a permanent hardcoded inventory of every Git command. `git.generic` must pass argv lists to `subprocess.run(["git", *args], shell=False)` in the resolved repository root and return structured, redacted output.
+
+Before committing, inspect `git status --short`, `git diff`, and `git diff --staged`; stage only files relevant to the current task; generate the commit message from the staged diff, request, changed files, and verification result. Do not use `git add .` unless the model has verified all changed files are relevant.
+
+Before pushing, inspect status, current branch, remotes, and upstream. Push with `-u origin <branch>` only when no upstream exists. Never force-push by default.
+
+Block destructive or history-rewrite actions such as `git reset --hard`, `git clean -fd`, `git branch -D`, `git push --force`, `git push --force-with-lease`, `git push --delete`, `git rebase --onto`, `git filter-branch`, `git update-ref`, `git reflog expire`, and `git gc --prune=now` unless explicit user intent and risk handling are present.
+
 Protect user work:
 
 * Do not overwrite uncommitted changes.

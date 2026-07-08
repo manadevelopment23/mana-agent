@@ -64,6 +64,7 @@ class QueueJobType(_ValueEnum):
     SHELL = "shell"
     RUN_TESTS = "run_tests"
     RUN_LINT = "run_lint"
+    GIT = "git"
     GIT_STATUS = "git_status"
     GIT_DIFF = "git_diff"
 
