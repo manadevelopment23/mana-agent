@@ -312,6 +312,89 @@ def _orchestrator_calls(agent: CodingAgent) -> list[dict]:
     return orchestrator.calls
 
 
+def test_work_queue_seed_git_commit_does_not_start_with_repo_search(tmp_path: Path, monkeypatch) -> None:
+    agent = _build_agent(tmp_path, monkeypatch, payload={"answer": "ok", "trace": [], "warnings": []})
+    monkeypatch.setattr(agent, "_plan_checklist", lambda request, flow_context=None: (_git_checklist(), []))
+
+    seeds = agent._seed_items_for_request("git commit")
+
+    assert seeds
+    assert seeds[0].tool_name == "git_status"
+    assert all(seed.tool_name != "repo_search" for seed in seeds)
+    assert all("Locate files relevant to" not in seed.question for seed in seeds)
+
+
+def test_work_queue_seed_git_status_uses_git_context_or_tool_decision(tmp_path: Path, monkeypatch) -> None:
+    agent = _build_agent(tmp_path, monkeypatch, payload={"answer": "ok", "trace": [], "warnings": []})
+    monkeypatch.setattr(agent, "_plan_checklist", lambda request, flow_context=None: (_git_checklist(), []))
+
+    seeds = agent._seed_items_for_request("git status")
+
+    assert seeds
+    assert seeds[0].tool_name in {"git_status", ""}
+    assert all(seed.tool_name != "repo_search" for seed in seeds)
+
+
+def test_work_queue_seed_git_add_commit_push_starts_with_git_context(tmp_path: Path, monkeypatch) -> None:
+    agent = _build_agent(tmp_path, monkeypatch, payload={"answer": "ok", "trace": [], "warnings": []})
+    monkeypatch.setattr(agent, "_plan_checklist", lambda request, flow_context=None: (_git_checklist(), []))
+
+    seeds = agent._seed_items_for_request("git add and git commit and push to feature/model-router-entry-no-fallback")
+
+    assert seeds
+    assert seeds[0].gate == "git_context"
+    assert seeds[0].tool_name == "git_status"
+    assert all(seed.tool_name != "repo_search" for seed in seeds)
+
+
+def test_work_queue_seed_broad_code_request_can_use_repo_search(tmp_path: Path, monkeypatch) -> None:
+    agent = _build_agent(tmp_path, monkeypatch, payload={"answer": "ok", "trace": [], "warnings": []})
+
+    seeds = agent._seed_items_for_request("fix bug in router")
+
+    assert seeds
+    assert seeds[0].tool_name == "repo_search"
+    assert "Locate files relevant to" in seeds[0].question
+
+
+def test_work_queue_seed_exact_target_file_reads_without_broad_repo_search(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
+    agent = _build_agent(tmp_path, monkeypatch, payload={"answer": "ok", "trace": [], "warnings": []})
+
+    seeds = agent._seed_items_for_request("update README.md")
+
+    assert [seed.tool_name for seed in seeds] == ["read_file"]
+    assert seeds[0].tool_args == {"path": "README.md"}
+    assert all(seed.tool_name != "repo_search" for seed in seeds)
+    assert all("Locate files relevant to" not in seed.question for seed in seeds)
+
+
+def test_run_via_work_queue_preserves_explicit_seeds(tmp_path: Path, monkeypatch) -> None:
+    agent = _build_agent(tmp_path, monkeypatch, payload={"answer": "ok", "trace": [], "warnings": []})
+    worker = _RecordingToolWorker()
+    agent.tool_worker_client = worker  # type: ignore[assignment]
+
+    def _fail_auto_seed(*_args, **_kwargs):
+        raise AssertionError("automatic seed decision should not run when explicit seeds are provided")
+
+    monkeypatch.setattr(agent, "_seed_items_for_request", _fail_auto_seed)
+    explicit = WorkItem(
+        kind="inspect",
+        tool_name="git_status",
+        tool_args={},
+        question="custom explicit seed",
+        gate="explicit",
+        priority=3,
+    )
+
+    result = agent.run_via_work_queue("git status", seeds=[explicit], max_steps=1)
+
+    assert result["ok"] is True
+    assert worker.requests
+    assert worker.requests[0].tool_name == "git_status"
+    assert worker.requests[0].question == "custom explicit seed"
+
+
 def test_coding_agent_builds_structured_checklist_before_tools(tmp_path: Path, monkeypatch) -> None:
     payload = {"answer": "ok", "trace": [], "warnings": []}
     agent = _build_agent(tmp_path, monkeypatch, payload=payload)
