@@ -72,14 +72,17 @@ def configure_model_provider(current: dict[str, object], *, force_refresh: bool 
         default="openai",
     )
     if provider == "manual":
+        main = text_input(
+            "Main model",
+            "Enter main chat model ID:",
+            default=str(current.get("OPENAI_CHAT_MODEL") or DEFAULT_USER_CONFIG["OPENAI_CHAT_MODEL"]),
+        )
         return {
             "OPENAI_API_KEY": str(current.get("OPENAI_API_KEY") or ""),
             "OPENAI_BASE_URL": str(current.get("OPENAI_BASE_URL") or ""),
-            "OPENAI_CHAT_MODEL": text_input(
-                "Main model",
-                "Enter main chat model ID:",
-                default=str(current.get("OPENAI_CHAT_MODEL") or DEFAULT_USER_CONFIG["OPENAI_CHAT_MODEL"]),
-            ),
+            "OPENAI_CHAT_MODEL": main,
+            "LLM_MODEL": main,
+            "MODEL_LEVEL_3_HIGH_REASONING": main,
         }
     _, default_url = PROVIDER_DEFAULTS[provider]
     base_url = text_input(
@@ -109,7 +112,7 @@ def configure_model_provider(current: dict[str, object], *, force_refresh: bool 
             "Enter main chat model ID:",
             default=str(current.get("OPENAI_CHAT_MODEL") or DEFAULT_USER_CONFIG["OPENAI_CHAT_MODEL"]),
         )
-        values.update({"OPENAI_CHAT_MODEL": main, "LLM_MODEL": main})
+        values.update({"OPENAI_CHAT_MODEL": main, "LLM_MODEL": main, "MODEL_LEVEL_3_HIGH_REASONING": main})
     return values
 
 

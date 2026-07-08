@@ -7,9 +7,11 @@ import pytest
 
 from mana_agent.config import user_config
 from mana_agent.config.settings import Settings
+from mana_agent.multi_agent.core.types import AgentRole
+from mana_agent.multi_agent.runtime.model_levels import resolve_model_for_role
 from mana_agent.search.config import SearchConfig
 from mana_agent.tui.menu import NonInteractivePromptError
-from mana_agent.tui.model_picker import ModelFetchError, fetch_openai_compatible_models, parse_model_ids
+from mana_agent.tui.model_picker import ModelFetchError, choose_models, fetch_openai_compatible_models, parse_model_ids
 from mana_agent.tui.wizard import ensure_setup
 
 
@@ -114,6 +116,66 @@ def test_model_cache_round_trip(isolated_user_config: Path) -> None:
     assert cached is not None
     assert cached.models == ["a", "b"]
     assert json.loads((isolated_user_config / "model_cache.json").read_text(encoding="utf-8"))
+
+
+def test_choose_models_persists_model_level_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("mana_agent.tui.model_picker.load_or_fetch_models", lambda **_kwargs: ["embed", "main", "planner", "tool"])
+    selections = iter(["main", "tool", "planner", "embed"])
+    monkeypatch.setattr("mana_agent.tui.model_picker.select_option", lambda **_kwargs: next(selections))
+
+    values = choose_models(
+        provider="openai",
+        base_url="https://api.example.test/v1",
+        api_key="key",
+        timeout_seconds=1,
+        current={},
+    )
+
+    assert values["OPENAI_CHAT_MODEL"] == "main"
+    assert values["OPENAI_TOOL_WORKER_MODEL"] == "tool"
+    assert values["OPENAI_CODING_PLANNER_MODEL"] == "planner"
+    assert values["MODEL_LEVEL_3_HIGH_REASONING"] == "main"
+    assert values["MODEL_LEVEL_2_CODING"] == "planner"
+    assert values["MODEL_LEVEL_1_FAST_TOOL"] == "tool"
+
+
+def test_user_config_writes_grouped_model_order(isolated_user_config: Path) -> None:
+    user_config.save_effective_user_config(
+        {
+            "MANA_SEARCH_ENABLE_WEB": True,
+            "OPENAI_CHAT_MODEL": "main",
+            "MODEL_LEVEL_3_HIGH_REASONING": "main",
+            "OPENAI_BASE_URL": "https://api.example.test/v1",
+        },
+        merge=False,
+    )
+
+    lines = (isolated_user_config / "config.toml").read_text(encoding="utf-8").splitlines()
+
+    assert lines[:3] == [
+        'OPENAI_BASE_URL = "https://api.example.test/v1"',
+        'OPENAI_CHAT_MODEL = "main"',
+        'MODEL_LEVEL_3_HIGH_REASONING = "main"',
+    ]
+
+
+def test_model_level_targets_resolve_from_user_config(isolated_user_config: Path) -> None:
+    user_config.save_effective_user_config(
+        {
+            "OPENAI_CHAT_MODEL": "main",
+            "MODEL_LEVEL_3_HIGH_REASONING": "high",
+            "MODEL_LEVEL_2_CODING": "coding",
+            "MODEL_LEVEL_1_FAST_TOOL": "fast",
+            "MANA_MODEL_MAIN": "MODEL_LEVEL_3_HIGH_REASONING",
+            "MANA_MODEL_CODING": "MODEL_LEVEL_2_CODING",
+            "MANA_MODEL_TOOL": "MODEL_LEVEL_1_FAST_TOOL",
+        },
+        merge=False,
+    )
+
+    assert resolve_model_for_role(AgentRole.MAIN, global_model="fallback").resolved_model == "high"
+    assert resolve_model_for_role(AgentRole.CODING, global_model="fallback").resolved_model == "coding"
+    assert resolve_model_for_role(AgentRole.TOOL, global_model="fallback").resolved_model == "fast"
 
 
 def test_search_provider_config_serialization(isolated_user_config: Path) -> None:

@@ -2,6 +2,12 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-08 (TUI model-level persistence fix)
+
+- Fixed TUI model selection persistence so selected main, coding planner, and tool-worker models are saved into `MODEL_LEVEL_3_HIGH_REASONING`, `MODEL_LEVEL_2_CODING`, and `MODEL_LEVEL_1_FAST_TOOL` as actual model IDs instead of only saving role-to-level mappings.
+- Changed `~/.mana/config.toml` writes to use a stable grouped order for provider/model settings, role mappings, and search settings instead of alphabetical output.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m compileall -q src tests/test_tui_user_config.py` passed; `PYTHONPATH=src .venv/bin/python -m pytest tests/test_tui_user_config.py tests/test_multi_agent_core.py::test_role_specific_model_env_overrides_level_env tests/test_search_config.py -q` passed with 16 tests; `PYTHONPATH=src .venv/bin/python -m pytest -q` passed with 693 tests and 18 warnings.
+
 ## 2026-07-08 (TUI first-run setup)
 
 - Added a dedicated TUI module with banner reuse, arrow-selectable menus, text/secret prompts, status panels, first-run setup, settings submenu, OpenAI-compatible model fetching/cache, model selection, model role level assignment, and search provider setup.

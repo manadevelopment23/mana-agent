@@ -146,10 +146,15 @@ def choose_models(
         current=str(current.get("OPENAI_EMBED_MODEL") or ""),
         allow_manual=True,
     )
+    resolved_tool = main if tool == "same_as_main" else tool
+    resolved_planner = main if planner == "same_as_main" else planner
     return {
         "OPENAI_CHAT_MODEL": main,
         "LLM_MODEL": main,
-        "OPENAI_TOOL_WORKER_MODEL": main if tool == "same_as_main" else tool,
-        "OPENAI_CODING_PLANNER_MODEL": main if planner == "same_as_main" else planner,
+        "OPENAI_TOOL_WORKER_MODEL": resolved_tool,
+        "OPENAI_CODING_PLANNER_MODEL": resolved_planner,
         "OPENAI_EMBED_MODEL": embed,
+        "MODEL_LEVEL_3_HIGH_REASONING": main,
+        "MODEL_LEVEL_2_CODING": resolved_planner,
+        "MODEL_LEVEL_1_FAST_TOOL": resolved_tool,
     }

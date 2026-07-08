@@ -6,7 +6,7 @@
 
 `mana-agent` is an installable Python CLI for understanding and safely changing software projects. It can index a repository, run static and dependency analysis, generate structured reports, answer repository-grounded questions, and drive a constrained coding agent that can inspect files, apply patches, use Git tools, and run verification commands.
 
-**Current documented version:** `v0.0.11`
+**Current documented version:** `v0.0.12`
 
 ---
 
@@ -353,6 +353,9 @@ LLM_MODEL="gpt-4.1"
 OPENAI_TOOL_WORKER_MODEL="gpt-4.1"
 OPENAI_CODING_PLANNER_MODEL="gpt-4.1"
 OPENAI_EMBED_MODEL="text-embedding-3-small"
+MODEL_LEVEL_3_HIGH_REASONING="gpt-4.1"
+MODEL_LEVEL_2_CODING="gpt-4.1"
+MODEL_LEVEL_1_FAST_TOOL="gpt-4.1-mini"
 
 DEFAULT_TOP_K=8
 ```
@@ -366,9 +369,13 @@ MUTATION_VERIFY_ON_CHANGE=1
 
 ### Optional model-level routing
 
-Use model-level variables when you want different models for different parts of the multi-agent runtime.
+Use `MODEL_LEVEL_*` variables for actual model IDs, and `MANA_MODEL_*` variables to map each role to one of those levels.
 
 ```bash
+MODEL_LEVEL_3_HIGH_REASONING=gpt-4.1
+MODEL_LEVEL_2_CODING=gpt-4.1
+MODEL_LEVEL_1_FAST_TOOL=gpt-4.1-mini
+
 MANA_MODEL_MAIN=MODEL_LEVEL_3_HIGH_REASONING
 MANA_MODEL_HEAD_DECISION=MODEL_LEVEL_3_HIGH_REASONING
 MANA_MODEL_PLANNER=MODEL_LEVEL_3_HIGH_REASONING

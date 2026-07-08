@@ -29,6 +29,9 @@ DEFAULT_USER_CONFIG: dict[str, Any] = {
     "OPENAI_TOOL_WORKER_MODEL": "",
     "OPENAI_CODING_PLANNER_MODEL": "",
     "OPENAI_EMBED_MODEL": "",
+    "MODEL_LEVEL_1_FAST_TOOL": "",
+    "MODEL_LEVEL_2_CODING": "",
+    "MODEL_LEVEL_3_HIGH_REASONING": "",
     "DEFAULT_TOP_K": 8,
     "MANA_LLM_LOG_FILE": "",
     "LLM_MODEL": "",
@@ -82,6 +85,40 @@ FIELD_NAME_BY_ENV: dict[str, str] = {
     "MANA_MODEL_TOOL_WORKER": "mana_model_tool_worker",
 }
 
+CONFIG_WRITE_ORDER = [
+    "OPENAI_BASE_URL",
+    "OPENAI_CHAT_MODEL",
+    "LLM_MODEL",
+    "OPENAI_TOOL_WORKER_MODEL",
+    "OPENAI_CODING_PLANNER_MODEL",
+    "OPENAI_EMBED_MODEL",
+    "MODEL_LEVEL_3_HIGH_REASONING",
+    "MODEL_LEVEL_2_CODING",
+    "MODEL_LEVEL_1_FAST_TOOL",
+    "MANA_MODEL_MAIN",
+    "MANA_MODEL_HEAD_DECISION",
+    "MANA_MODEL_PLANNER",
+    "MANA_MODEL_CODING",
+    "MANA_MODEL_VERIFIER",
+    "MANA_MODEL_REVIEWER",
+    "MANA_MODEL_TOOL",
+    "MANA_MODEL_TOOL_WORKER",
+    "MANA_MODEL_SUMMARIZER",
+    "DEFAULT_TOP_K",
+    "MANA_LLM_LOG_FILE",
+    "MANA_SEARCH_ENABLE_WEB",
+    "MANA_SEARCH_ENABLE_GITHUB",
+    "MANA_SEARCH_MAX_RESULTS",
+    "MANA_SEARCH_TIMEOUT_SECONDS",
+    "MANA_SEARCH_MEMORY_TTL_DAYS",
+    "MANA_WEB_SEARCH_PROVIDER",
+    "MANA_WEB_SEARCH_MAX_RESULTS",
+    "MANA_WEB_SEARCH_ENGINE_ID",
+    "MANA_WEB_SEARCH_BASE_URL",
+    "MANA_WEB_SEARCH_ENDPOINT",
+    "MANA_WEB_SEARCH_QUERY_PARAM",
+]
+
 
 class UserConfigError(RuntimeError):
     pass
@@ -125,7 +162,9 @@ def _toml_scalar(value: Any) -> str:
 
 def _write_toml(path: Path, values: dict[str, Any], *, mode: int = 0o600) -> None:
     ensure_user_config_dir()
-    lines = [f"{key} = {_toml_scalar(values[key])}" for key in sorted(values)]
+    ordered_keys = [key for key in CONFIG_WRITE_ORDER if key in values]
+    ordered_keys.extend(sorted(key for key in values if key not in set(ordered_keys)))
+    lines = [f"{key} = {_toml_scalar(values[key])}" for key in ordered_keys]
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     try:
         path.chmod(mode)
@@ -273,6 +312,13 @@ def validate_config_values(values: dict[str, Any]) -> dict[str, Any]:
     ):
         if name in cleaned:
             cleaned[name] = validate_model_level(str(cleaned[name]))
+    for name in (
+        "MODEL_LEVEL_1_FAST_TOOL",
+        "MODEL_LEVEL_2_CODING",
+        "MODEL_LEVEL_3_HIGH_REASONING",
+    ):
+        if name in cleaned:
+            cleaned[name] = str(cleaned[name] or "").strip()
     return cleaned
 
 
