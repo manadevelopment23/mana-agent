@@ -23,6 +23,16 @@ All notable repository changes should be recorded here.
 - Direct service path makes "create analyze" buttons produce real output visible in the Reports section (and `list_analysis_artifacts`).
   - Verification: tempfile test `trigger_automation("analyze")` now returns artifacts list and folder with real files (`report.md`, `symbols.json`, `llm_summary.md` etc.); `PYTHONPATH=src ./venv/bin/python -m py_compile ...`; dashboard tests pass.
 
+## 2026-07-09 (Dashboard analyze now reads API key from ~/.mana/config.toml)
+
+- Problem: Dashboard "analyze" always passed `llm_analyzer=None`, producing the exact message the user saw: "LLM analysis unavailable: LLM analyzer not provided."
+- Fix: In `trigger_automation` for analyze, now calls `_build_project_llm_analyzer()` (same function as `mana-agent analyze`). This goes through `Settings()` → `settings_source_for_pydantic()` → `load_user_config()` + `load_user_secrets()` from `~/.mana/config.toml` and `secrets.toml` (plus env precedence).
+- Also updated `get_last_analysis_summary` candidates to prefer `.mana/analyze/llm_summary.md` so Overview shows fresh LLM summaries generated from dashboard.
+- UI now reports "with LLM analysis" vs "deterministic" after clicking generate buttons.
+- Result: If the user has a valid key in `~/.mana/config.toml`, triggering analyze from the dashboard now produces a real LLM summary (same as CLI).
+
+  - Verification: In real project, `trigger_automation("analyze")` returned `llm_used=True`, wrote proper `llm_summary.md` (with model + content), and `get_last_analysis_summary` picked it up as type=md. Tests + compile clean.
+
 ## 2026-07-09 (Dashboard chat real routing + all triggers functional + real metrics + .mana analyze)
 
 - Chat embed now **real**: `run_dashboard_chat` uses `Settings` + `build_ask_service` + `ask_with_tools` (or classic ask) so prompts are routed via the same model decision / entry router / AskAgent as full `mana-agent chat` CLI. Returns actual answers, sources, tool-using routes when applicable. Multi-turn history + persistence. "ping" example now gets model-routed response instead of hardcoded preview.

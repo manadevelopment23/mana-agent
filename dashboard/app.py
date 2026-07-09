@@ -220,6 +220,7 @@ elif page == "Chat":
 elif page == "Reports":
     st.header("Reports & Artifacts")
     st.caption("Real artifacts from .mana/analyze + docs/analyze")
+    st.info("LLM analysis requires OPENAI_API_KEY (or equiv) in ~/.mana/config.toml or environment. Run from CLI or here after configuring.")
 
     arts = list_analysis_artifacts(root)
     if st.button("🔄 Generate / Refresh Report", type="primary"):

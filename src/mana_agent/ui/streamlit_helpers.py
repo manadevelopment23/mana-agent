@@ -140,6 +140,8 @@ def get_last_analysis_summary(root: Path | None = None) -> dict[str, Any]:
     """Try to surface recent analysis artifacts (docs/analyze/ or similar)."""
     root = find_mana_root(root)
     candidates = [
+        root / ".mana" / "analyze" / "llm_summary.md",
+        root / ".mana" / "analyze" / "report.md",
         root / "docs" / "analyze" / "llm_summary.md",
         root / "docs" / "analyze" / "report.md",
         root / ".mana" / "last_analysis.json",
