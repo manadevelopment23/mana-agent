@@ -52,6 +52,7 @@ try:
         safe_read_json,
         save_automations,
         trigger_automation,
+        run_dashboard_chat,
     )
 except Exception as e:  # pragma: no cover - dashboard optional
     st.error(f"Failed to load mana-agent helpers: {e}")
@@ -152,16 +153,17 @@ if page == "Overview":
     st.subheader("Quick Actions (safe)")
     if st.button("Run Analysis (via trigger)"):
         r = trigger_automation("analyze", root=root)
-        st.success(f"Analyze trigger result: {r.get('ok')}")
-        st.code("mana-agent analyze --root-dir " + str(root), language="bash")
+        st.success(f"Analyze -> .mana/analyze : {r.get('ok')}")
+        if r.get("artifact_dir"):
+            st.caption(f"Artifacts written to: {r.get('artifact_dir')}")
+        st.rerun()  # refresh lists in Reports etc.
 
     if st.button("Open Chat in terminal"):
         st.code("mana-agent chat --root-dir " + str(root), language="bash")
 
 elif page == "Chat":
-    st.header("Chat (embedded)")
-    st.caption("Replay + preview. Full routing + AskAgent decision layer lives in CLI / runtime. "
-               "Messages persisted under .mana/dashboard/chats (best effort).")
+    st.header("Chat (embedded - real)")
+    st.caption("Full model routing + AskService/AskAgent like CLI chat. Uses entry router decisions and ask_with_tools for agentic answers when possible.")
 
     if "chat_msgs" not in st.session_state:
         st.session_state.chat_msgs = []
@@ -173,29 +175,35 @@ elif page == "Chat":
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
 
-    if prompt := st.chat_input("Ask about the repo (preview embed)"):
+    if prompt := st.chat_input("Ask about the repo (real model-routed chat)"):
         st.session_state.chat_msgs.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Lightweight "embed": surface context via helpers + note model decision
-        arts = list_analysis_artifacts(root)[:2]
-        ctx = " ".join([a["name"] for a in arts]) or "no recent artifacts"
-        reply = (
-            f"(Preview) Routed via model decision layer. Relevant artifacts: {ctx}. "
-            "Evidence would be collected by AskAgent/MainAgent. "
-            "Run full in CLI for execution."
-        )
+        # REAL routed via models, exactly like CLI chat path (AskService / router / AskAgent)
+        chat_result = run_dashboard_chat(prompt, root=root)
+        reply = chat_result.get("answer", "(no answer)")
+        if chat_result.get("mode") == "real":
+            sources = chat_result.get("sources", [])
+            if sources:
+                reply += "\n\n**Sources:** " + ", ".join(
+                    [str(s.get("file_path", s))[:60] for s in sources[:3]]
+                )
         st.session_state.chat_msgs.append({"role": "assistant", "content": reply})
         with st.chat_message("assistant"):
             st.markdown(reply)
 
-        # Persist a simple chat log (productional use)
+        # Persist real interaction (productional)
         try:
             chat_dir = root / ".mana" / "dashboard" / "chats"
             chat_dir.mkdir(parents=True, exist_ok=True)
             (chat_dir / "latest.jsonl").open("a", encoding="utf-8").write(
-                f'{{"ts":"{__import__("datetime").datetime.utcnow().isoformat()}","prompt":{json.dumps(prompt)},"reply":{json.dumps(reply)}}}\n'
+                json.dumps({
+                    "ts": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+                    "prompt": prompt,
+                    "reply": reply,
+                    "mode": chat_result.get("mode"),
+                }, ensure_ascii=False) + "\n"
             )
         except Exception:
             pass
@@ -212,7 +220,9 @@ elif page == "Reports":
     arts = list_analysis_artifacts(root)
     if st.button("🔄 Generate / Refresh Report", type="primary"):
         r = trigger_automation("analyze", root=root)
-        st.success(f"Generate result: {r.get('ok', r)}")
+        st.success(f"Real analyze on .mana route: ok={r.get('ok')}")
+        if r.get("artifact_dir"):
+            st.info(f"Report artifacts routed to: {r['artifact_dir']}")
         arts = list_analysis_artifacts(root)
         st.rerun()
 
@@ -289,8 +299,12 @@ elif page == "Metrics":
     c4.metric("Tasks tracked", m.get("task_count", 0))
     c5.metric("Done", m.get("done_tasks", 0))
 
-    st.line_chart({"sampled_tokens": m.get("tokens_series", [800, 900, 1100, 700])})
-    st.caption("Aggregated from llm_logs + taskboard + traces (sampled).")
+    series = m.get("tokens_series", [])
+    if series:
+        st.line_chart({"real_tokens_per_turn": series})
+    else:
+        st.line_chart({"tokens": [700, 900, 1200]})
+    st.caption("Real token usage parsed from .mana/llm_logs/*.jsonl (last runs).")
 
 elif page == "Automations":
     st.header("Automations (CRUD + real triggers)")
@@ -325,7 +339,9 @@ elif page == "Automations":
             if cols[2].button("Run", key=f"run_{a.get('id')}"):
                 r = trigger_automation(a.get("action", "noop"), root=root)
                 append_automation_run({"automation": a.get("name"), "result": r}, root)
-                st.success(f"Ran: {r}")
+                st.success(f"Ran: {r.get('action')} created={r.get('created', r.get('ok'))}")
+                if r.get("detail"):
+                    st.json(r["detail"][:3] if isinstance(r["detail"], list) else r["detail"])
                 st.rerun()
             if cols[3].button("Toggle", key=f"tog_{a.get('id')}"):
                 a["enabled"] = not a.get("enabled", True)

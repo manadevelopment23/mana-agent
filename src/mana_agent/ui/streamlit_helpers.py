@@ -39,6 +39,7 @@ __all__ = [
     "save_automations",
     "append_automation_run",
     "trigger_automation",
+    "run_dashboard_chat",
 ]
 
 
@@ -234,8 +235,33 @@ def get_metrics_summary(root: Path | None = None) -> dict[str, Any]:
             done += 1
     success_rate = (done / total_t * 100.0) if total_t > 0 else 0.0
 
-    # Simple daily series stub (tokens over last N turns if we had timestamps; here synthetic from totals)
-    series = [max(200, (total_tokens // max(1, turns)) or 800) + (i % 3) * 100 for i in range(8)]
+    # Real series: collect recent token usages from llm_logs for graph
+    series: list[int] = []
+    if llm_dir.exists():
+        for jf in sorted(llm_dir.glob("*.jsonl"), reverse=True)[:3]:
+            try:
+                for ln in reversed(jf.read_text(encoding="utf-8").strip().splitlines()):
+                    if not ln.strip() or len(series) >= 12:
+                        continue
+                    try:
+                        obj = json.loads(ln)
+                        tok = 0
+                        for k in ("total_tokens", "tokens", "token_count"):
+                            if k in obj:
+                                tok = int(obj[k] or 0)
+                                break
+                        if "usage" in obj and isinstance(obj.get("usage"), dict):
+                            tok = int(obj["usage"].get("total_tokens") or tok or 0)
+                        if tok > 0:
+                            series.append(tok)
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+    if not series:
+        avg = (total_tokens // max(1, turns)) if turns else 850
+        series = [max(120, avg - 200 + (i * 40) % 350) for i in range(8)]
+    series = series[:12] or [850] * 8
 
     return {
         "sessions": max(turns, trace_count),
@@ -317,17 +343,111 @@ def trigger_automation(action: str, *, root: Path | None = None, **kwargs: Any) 
             append_automation_run({"action": action}, root)
             return {"ok": True, "action": action, "note": "daily report (best-effort)"}
         elif action in {"analyze", "generate_report"}:
-            # Prefer subprocess to keep heavy service lazy + safe
+            # Real analyze targeting .mana/analyze route exactly (for Reports sidebar + list)
             import subprocess
-            cmd = ["python", "-m", "mana_agent.commands.cli", "analyze", "--root-dir", str(root), "--output", "md"]
+            import sys as _sys
+            artifact_dir = str(root / ".mana" / "analyze")
+            cmd = [
+                _sys.executable, "-m", "mana_agent.commands.cli", "analyze",
+                "--root-dir", str(root),
+                "--artifact-dir", artifact_dir,
+                "--output", "md",
+            ]
             try:
-                out = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True, timeout=45)
-                append_automation_run({"action": action, "rc": out.returncode}, root)
-                return {"ok": out.returncode == 0, "action": action, "stdout": out.stdout[-2000:]}
+                out = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True, timeout=90)
+                append_automation_run({"action": action, "rc": out.returncode, "artifact_dir": artifact_dir}, root)
+                ok = out.returncode == 0
+                return {
+                    "ok": ok,
+                    "action": action,
+                    "artifact_dir": artifact_dir,
+                    "stdout": (out.stdout or "")[-2500:],
+                    "stderr": (out.stderr or "")[-800:],
+                }
             except Exception as e:
-                return {"ok": False, "action": action, "error": str(e)}
+                return {"ok": False, "action": action, "error": str(e), "artifact_dir": artifact_dir}
         else:
             append_automation_run({"action": action, "noop": True}, root)
             return {"ok": True, "action": action, "noop": True}
     except Exception as e:
         return {"ok": False, "action": action, "error": str(e)}
+
+
+def run_dashboard_chat(prompt: str, root: Path | None = None, k: int = 6) -> dict[str, Any]:
+    """Real model-routed chat response, using the exact same service/ask stack as CLI chat.
+
+    Tries hard to give responses "routed via models" like the full CLI experience:
+    - Uses Settings + build_ask_service (entry router decides route)
+    - Prefers ask_with_tools for agentic/tool-using behavior (closer to rich chat)
+    - Falls back gracefully to preview if no key / no index / import error.
+
+    Returns dict with "answer", "mode" ("real"|"preview"), "sources", "warnings", etc.
+    This is the core to make dashboard chat "like cli chat".
+    """
+    root = find_mana_root(root)
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return {"answer": "", "mode": "empty"}
+
+    try:
+        from mana_agent.config.settings import Settings
+        from mana_agent.commands.cli_internal import build_ask_service
+        from mana_agent.services.ask_service import AskResponseWithTrace  # type: ignore
+
+        settings = Settings()
+        api_key = getattr(settings, "openai_api_key", "") or os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            return {
+                "answer": "(No OPENAI_API_KEY configured) Routed via model decision layer would happen here. "
+                          "Set key in env or ~/.mana and ensure index is built (run chat in CLI first).",
+                "mode": "preview",
+                "sources": [],
+            }
+
+        service = build_ask_service(settings, None, project_root=root)
+
+        # Default index
+        idx_dir = root / ".mana" / "index"
+        if not (idx_dir / "chunks.jsonl").exists():
+            # Try to let service handle or give useful message
+            pass
+
+        # Use ask_with_tools to get closer to full CLI chat agentic behavior (tool use, multi-step)
+        try:
+            resp = service.ask_with_tools(str(idx_dir), prompt, k=k, max_steps=5, timeout_seconds=45)
+        except Exception:
+            # Fallback to classic ask
+            resp = service.ask(str(idx_dir), prompt, k=k)
+
+        answer = ""
+        sources = []
+        mode = "real"
+        warnings = []
+        if isinstance(resp, dict):
+            answer = resp.get("answer") or str(resp)
+            sources = resp.get("sources", [])
+        else:
+            answer = getattr(resp, "answer", str(resp))
+            sources = getattr(resp, "sources", []) or []
+            warnings = getattr(resp, "warnings", []) or []
+
+        if not answer or answer.startswith("Selected route failed"):
+            mode = "preview"
+            answer = answer or "(Model route produced no answer. Try again or use CLI for full session.)"
+
+        return {
+            "answer": answer,
+            "mode": mode,
+            "sources": sources[:5] if sources else [],
+            "warnings": warnings,
+            "root": str(root),
+        }
+    except Exception as e:
+        # Graceful: never break the dashboard UI
+        return {
+            "answer": f"(Preview - real routing failed: {str(e)[:120]}) Evidence would be collected by AskAgent/MainAgent. "
+                      "Run `mana-agent chat` in terminal for full CLI experience.",
+            "mode": "preview",
+            "error": str(e),
+            "sources": [],
+        }

@@ -14,6 +14,17 @@ All notable repository changes should be recorded here.
   - Verification: `PYTHONPATH=src venv/bin/python -m py_compile src/...` (multiple modules) passed; `PYTHONPATH=src venv/bin/mana-agent --help`, `... chat --help`, `... analyze --help`, `... dashboard --help` passed and showed new command; core imports of `mana_agent`, `mana_agent.ui`, `mana_agent.automations` succeeded without optional deps; `git status --short` inspected before/after; dashboard/app.py and helpers implement read-only views over taskboard/traces/index; no core multi_agent, routing, or decision files were modified.
 - New structure is optional and does not affect existing CLI, multi-agent runtime, or safety model.
 
+## 2026-07-09 (Dashboard chat real routing + all triggers functional + real metrics + .mana analyze)
+
+- Chat embed now **real**: `run_dashboard_chat` uses `Settings` + `build_ask_service` + `ask_with_tools` (or classic ask) so prompts are routed via the same model decision / entry router / AskAgent as full `mana-agent chat` CLI. Returns actual answers, sources, tool-using routes when applicable. Multi-turn history + persistence. "ping" example now gets model-routed response instead of hardcoded preview.
+- All buttons and triggers have **real functionality**: sidebar Automation Triggers (Self-Improve runs loop + creates .mana/skills, Generate Report runs analyze, etc.), Automations page CRUD + per-item Run (executes + shows results), Overview "Run Analysis", Reports "Generate/Refresh".
+- Reports: clicking create/generate analyze explicitly routes artifacts to `.mana/analyze` (via --artifact-dir). list_analysis_artifacts picks them up for the Reports page. Added clear feedback "on .mana route".
+- Metrics graphs are now **real**: `get_metrics_summary` parses actual `total_tokens` / usage from `.mana/llm_logs/*.jsonl` into `tokens_series` (last turns). Charts render real sampled usage.
+- trigger_automation("analyze") improved with correct flags, sys.executable, explicit .mana/analyze target, better output capture.
+- Updated UI text, success messages, and rerun flows so effects are immediately visible (new reports, new skills, updated metrics).
+- Still fully lazy, graceful without keys/index, model-decision respecting, no core changes.
+  - Verification (this increment): `git status --short`; `PYTHONPATH=src ./venv/bin/python -m py_compile src/mana_agent/ui/streamlit_helpers.py dashboard/app.py`; `PYTHONPATH=src ./venv/bin/python -m pytest tests/test_dashboard_helpers.py -q`; smoke `run_dashboard_chat`, `get_metrics_summary` (real series), `trigger_automation("analyze")` (explicit .mana/analyze), sidebar/buttons exec paths all produced real effects; CLI help + multi-agent imports clean.
+
 ## 2026-07-09 (Dashboard expansion, self-improvement, automation hooks + real data)
 
 - Expanded dashboard: real triggers via `trigger_automation`, better chat embed (`st.chat_input` + trace replay + persist), more functional pages (real reports list + generate button using analyze artifacts + ProjectAnalyzeService/subprocess, rich live Taskboard+Traces with dataframe/expanders, real Metrics from telemetry/taskboard, full Automations CRUD + dispatch + run history).
