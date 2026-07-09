@@ -28,6 +28,116 @@ def _schema(properties: dict[str, Any], required: list[str] | None = None) -> di
     }
 
 
+def _excel_cell_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "cell": {"type": "string"},
+            "value": {},
+            "formula": {"type": "string"},
+        },
+        "required": ["cell"],
+        "anyOf": [
+            {"required": ["value"]},
+            {"required": ["formula"]},
+        ],
+        "additionalProperties": False,
+    }
+
+
+def _excel_table_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "start_cell": {"type": "string"},
+            "columns": {
+                "type": "array",
+                "items": {},
+            },
+            "headers": {
+                "type": "array",
+                "items": {},
+            },
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {},
+                },
+            },
+            "name": {"type": "string"},
+            "style": {"type": "string"},
+        },
+        "required": ["rows"],
+        "additionalProperties": False,
+    }
+
+
+def _excel_sheet_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "cells": {
+                "type": "array",
+                "items": _excel_cell_schema(),
+            },
+            "tables": {
+                "type": "array",
+                "items": _excel_table_schema(),
+            },
+            "formulas": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "cell": {"type": "string"},
+                        "formula": {"type": "string"},
+                    },
+                    "required": ["cell", "formula"],
+                    "additionalProperties": False,
+                },
+            },
+            "rows": {
+                "type": "array",
+                "items": {},
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+def _document_create_content_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "paragraphs": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "tables": {
+                "type": "array",
+                "items": {},
+            },
+            "text": {"type": "string"},
+            "rows": {
+                "type": "array",
+                "items": {},
+            },
+            "sheets": {
+                "type": "object",
+                "description": (
+                    "Excel sheets MUST be an object keyed by sheet name. "
+                    "Never pass sheets as a list. Correct: "
+                    "{'Sheet1': {'cells': [{'cell': 'A1', 'value': 200}]}}."
+                ),
+                "additionalProperties": _excel_sheet_schema(),
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
 def _git_tool_contracts(common_error: dict[str, Any]) -> list[ToolContract]:
     base_output = _schema(
         {
@@ -112,6 +222,8 @@ def _document_tool_contracts(common_error: dict[str, Any]) -> list[ToolContract]
             "results": {"type": "array"},
             "warnings": {"type": "array"},
             "error": {"type": "string"},
+            "message": {"type": "string"},
+            "verification": {"type": "object"},
         }
     )
     safety = [
@@ -121,6 +233,9 @@ def _document_tool_contracts(common_error: dict[str, Any]) -> list[ToolContract]
         "Report scanned or image-only PDFs as needing OCR; do not invent text.",
         "Create backups before destructive updates unless explicitly disabled.",
         "Require explicit delete intent for document file deletion.",
+        "For Excel create operations, content.sheets MUST be an object keyed by sheet name, not a list.",
+        "For Excel create operations, use cells with {'cell': 'A1', 'value': ...} or {'cell': 'D1', 'formula': '=SUM(A1:C1)'}.",
+        "Never use ExcelJS-style rows/cells payloads such as {'rows': [{'cells': [{'v': 200}]}]}; this project uses openpyxl-style normalized schemas.",
     ]
     specs: list[tuple[str, str, dict[str, Any], list[str] | None, dict[str, Any]]] = [
         (
@@ -162,10 +277,38 @@ def _document_tool_contracts(common_error: dict[str, Any]) -> list[ToolContract]
         ),
         (
             "document_create",
-            "Create a DOCX, XLSX/XLSM, CSV, or simple text PDF artifact without overwriting by default.",
-            {"path": {"type": "string"}, "content": {"type": "object"}, "file_type": {"type": "string"}, "overwrite": {"type": "boolean"}},
+            (
+                "Create a DOCX, XLSX/XLSM, CSV, or simple text PDF artifact without overwriting by default. "
+                "For Excel, content.sheets must be an object keyed by sheet name. "
+                "Do not pass sheets as a list."
+            ),
+            {
+                "path": {"type": "string"},
+                "content": _document_create_content_schema(),
+                "file_type": {
+                    "type": "string",
+                    "description": "Use lowercase values: docx, pdf, xlsx, xlsm, or csv.",
+                },
+                "overwrite": {"type": "boolean"},
+            },
             ["path", "content"],
-            {"path": "docs/summary.docx", "content": {"title": "Summary", "paragraphs": ["Result text"]}},
+            {
+                "path": "row_sum.xlsx",
+                "file_type": "xlsx",
+                "overwrite": False,
+                "content": {
+                    "sheets": {
+                        "Sheet1": {
+                            "cells": [
+                                {"cell": "A1", "value": 200},
+                                {"cell": "B1", "value": 300},
+                                {"cell": "C1", "value": 400},
+                                {"cell": "D1", "formula": "=SUM(A1:C1)"},
+                            ]
+                        }
+                    }
+                },
+            },
         ),
         (
             "document_update",
