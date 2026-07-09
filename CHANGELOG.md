@@ -2,6 +2,18 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-09 (Web Dashboard + Automations Layer + New Project Structure)
+
+- Added top-level `dashboard/` (Streamlit MVP) and `automations/` directories plus `src/mana_agent/ui/streamlit_helpers.py`, `src/mana_agent/automations/` (scheduler, self_improvement, github_integration).
+- Added optional dependencies in pyproject.toml: `dashboard`, `automations`, `full` (lazy loaded; core package unchanged).
+- Added `mana-agent dashboard` CLI command (lazy, graceful when streamlit missing) and registered it.
+- Extended root interactive TUI menu with "Launch Web Dashboard" option.
+- Dashboard MVP: sidebar navigation, overview cards, reports viewer, live taskboard/traces from `.mana/`, metrics, safe action stubs. Reuses existing artifacts and helpers. Read-only first.
+- Automations boilerplate: GitHub workflow example templates, scheduler example, self-improvement extraction stub (model-decision gated).
+- Updated project structure docs implicitly via new modules. All changes follow Inspect→Plan→Model Decision→small edits→Verify→Changelog.
+  - Verification: `PYTHONPATH=src venv/bin/python -m py_compile src/...` (multiple modules) passed; `PYTHONPATH=src venv/bin/mana-agent --help`, `... chat --help`, `... analyze --help`, `... dashboard --help` passed and showed new command; core imports of `mana_agent`, `mana_agent.ui`, `mana_agent.automations` succeeded without optional deps; `git status --short` inspected before/after; dashboard/app.py and helpers implement read-only views over taskboard/traces/index; no core multi_agent, routing, or decision files were modified.
+- New structure is optional and does not affect existing CLI, multi-agent runtime, or safety model.
+
 ## 2026-07-09 (document file CRUD and query support)
 
 - Added a document tool layer for `.docx`, `.pdf`, `.xlsx`, `.xlsm`, and `.csv` detection, reading, analysis, chunk caching, querying, creation, safe update, and explicit delete operations.
