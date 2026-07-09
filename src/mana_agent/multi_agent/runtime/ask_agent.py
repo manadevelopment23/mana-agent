@@ -776,6 +776,31 @@ class AskAgent:
         return normalized
 
     @staticmethod
+    def _document_binary_write_error(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
+        if name not in {"write_file", "create_file"}:
+            return None
+        path = str(args.get("path", "") or "").strip()
+        if Path(path).suffix.lower() not in {".docx", ".pdf", ".xlsx", ".xlsm"}:
+            return None
+        content = args.get("content", args.get("text", args.get("body", "")))
+        reason = (
+            "empty binary document content"
+            if not str(content or "").strip()
+            else "binary document target cannot be written by text file tools"
+        )
+        return {
+            "ok": False,
+            "error": reason,
+            "error_code": "document_text_tool_blocked",
+            "tool": name,
+            "path": path,
+            "message": (
+                "Use document_create or document_update for Word/PDF/Excel artifacts; use run_command only "
+                "for temporary helper scripts that are not committed."
+            ),
+        }
+
+    @staticmethod
     def _normalize_line_request(start_line: int, end_line: int, line_window: int) -> tuple[int, int]:
         start = max(int(start_line or 1), 1)
         end = max(int(end_line or start), start)
@@ -2062,6 +2087,16 @@ class AskAgent:
                             )
                         ):
                             content = json.dumps({"error": "read_file budget exhausted"})
+                            persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
+                            messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
+                            continue
+                    if name in {"write_file", "create_file"}:
+                        document_write_error = self._document_binary_write_error(
+                            name=name,
+                            args=args if isinstance(args, dict) else {},
+                        )
+                        if document_write_error is not None:
+                            content = json.dumps(document_write_error)
                             persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue

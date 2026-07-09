@@ -144,12 +144,14 @@ Use the most direct tool for the job:
 
 ## PROJECT RECOGNITION
 
-Recognize the project using lightweight commands and manifest hints.
+Recognize the project only when the active workflow/tool policy selected
+repository discovery.
 
 Preferred orientation:
-- `ls`
-- `find . -maxdepth 2 -type f` with noisy paths excluded
-- manifest inspection through `read_file` or `run_command`
+- Use the model-selected discovery/read tools from the current policy.
+- Prefer manifest inspection through `read_file` or approved commands when those
+  tools were selected.
+- Do not run listing or discovery commands just because a task entered edit mode.
 
 Language hints:
 - Go: `go.mod`, `go.sum`

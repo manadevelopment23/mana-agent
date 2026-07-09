@@ -248,6 +248,8 @@ def _tool_arg_error(tool_name: str, args: dict[str, Any]) -> str:
     if name in {"write_file", "create_file"}:
         if not _text("path"):
             return f"{name} requires `path`"
+        if Path(_text("path")).suffix.lower() in {".docx", ".pdf", ".xlsx", ".xlsm"}:
+            return f"{name} cannot write binary document targets; use document_create or document_update"
         has_content = any(args.get(key) is not None for key in ("content", "text", "body"))
         if name == "write_file" and bool(args.get("finalize")):
             return ""

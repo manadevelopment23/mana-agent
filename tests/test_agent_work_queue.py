@@ -124,6 +124,20 @@ def test_tools_only_strict_not_used_for_plain_content_generation(tmp_path: Path)
     assert request.tool_policy.get("mutation_required") is None
 
 
+def test_document_artifact_edit_policy_does_not_allow_helper_file_mutations(tmp_path: Path) -> None:
+    request = build_tool_run_request(
+        WorkItem(kind="edit", tool_name="document_create", tool_args={"path": "output.xlsx"}, question="create workbook"),
+        repo_root=tmp_path,
+        index_dir=str(tmp_path),
+        tool_policy={"document_artifact_mutation": True, "allowed_tools": ["document_create", "create_file"]},
+    )
+
+    assert request.tool_policy is not None
+    assert request.tool_policy["mutation_required"] is True
+    assert request.tool_policy["allowed_tools"] == ["document_create", "document_update", "document_delete"]
+    assert "create_file" not in request.tool_policy["allowed_tools"]
+
+
 # --------------------------------------------------------------------------- #
 # Dependencies
 # --------------------------------------------------------------------------- #

@@ -339,9 +339,16 @@ def _normalized_repo_path(path: str, *, repo_root: Path) -> str:
 def _policy_for_item(item: WorkItem, tool_policy: dict[str, Any] | None) -> dict[str, Any]:
     item_policy = dict(tool_policy or {})
     if item.kind == "edit":
+        if bool(item_policy.get("document_artifact_mutation")):
+            item_policy["allowed_tools"] = [
+                "document_create",
+                "document_update",
+                "document_delete",
+            ]
+        else:
+            item_policy["allowed_tools"] = list(_AGENTIC_EDIT_TOOLS)
         # An edit item is an agentic analyze-then-write pass: the worker may
         # inspect the repo before authoring, but must finish with a mutation.
-        item_policy["allowed_tools"] = list(_AGENTIC_EDIT_TOOLS)
         item_policy["require_read_files"] = 0
         item_policy["mutation_required"] = True
         item_policy["verify_requires_mutation"] = True

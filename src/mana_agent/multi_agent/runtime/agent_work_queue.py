@@ -1309,7 +1309,7 @@ class QueueManager:
         )
 
         steps: list[dict[str, str]] = [
-            {"id": "discover", "title": f"Locate files relevant to: {request[:120]}", "status": "pending"},
+            {"id": "discover", "title": f"Run planner-selected repository discovery for: {request[:120]}", "status": "pending"},
             {"id": "read", "title": "Read the candidate files to ground the change", "status": "pending"},
         ]
         if mutation_required:
@@ -1550,7 +1550,7 @@ class QueueManager:
                     kind="discover",
                     tool_name="repo_search",
                     tool_args={"query": request},
-                    question=f"Locate files relevant to: {request}",
+                    question=f"Run planner-selected repository discovery for: {request}",
                     gate="locate_candidates",
                     priority=10,
                 )
@@ -1903,6 +1903,18 @@ class QueueManager:
                 forced_targets = []
             for target_file in forced_targets:
                 forced_retry_ran = True
+                forced_allowed_tools = (
+                    ["document_create", "document_update", "document_delete"]
+                    if bool(resolved_tool_policy.get("document_artifact_mutation"))
+                    else [
+                        "edit_file",
+                        "multi_edit_file",
+                        "apply_patch",
+                        "write_file",
+                        "create_file",
+                        "delete_file",
+                    ]
+                )
                 forced_policy = {
                     **resolved_tool_policy,
                     "mutation_required": True,
@@ -1910,14 +1922,7 @@ class QueueManager:
                     # Agentic authoring: the worker may inspect the repo to ground
                     # the file, then must end with a mutation. The executor's edit
                     # branch enforces the same toolset; this keeps them aligned.
-                    "allowed_tools": [
-                        "edit_file",
-                        "multi_edit_file",
-                        "apply_patch",
-                        "write_file",
-                        "create_file",
-                        "delete_file",
-                    ],
+                    "allowed_tools": forced_allowed_tools,
                     "verify_requires_mutation": True,
                 }
                 forced_session = session.with_tool_policy(forced_policy)
