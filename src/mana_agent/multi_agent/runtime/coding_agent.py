@@ -64,6 +64,7 @@ logger = logging.getLogger(__name__)
 _as_jsonable = as_jsonable
 
 if TYPE_CHECKING:
+    from mana_agent.multi_agent.runtime.agent_work_queue import WorkItem
     from mana_agent.multi_agent.runtime.tool_worker_process import ToolRunResponse
 
 
@@ -641,6 +642,32 @@ class CodingAgent:
         return tools
 
     @staticmethod
+    def _policy_tools_from_checklist(checklist: "FlowChecklist | dict[str, Any] | None") -> set[str]:
+        if checklist is None:
+            return set()
+        if isinstance(checklist, FlowChecklist):
+            return CodingAgent._checklist_required_tools(checklist)
+        if not isinstance(checklist, dict):
+            return set()
+        tools: set[str] = set()
+        steps = checklist.get("steps")
+        if not isinstance(steps, list):
+            return tools
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            raw_tools = step.get("requires_tools") or step.get("allowed_tools") or []
+            if isinstance(raw_tools, str):
+                raw_tools = [raw_tools]
+            if not isinstance(raw_tools, list):
+                continue
+            for tool in raw_tools:
+                normalized = str(tool or "").strip().lower()
+                if normalized:
+                    tools.add(normalized)
+        return tools
+
+    @staticmethod
     def _checklist_requests_discovery(checklist: "FlowChecklist | None") -> bool:
         tools = CodingAgent._checklist_required_tools(checklist)
         return bool(tools & {"repo_search", "repo_batch_search", "semantic_search", "list_files", "find_symbols", "call_graph"})
@@ -716,13 +743,13 @@ class CodingAgent:
                 for idx, path in enumerate(dict.fromkeys(target_files))
             ]
 
-        if decision.needs_repo_search or self._checklist_requests_discovery(checklist):
+        if self._checklist_requests_discovery(checklist):
             return [
                 WorkItem(
                     kind="discover",
                     tool_name="repo_search",
                     tool_args={"query": request},
-                    question=f"Locate files relevant to: {request}",
+                    question=f"Run planner-selected repository discovery for: {request}",
                     gate="locate_candidates",
                     priority=10,
                 )
@@ -741,13 +768,18 @@ class CodingAgent:
 
     @staticmethod
     def _normalize_prechecklist(checklist: FlowChecklist, *, source: str) -> dict[str, Any]:
-        steps: list[dict[str, str]] = []
+        steps: list[dict[str, Any]] = []
         for item in checklist.steps[:20]:
             steps.append(
                 {
                     "id": str(item.id or "").strip() or "step",
                     "title": str(item.title or "").strip() or "step",
                     "status": str(item.status or "pending"),
+                    "requires_tools": [
+                        str(tool).strip().lower()
+                        for tool in (item.requires_tools or [])
+                        if str(tool).strip()
+                    ],
                 }
             )
         return {
@@ -928,6 +960,7 @@ class CodingAgent:
             request,
             flow_context=effective_flow_context,
             auto_chat_mode=auto_chat_mode,
+            checklist=prechecklist,
         )
         try:
             _ = callbacks
@@ -1368,7 +1401,20 @@ class CodingAgent:
 
     # Mutation tools whose presence in a planned step means the run must end in
     # an actual edit (and verify), not just discovery/reads.
-    _MUTATION_TOOLS = frozenset({"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file"})
+    _MUTATION_TOOLS = frozenset(
+        {
+            "edit_file",
+            "multi_edit_file",
+            "apply_patch",
+            "apply_patch_batch",
+            "create_file",
+            "write_file",
+            "delete_file",
+            "document_create",
+            "document_update",
+            "document_delete",
+        }
+    )
 
     @classmethod
     def _checklist_requires_edit(cls, checklist: "FlowChecklist | None") -> bool:
@@ -1659,6 +1705,7 @@ class CodingAgent:
         *,
         flow_context: str | None = None,
         auto_chat_mode: str | None = None,
+        checklist: FlowChecklist | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         require_read_files = self.require_read_files
         explicit_files = {
@@ -1694,6 +1741,13 @@ class CodingAgent:
                 "git_diff",
                 "verify_project",
                 "tool_contracts",
+                "document_detect",
+                "document_read",
+                "document_analyze",
+                "document_query",
+                "document_create",
+                "document_update",
+                "document_delete",
                 "edit_file",
                 "multi_edit_file",
                 "apply_patch",
@@ -1721,6 +1775,25 @@ class CodingAgent:
             "search_repeat_limit": 1,
             "max_semantic_k": 50,
         }
+        checklist_tools = self._policy_tools_from_checklist(checklist)
+        discovery_tools = {"repo_search", "repo_batch_search", "semantic_search", "list_files", "ls", "find_symbols", "call_graph"}
+        if checklist is not None and checklist_tools and not checklist_tools.intersection(discovery_tools):
+            policy["allowed_tools"] = [tool for tool in policy["allowed_tools"] if tool not in discovery_tools]
+            policy["search_budget"] = 0
+        document_mutation_tools = {"document_create", "document_update", "document_delete"}
+        if checklist_tools.intersection(document_mutation_tools):
+            text_mutation_tools = {
+                "edit_file",
+                "multi_edit_file",
+                "apply_patch",
+                "apply_patch_batch",
+                "create_file",
+                "write_file",
+                "delete_file",
+            }
+            policy["allowed_tools"] = [tool for tool in policy["allowed_tools"] if tool not in text_mutation_tools]
+            policy["document_artifact_mutation"] = True
+            policy["artifact_target_tools"] = sorted(document_mutation_tools)
         if auto_chat_mode:
             policy = apply_auto_chat_tool_policy(policy, auto_chat_mode)
         return policy
@@ -1773,6 +1846,7 @@ class CodingAgent:
             request,
             flow_context=effective_flow_context,
             auto_chat_mode=auto_chat_mode,
+            checklist=checklist,
         )
         required_read_files = int(tool_policy.get("require_read_files", self.require_read_files) or self.require_read_files)
         request_for_run = self._rewrite_ambiguous_followup(request, effective_flow_context)
@@ -1810,7 +1884,7 @@ class CodingAgent:
         mutation_tools_seen = {str(row.get("tool_name", "")) for row in combined_trace_rows}
         attempted_apply_patch = "apply_patch" in mutation_tools_seen
         attempted_write_file = "write_file" in mutation_tools_seen
-        attempted_mutation = bool(mutation_tools_seen.intersection({"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}))
+        attempted_mutation = bool(mutation_tools_seen.intersection(self._MUTATION_TOOLS))
 
         if edit_intent and not changed and attempted_apply_patch:
             warnings.append("mutation_noop_after_apply_patch")

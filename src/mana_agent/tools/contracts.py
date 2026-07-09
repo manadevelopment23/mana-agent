@@ -28,6 +28,116 @@ def _schema(properties: dict[str, Any], required: list[str] | None = None) -> di
     }
 
 
+def _excel_cell_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "cell": {"type": "string"},
+            "value": {},
+            "formula": {"type": "string"},
+        },
+        "required": ["cell"],
+        "anyOf": [
+            {"required": ["value"]},
+            {"required": ["formula"]},
+        ],
+        "additionalProperties": False,
+    }
+
+
+def _excel_table_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "start_cell": {"type": "string"},
+            "columns": {
+                "type": "array",
+                "items": {},
+            },
+            "headers": {
+                "type": "array",
+                "items": {},
+            },
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {},
+                },
+            },
+            "name": {"type": "string"},
+            "style": {"type": "string"},
+        },
+        "required": ["rows"],
+        "additionalProperties": False,
+    }
+
+
+def _excel_sheet_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "cells": {
+                "type": "array",
+                "items": _excel_cell_schema(),
+            },
+            "tables": {
+                "type": "array",
+                "items": _excel_table_schema(),
+            },
+            "formulas": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "cell": {"type": "string"},
+                        "formula": {"type": "string"},
+                    },
+                    "required": ["cell", "formula"],
+                    "additionalProperties": False,
+                },
+            },
+            "rows": {
+                "type": "array",
+                "items": {},
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
+def _document_create_content_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "paragraphs": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "tables": {
+                "type": "array",
+                "items": {},
+            },
+            "text": {"type": "string"},
+            "rows": {
+                "type": "array",
+                "items": {},
+            },
+            "sheets": {
+                "type": "object",
+                "description": (
+                    "Excel sheets MUST be an object keyed by sheet name. "
+                    "Never pass sheets as a list. Correct: "
+                    "{'Sheet1': {'cells': [{'cell': 'A1', 'value': 200}]}}."
+                ),
+                "additionalProperties": _excel_sheet_schema(),
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
 def _git_tool_contracts(common_error: dict[str, Any]) -> list[ToolContract]:
     base_output = _schema(
         {
@@ -97,6 +207,135 @@ def _git_tool_contracts(common_error: dict[str, Any]) -> list[ToolContract]:
             examples=[{"input": {key: value for key, value in ({"args": ["status"]} if name == "git.generic" else {}).items()}}],
         )
         for name, description, properties, required in specs
+    ]
+
+
+def _document_tool_contracts(common_error: dict[str, Any]) -> list[ToolContract]:
+    base_output = _schema(
+        {
+            "ok": {"type": "boolean"},
+            "path": {"type": "string"},
+            "file_type": {"type": "string"},
+            "metadata": {"type": "object"},
+            "analysis": {"type": "object"},
+            "chunks": {"type": "array"},
+            "results": {"type": "array"},
+            "warnings": {"type": "array"},
+            "error": {"type": "string"},
+            "message": {"type": "string"},
+            "verification": {"type": "object"},
+        }
+    )
+    safety = [
+        "Use only after a model decision selects a document capability.",
+        "Reject paths outside the repository root.",
+        "Read large files as normalized chunks and do not load entire large documents into prompts.",
+        "Report scanned or image-only PDFs as needing OCR; do not invent text.",
+        "Create backups before destructive updates unless explicitly disabled.",
+        "Require explicit delete intent for document file deletion.",
+        "For Excel create operations, content.sheets MUST be an object keyed by sheet name, not a list.",
+        "For Excel create operations, use cells with {'cell': 'A1', 'value': ...} or {'cell': 'D1', 'formula': '=SUM(A1:C1)'}.",
+        "Never use ExcelJS-style rows/cells payloads such as {'rows': [{'cells': [{'v': 200}]}]}; this project uses openpyxl-style normalized schemas.",
+    ]
+    specs: list[tuple[str, str, dict[str, Any], list[str] | None, dict[str, Any]]] = [
+        (
+            "document_detect",
+            "Detect whether a project file is a supported Word, PDF, Excel, or CSV document.",
+            {"path": {"type": "string"}, "mime_type": {"type": "string"}},
+            ["path"],
+            {"path": "docs/report.pdf"},
+        ),
+        (
+            "document_read",
+            "Read a supported document into normalized chunks with citation metadata.",
+            {"path": {"type": "string"}, "use_cache": {"type": "boolean"}, "max_chunks": {"type": "integer"}},
+            ["path"],
+            {"path": "docs/report.docx", "use_cache": True, "max_chunks": 100},
+        ),
+        (
+            "document_analyze",
+            "Summarize document structure, key points, tables, counts, formulas, and OCR warnings.",
+            {"path": {"type": "string"}},
+            ["path"],
+            {"path": "budget.xlsx"},
+        ),
+        (
+            "document_query",
+            "Search parsed document chunks with file-type, path, sheet, page, and section filters.",
+            {
+                "query": {"type": "string"},
+                "paths": {"type": "array"},
+                "file_types": {"type": "array"},
+                "path_filter": {"type": "string"},
+                "sheet": {"type": "string"},
+                "page": {"type": "integer"},
+                "section": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            ["query"],
+            {"query": "payment terms", "file_types": ["pdf", "docx"], "limit": 5},
+        ),
+        (
+            "document_create",
+            (
+                "Create a DOCX, XLSX/XLSM, CSV, or simple text PDF artifact without overwriting by default. "
+                "For Excel, content.sheets must be an object keyed by sheet name. "
+                "Do not pass sheets as a list."
+            ),
+            {
+                "path": {"type": "string"},
+                "content": _document_create_content_schema(),
+                "file_type": {
+                    "type": "string",
+                    "description": "Use lowercase values: docx, pdf, xlsx, xlsm, or csv.",
+                },
+                "overwrite": {"type": "boolean"},
+            },
+            ["path", "content"],
+            {
+                "path": "row_sum.xlsx",
+                "file_type": "xlsx",
+                "overwrite": False,
+                "content": {
+                    "sheets": {
+                        "Sheet1": {
+                            "cells": [
+                                {"cell": "A1", "value": 200},
+                                {"cell": "B1", "value": 300},
+                                {"cell": "C1", "value": 400},
+                                {"cell": "D1", "formula": "=SUM(A1:C1)"},
+                            ]
+                        }
+                    }
+                },
+            },
+        ),
+        (
+            "document_update",
+            "Safely update DOCX sections/text/tables/metadata, Excel cells/rows/sheets/formulas, or PDF metadata.",
+            {"path": {"type": "string"}, "operation": {"type": "string"}, "payload": {"type": "object"}, "backup": {"type": "boolean"}},
+            ["path", "operation", "payload"],
+            {"path": "budget.xlsx", "operation": "update_cell", "payload": {"sheet": "March", "cell": "B2", "value": 1200}},
+        ),
+        (
+            "document_delete",
+            "Delete a supported document file only when explicit delete intent has been validated.",
+            {"path": {"type": "string"}, "explicit": {"type": "boolean"}, "backup": {"type": "boolean"}},
+            ["path", "explicit"],
+            {"path": "docs/generated-report.docx", "explicit": True},
+        ),
+    ]
+    return [
+        ToolContract(
+            name=name,
+            description=description,
+            input_schema=_schema(properties, required),
+            output_schema=base_output,
+            error_format=common_error,
+            safety_rules=safety,
+            examples=[{"input": example}],
+        )
+        for name, description, properties, required, example in specs
     ]
 
 
@@ -182,6 +421,7 @@ def coding_tool_contracts() -> list[ToolContract]:
             ],
             examples=[{"input": {"skill_name": "django"}}],
         ),
+        *_document_tool_contracts(common_error),
         *_git_tool_contracts(common_error),
         ToolContract(
             name="repo_batch_read",

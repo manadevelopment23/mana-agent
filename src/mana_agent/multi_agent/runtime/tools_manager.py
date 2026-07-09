@@ -166,7 +166,18 @@ class RunStateStore:
         "verify_changes",
         "final_report",
     ]
-    mutation_tools = {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}
+    mutation_tools = {
+        "edit_file",
+        "multi_edit_file",
+        "apply_patch",
+        "apply_patch_batch",
+        "write_file",
+        "create_file",
+        "delete_file",
+        "document_create",
+        "document_update",
+        "document_delete",
+    }
     verification_tools = {"run_command", "run_script_once", "verify_project"}
     # Internal placeholder recorded when a worker request does not resolve to a
     # concrete enumerated tool (the agentic ask path). It is never a real tool.
@@ -824,7 +835,7 @@ class RunStateStore:
             if row.get("status") != "ok":
                 continue
             tool = str(row.get("tool_name", "") or "").strip().lower()
-            if tool in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"} and any(
+            if tool in _MUTATION_TOOLS and any(
                 str(path).strip()
                 for path in (row.get("files_changed") if isinstance(row.get("files_changed"), list) else [])
             ):
@@ -1174,7 +1185,7 @@ class RunStateStore:
         successful_patches = 0
         for row in self.read_jsonl("tool_calls.jsonl"):
             tool = str(row.get("tool_name", "") or "").strip().lower()
-            if row.get("status") == "ok" and tool in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}:
+            if row.get("status") == "ok" and tool in _MUTATION_TOOLS:
                 successful_patches += 1
             if row.get("status") == "ok" and tool in {"run_command", "run_script_once", "verify_project"}:
                 verification_commands += 1
@@ -1250,7 +1261,7 @@ class RunStateStore:
             "applied_patches": [
                 row
                 for row in self.read_jsonl("tool_calls.jsonl")
-                if row.get("status") == "ok" and str(row.get("tool_name", "")).strip().lower() in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}
+                if row.get("status") == "ok" and str(row.get("tool_name", "")).strip().lower() in _MUTATION_TOOLS
                 and any(str(path).strip() for path in (row.get("files_changed") if isinstance(row.get("files_changed"), list) else []))
             ],
             "verification_commands": [
@@ -1350,8 +1361,8 @@ class RunStateStore:
                     "title": "Update docs/models.md",
                     "kind": "edit",
                     "target_files": ["docs/models.md"],
-                    "allowed_tools": ["edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"],
-                    "required_tool": "edit_file|multi_edit_file|apply_patch|apply_patch_batch|write_file|create_file|delete_file",
+                    "allowed_tools": sorted(_MUTATION_TOOLS),
+                    "required_tool": "|".join(sorted(_MUTATION_TOOLS)),
                     "dependencies": ["plan_docs_models_update"],
                     "done_condition": "docs/models.md is modified by a mutation tool",
                 },
@@ -1389,8 +1400,8 @@ class RunStateStore:
             },
             "apply_changes": {
                 "kind": "edit",
-                "allowed_tools": ["edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"],
-                "required_tool": "edit_file|multi_edit_file|apply_patch|apply_patch_batch|write_file|create_file|delete_file",
+                "allowed_tools": sorted(_MUTATION_TOOLS),
+                "required_tool": "|".join(sorted(_MUTATION_TOOLS)),
                 "done_condition": "target file is modified by a mutation tool",
             },
             "verify_changes": {
@@ -1709,7 +1720,18 @@ class RunStateStore:
         self.write_json("work_ledger.json", ledger)
 
 
-_MUTATION_TOOLS = {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}
+_MUTATION_TOOLS = {
+    "edit_file",
+    "multi_edit_file",
+    "apply_patch",
+    "apply_patch_batch",
+    "write_file",
+    "create_file",
+    "delete_file",
+    "document_create",
+    "document_update",
+    "document_delete",
+}
 _NON_PROGRESS_STATUSES = {
     "blocked",
     "skipped",
@@ -1768,7 +1790,7 @@ _CREATE_FILE_IN_DIR_RE = re.compile(
     re.IGNORECASE,
 )
 _MUTATION_FALLBACK_ALLOWED_TOOLS = frozenset(
-    {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file", "git_status", "git_diff", "verify_project", "run_script_once"}
+    {*_MUTATION_TOOLS, "git_status", "git_diff", "verify_project", "run_script_once"}
 )
 _MUTATION_FALLBACK_BLOCKED_TOOLS = frozenset(
     {
@@ -2167,36 +2189,35 @@ def _mutation_tool_stats(trace: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _forced_mutation_prompt(request: str, target_file: str, *, target_exists: bool | None = None) -> str:
-    """The MUTATION_REQUIRED prompt: analyze the project, then mutate the file.
+    """The MUTATION_REQUIRED prompt: execute the selected mutation path.
 
-    This drives an agentic pass, not a one-shot write. The worker is expected to
-    inspect the repository (README, packaging metadata, source layout) so the
-    edit it produces is specific to *this* project, then finish with a single
-    mutation tool call. Placeholder/stub content is explicitly forbidden — there
-    is no template fallback behind this, so a stub is a failed deliverable.
+    This drives an agentic pass, not a one-shot write. The worker must honor the
+    current tool policy, use discovery only when the policy selected it, then
+    finish with a single mutation tool call. Placeholder/stub content is
+    explicitly forbidden; there is no template fallback behind this, so a stub is
+    a failed deliverable.
     """
     if target_exists is None:
         target_exists = not bool(re.search(r"\b(create|generate)\b", str(request or ""), re.IGNORECASE))
     target_exists = bool(target_file) and bool(target_exists)
     action = (
-        f"You must update the existing file {target_file} by ANALYZING THIS PROJECT, then patching it."
+        f"You must update the existing file {target_file} with the selected mutation tool."
         if target_exists
-        else "You must create the requested file by ANALYZING THIS PROJECT, then writing it."
+        else "You must create the requested file with the selected mutation tool."
     )
     finish_rule = (
         "3. Finish by updating the existing target with exactly one mutation tool "
-        "(edit_file, multi_edit_file, apply_patch, apply_patch_batch, write_file, or delete_file)."
+        "(edit_file, multi_edit_file, apply_patch, apply_patch_batch, write_file, delete_file, document_update, or document_delete)."
         if target_exists
         else "3. Finish by writing real, project-specific content with exactly one mutation tool "
-        "(edit_file, multi_edit_file, apply_patch, apply_patch_batch, create_file, write_file, or delete_file)."
+        "(edit_file, multi_edit_file, apply_patch, apply_patch_batch, create_file, write_file, delete_file, or document_create)."
     )
     lines = [
         action,
         "",
         "Work like an agent:",
-        "1. Inspect the repository to understand it — read the README, packaging "
-        "metadata (pyproject.toml/setup.py/package.json), and the relevant source "
-        "files/directories. Use read_file, repo_search, list_files, and ls.",
+        "1. Use only the tools allowed by the current policy. Do not run discovery "
+        "or listing tools unless the active policy selected them.",
         "2. Decide what THIS specific file should contain from its name/path "
         "(e.g. an overview summarizes the project; an installation guide gives the "
         "real setup and install commands; usage/commands document the actual CLI).",
@@ -2205,7 +2226,7 @@ def _forced_mutation_prompt(request: str, target_file: str, *, target_exists: bo
         "Hard requirements:",
         "- Ground every claim in what you actually found in the repository.",
         "- Do NOT write placeholders, 'TBD', 'TODO', or generic filler. If you do "
-        "not know something, inspect the repo to find it.",
+        "not know something and discovery tools are not allowed, stop with a blocker.",
         "- The run is not complete until the target file contains substantive updated content.",
     ]
     if target_file:

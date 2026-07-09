@@ -1037,10 +1037,21 @@ def test_direct_mutation_tool_args_are_validated_before_worker_start(monkeypatch
                 tool_args={"patch": "not a patch"},
             )
         )
+    with pytest.raises(twp.ToolWorkerProcessError) as binary_doc_exc:
+        client.run_tools(
+            twp.ToolRunRequest(
+                question="create workbook",
+                index_dir="/tmp/.mana/index",
+                tool_name="write_file",
+                tool_args={"path": "requested.xlsx", "content": ""},
+            )
+        )
 
     assert write_exc.value.code == "invalid_tool_args"
     assert create_exc.value.code == "invalid_tool_args"
     assert patch_exc.value.code == "invalid_tool_args"
+    assert binary_doc_exc.value.code == "invalid_tool_args"
+    assert "document_create" in str(binary_doc_exc.value)
     assert started["value"] is False
 
 

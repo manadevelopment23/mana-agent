@@ -912,9 +912,9 @@ def test_bare_existing_unique_file_resolves_to_repo_path(tmp_path: Path) -> None
 
 def test_forced_mutation_prompt_drives_agentic_authoring() -> None:
     prompt = _forced_mutation_prompt("create docs/01-overview.md", "docs/01-overview.md")
-    assert "ANALYZING THIS PROJECT" in prompt
-    # It must point the worker at read/search tools, not just mutation tools.
-    assert "read_file" in prompt and "repo_search" in prompt
+    assert "ANALYZING THIS PROJECT" not in prompt
+    assert "Use only the tools allowed by the current policy" in prompt
+    assert "Do not run discovery or listing tools unless the active policy selected them" in prompt
     assert "edit_file" in prompt and "multi_edit_file" in prompt
     assert "create_file" in prompt and "write_file" in prompt and "apply_patch" in prompt and "delete_file" in prompt
     # No placeholders/boilerplate — there is no template fallback behind it.

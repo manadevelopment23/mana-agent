@@ -28,6 +28,7 @@ from mana_agent.config.settings import default_index_dir
 from mana_agent.services.coding_memory_service import CodingMemoryService
 from mana_agent.services.memory_service import EvidenceMemory
 from mana_agent.services.search_service import SearchService
+from mana_agent.documents.service import DocumentService
 from mana_agent.search.config import SearchConfig
 from mana_agent.search.decision import SearchDecisionEngine
 from mana_agent.search.router import SearchRouter, SearchRouterResult
@@ -60,7 +61,7 @@ logger = logging.getLogger(__name__)
 _FORCED_WRITE_INSTRUCTION = (
     "You have gathered enough evidence from the repository. Do NOT read, search, "
     "or list anything else. Right now, in this step, call exactly one mutation "
-    "tool (edit_file, multi_edit_file, apply_patch, apply_patch_batch, write_file, create_file, or delete_file) to apply the required "
+    "tool (edit_file, multi_edit_file, apply_patch, apply_patch_batch, write_file, create_file, delete_file, document_create, document_update, or document_delete) to apply the required "
     "project-level change with its full, final, project-specific content. Update "
     "all required imports, exports, registries, routers, commands, call sites, tests, "
     "and docs, and remove stale references. Do not answer in prose and do not emit "
@@ -174,6 +175,45 @@ class _GitLogInput(BaseModel):
 
 class _VerifyProjectInput(BaseModel):
     quick: bool = False
+
+class _DocumentDetectInput(BaseModel):
+    path: str
+    mime_type: str | None = None
+
+class _DocumentReadInput(BaseModel):
+    path: str
+    use_cache: bool = True
+    max_chunks: int = 400
+
+class _DocumentAnalyzeInput(BaseModel):
+    path: str
+
+class _DocumentQueryInput(BaseModel):
+    query: str
+    paths: list[str] | None = None
+    file_types: list[str] | None = None
+    path_filter: str = ""
+    sheet: str = ""
+    page: int | None = None
+    section: str = ""
+    limit: int = 10
+
+class _DocumentCreateInput(BaseModel):
+    path: str
+    content: dict[str, Any]
+    file_type: str | None = None
+    overwrite: bool = False
+
+class _DocumentUpdateInput(BaseModel):
+    path: str
+    operation: str
+    payload: dict[str, Any]
+    backup: bool = True
+
+class _DocumentDeleteInput(BaseModel):
+    path: str
+    explicit: bool = False
+    backup: bool = True
 
 
 class AskAgent:
@@ -656,7 +696,7 @@ class AskAgent:
         unique_read_files: set[str],
     ) -> list[str]:
         targets: list[str] = []
-        if name in {"edit_file", "multi_edit_file", "write_file", "create_file", "delete_file"}:
+        if name in {"edit_file", "multi_edit_file", "write_file", "create_file", "delete_file", "document_create", "document_update", "document_delete"}:
             raw_path = str(args.get("path", "")).strip()
             if raw_path:
                 try:
@@ -692,7 +732,7 @@ class AskAgent:
         when the payload omits a list. Returns ``[]`` for non-mutation tools or
         when the call did not succeed.
         """
-        if name not in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file"}:
+        if name not in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file", "document_create", "document_update", "document_delete"}:
             return []
         if name == "apply_patch":
             if self._is_apply_patch_failure(content):
@@ -734,6 +774,31 @@ class AskAgent:
             if rel and rel not in normalized:
                 normalized.append(rel)
         return normalized
+
+    @staticmethod
+    def _document_binary_write_error(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
+        if name not in {"write_file", "create_file"}:
+            return None
+        path = str(args.get("path", "") or "").strip()
+        if Path(path).suffix.lower() not in {".docx", ".pdf", ".xlsx", ".xlsm"}:
+            return None
+        content = args.get("content", args.get("text", args.get("body", "")))
+        reason = (
+            "empty binary document content"
+            if not str(content or "").strip()
+            else "binary document target cannot be written by text file tools"
+        )
+        return {
+            "ok": False,
+            "error": reason,
+            "error_code": "document_text_tool_blocked",
+            "tool": name,
+            "path": path,
+            "message": (
+                "Use document_create or document_update for Word/PDF/Excel artifacts; use run_command only "
+                "for temporary helper scripts that are not committed."
+            ),
+        }
 
     @staticmethod
     def _normalize_line_request(start_line: int, end_line: int, line_window: int) -> tuple[int, int]:
@@ -1368,6 +1433,49 @@ class AskAgent:
         def tool_contracts() -> str:
             return dumps_tool_result(coding_tool_contracts_payload())
 
+        document_service = DocumentService(self.project_root)
+
+        def document_detect(path: str, mime_type: str | None = None) -> str:
+            return dumps_tool_result(document_service.detect(path, mime_type=mime_type))
+
+        def document_read(path: str, use_cache: bool = True, max_chunks: int = 400) -> str:
+            return dumps_tool_result(document_service.read(path, use_cache=use_cache, max_chunks=max_chunks))
+
+        def document_analyze(path: str) -> str:
+            return dumps_tool_result(document_service.analyze(path))
+
+        def document_query(
+            query: str,
+            paths: list[str] | None = None,
+            file_types: list[str] | None = None,
+            path_filter: str = "",
+            sheet: str = "",
+            page: int | None = None,
+            section: str = "",
+            limit: int = 10,
+        ) -> str:
+            return dumps_tool_result(
+                document_service.query(
+                    query,
+                    paths=paths,
+                    file_types=file_types,
+                    path_filter=path_filter,
+                    sheet=sheet,
+                    page=page,
+                    section=section,
+                    limit=limit,
+                )
+            )
+
+        def document_create(path: str, content: dict[str, Any], file_type: str | None = None, overwrite: bool = False) -> str:
+            return dumps_tool_result(document_service.create(path, content=content, file_type=file_type, overwrite=overwrite))
+
+        def document_update(path: str, operation: str, payload: dict[str, Any], backup: bool = True) -> str:
+            return dumps_tool_result(document_service.update(path, operation=operation, payload=payload, backup=backup))
+
+        def document_delete(path: str, explicit: bool = False, backup: bool = True) -> str:
+            return dumps_tool_result(document_service.delete(path, explicit=explicit, backup=backup))
+
         base_tools: list[BaseTool] = [
             StructuredTool.from_function(
                 func=semantic_search,
@@ -1547,6 +1655,48 @@ class AskAgent:
                 description="Return strict name/schema/output/error/safety/examples contracts for coding tools.",
                 args_schema=_ListToolsInput,
             ),
+            StructuredTool.from_function(
+                func=document_detect,
+                name="document_detect",
+                description="Detect supported project document files by path, extension, and MIME when available.",
+                args_schema=_DocumentDetectInput,
+            ),
+            StructuredTool.from_function(
+                func=document_read,
+                name="document_read",
+                description="Read DOCX, PDF, XLSX/XLSM, or CSV files into normalized chunks with citation metadata.",
+                args_schema=_DocumentReadInput,
+            ),
+            StructuredTool.from_function(
+                func=document_analyze,
+                name="document_analyze",
+                description="Analyze document structure, key points, tables, PDF OCR needs, and workbook schemas/formulas.",
+                args_schema=_DocumentAnalyzeInput,
+            ),
+            StructuredTool.from_function(
+                func=document_query,
+                name="document_query",
+                description="Search parsed document chunks with optional file-type, path, sheet, page, or section filters.",
+                args_schema=_DocumentQueryInput,
+            ),
+            StructuredTool.from_function(
+                func=document_create,
+                name="document_create",
+                description="Create DOCX, XLSX/XLSM, CSV, or simple text PDF artifacts without overwriting by default.",
+                args_schema=_DocumentCreateInput,
+            ),
+            StructuredTool.from_function(
+                func=document_update,
+                name="document_update",
+                description="Safely update supported document files with backups unless disabled.",
+                args_schema=_DocumentUpdateInput,
+            ),
+            StructuredTool.from_function(
+                func=document_delete,
+                name="document_delete",
+                description="Delete a supported document file only when explicit delete intent is validated.",
+                args_schema=_DocumentDeleteInput,
+            ),
         ]
 
         # include externally-registered tools (write_file/apply_patch/etc)
@@ -1669,7 +1819,18 @@ class AskAgent:
         mutation_required = bool(policy.get("mutation_required") or policy.get("mutation_strict"))
         mutation_tool_names = [
             name
-            for name in ("edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file")
+            for name in (
+                "edit_file",
+                "multi_edit_file",
+                "apply_patch",
+                "apply_patch_batch",
+                "write_file",
+                "create_file",
+                "delete_file",
+                "document_create",
+                "document_update",
+                "document_delete",
+            )
             if name in tool_map and (not allowed_tools or name in allowed_tools)
         ]
         bound_mutation = None
@@ -1856,7 +2017,7 @@ class AskAgent:
                         {
                             "error": (
                                 f"duplicate tool call blocked: {name}. "
-                                "Use a different step (repo_batch_read/read_file/edit_file/multi_edit_file/apply_patch/apply_patch_batch/write_file/create_file) instead of repeating."
+                                "Use a different step (repo_batch_read/read_file/edit_file/multi_edit_file/apply_patch/apply_patch_batch/write_file/create_file/document_create) instead of repeating."
                             )
                         }
                     )
@@ -1929,7 +2090,17 @@ class AskAgent:
                             persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
-                    if name in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file"} and require_read_files > 0:
+                    if name in {"write_file", "create_file"}:
+                        document_write_error = self._document_binary_write_error(
+                            name=name,
+                            args=args if isinstance(args, dict) else {},
+                        )
+                        if document_write_error is not None:
+                            content = json.dumps(document_write_error)
+                            persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
+                            messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
+                            continue
+                    if name in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file", "document_create", "document_update", "document_delete"} and require_read_files > 0:
                         if len(unique_read_files) < require_read_files:
                             content = json.dumps(
                                 {
@@ -1941,7 +2112,7 @@ class AskAgent:
                             persist_tool_call(name, args if isinstance(args, dict) else {}, content, "blocked")
                             messages.append(ToolMessage(content=content, tool_call_id=str(call.get("id", ""))))
                             continue
-                    if name in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file"}:
+                    if name in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file", "document_create", "document_update", "document_delete"}:
                         unread_targets = self._mutation_unread_targets(
                             name=name,
                             args=args if isinstance(args, dict) else {},
@@ -2042,7 +2213,7 @@ class AskAgent:
                                 unique_read_files.add(file_path)
                         if not bool(payload.get("cache_hit", False)) and not read_failed:
                             disk_read_count += 1
-                if name in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file"}:
+                if name in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "create_file", "write_file", "delete_file", "document_create", "document_update", "document_delete"}:
                     changed_paths = self._mutation_changed_files(
                         name=name,
                         args=args if isinstance(args, dict) else {},

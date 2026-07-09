@@ -86,6 +86,7 @@ from mana_agent.multi_agent.runtime.mutation_plan import (
     validate_mutation_plan,
 )
 from mana_agent.services.coding_memory_service import CodingMemoryService
+from mana_agent.documents.service import DocumentService
 from mana_agent.services.memory_service import MultiAgentMemoryService
 from mana_agent.services.coding_todo_service import TodoService
 from mana_agent.tools.apply_patch import safe_apply_patch
@@ -94,7 +95,18 @@ from mana_agent.tools.write_file import safe_create_file, safe_delete_file, safe
 
 logger = logging.getLogger(__name__)
 
-_MUTATION_TOOLS = {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}
+_MUTATION_TOOLS = {
+    "edit_file",
+    "multi_edit_file",
+    "apply_patch",
+    "apply_patch_batch",
+    "write_file",
+    "create_file",
+    "delete_file",
+    "document_create",
+    "document_update",
+    "document_delete",
+}
 _DOC_EDIT_INTENT_RE = re.compile(r"\b(update|edit|write|fix|change|modify|replace|refactor)\b", re.IGNORECASE)
 _MUTATION_LOCKS_GUARD = threading.Lock()
 _MUTATION_LOCKS: dict[str, threading.Lock] = {}
@@ -241,6 +253,26 @@ def execute_registered_mutation_command(
         result = safe_apply_patch(repo_root=repo_root, patch=str(args["patch"]))
     elif tool == "apply_patch_batch":
         result = apply_patch_batch(repo_root, patches=list(args["patches"]))
+    elif tool == "document_create":
+        result = DocumentService(repo_root).create(
+            str(args["path"]),
+            content=args.get("content") or {},
+            file_type=args.get("file_type"),
+            overwrite=bool(args.get("overwrite", False)),
+        )
+    elif tool == "document_update":
+        result = DocumentService(repo_root).update(
+            str(args["path"]),
+            operation=str(args.get("operation") or ""),
+            payload=dict(args.get("payload") or {}),
+            backup=bool(args.get("backup", True)),
+        )
+    elif tool == "document_delete":
+        result = DocumentService(repo_root).delete(
+            str(args["path"]),
+            explicit=bool(args.get("explicit", False)),
+            backup=bool(args.get("backup", True)),
+        )
     else:
         trace = [
             {
@@ -313,7 +345,7 @@ def compute_fingerprint(*, kind: str, tool_name: str, tool_args: dict[str, Any],
     elif tool in {"repo_search", "repo_batch_search", "semantic_search", "list_files"}:
         query = _normalize_text(args.get("query") or args.get("q") or args.get("pattern") or question)
         payload = f"{tool}:{query}"
-    elif tool in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"}:
+    elif tool in _MUTATION_TOOLS:
         path = _norm_path(args.get("path") or args.get("file") or args.get("target_file"))
         payload = f"{tool}:{path or _normalize_text(question)[:160]}"
     else:
@@ -1277,7 +1309,7 @@ class QueueManager:
         )
 
         steps: list[dict[str, str]] = [
-            {"id": "discover", "title": f"Locate files relevant to: {request[:120]}", "status": "pending"},
+            {"id": "discover", "title": f"Run planner-selected repository discovery for: {request[:120]}", "status": "pending"},
             {"id": "read", "title": "Read the candidate files to ground the change", "status": "pending"},
         ]
         if mutation_required:
@@ -1291,7 +1323,7 @@ class QueueManager:
                         f"for {targets_label} to remain working"
                     ),
                     "status": "pending",
-                    "requires_tools": ["edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"],
+                    "requires_tools": sorted(_MUTATION_TOOLS),
                     "checks": [
                         "target file changed/created/deleted",
                         "related imports/usages updated",
@@ -1518,7 +1550,7 @@ class QueueManager:
                     kind="discover",
                     tool_name="repo_search",
                     tool_args={"query": request},
-                    question=f"Locate files relevant to: {request}",
+                    question=f"Run planner-selected repository discovery for: {request}",
                     gate="locate_candidates",
                     priority=10,
                 )
@@ -1871,6 +1903,18 @@ class QueueManager:
                 forced_targets = []
             for target_file in forced_targets:
                 forced_retry_ran = True
+                forced_allowed_tools = (
+                    ["document_create", "document_update", "document_delete"]
+                    if bool(resolved_tool_policy.get("document_artifact_mutation"))
+                    else [
+                        "edit_file",
+                        "multi_edit_file",
+                        "apply_patch",
+                        "write_file",
+                        "create_file",
+                        "delete_file",
+                    ]
+                )
                 forced_policy = {
                     **resolved_tool_policy,
                     "mutation_required": True,
@@ -1878,14 +1922,7 @@ class QueueManager:
                     # Agentic authoring: the worker may inspect the repo to ground
                     # the file, then must end with a mutation. The executor's edit
                     # branch enforces the same toolset; this keeps them aligned.
-                    "allowed_tools": [
-                        "edit_file",
-                        "multi_edit_file",
-                        "apply_patch",
-                        "write_file",
-                        "create_file",
-                        "delete_file",
-                    ],
+                    "allowed_tools": forced_allowed_tools,
                     "verify_requires_mutation": True,
                 }
                 forced_session = session.with_tool_policy(forced_policy)

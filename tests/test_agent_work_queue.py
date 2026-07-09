@@ -37,6 +37,9 @@ _AGENTIC_EDIT_TOOLS = [
     "write_file",
     "create_file",
     "delete_file",
+    "document_create",
+    "document_update",
+    "document_delete",
 ]
 
 
@@ -119,6 +122,56 @@ def test_tools_only_strict_not_used_for_plain_content_generation(tmp_path: Path)
     assert request.tools_only_strict_override is False
     assert request.tool_policy is not None
     assert request.tool_policy.get("mutation_required") is None
+
+
+def test_document_artifact_edit_policy_does_not_allow_helper_file_mutations(tmp_path: Path) -> None:
+    request = build_tool_run_request(
+        WorkItem(kind="edit", tool_name="document_create", tool_args={"path": "output.xlsx"}, question="create workbook"),
+        repo_root=tmp_path,
+        index_dir=str(tmp_path),
+        tool_policy={"document_artifact_mutation": True, "allowed_tools": ["document_create", "create_file"]},
+    )
+
+    assert request.tool_policy is not None
+    assert request.tool_policy["mutation_required"] is True
+    assert request.tool_policy["allowed_tools"] == ["document_create", "document_update", "document_delete"]
+    assert "create_file" not in request.tool_policy["allowed_tools"]
+
+
+def test_selected_discovery_item_policy_allows_only_selected_tool(tmp_path: Path) -> None:
+    request = build_tool_run_request(
+        WorkItem(
+            kind="discover",
+            tool_name="repo_search",
+            tool_args={"query": "create workbook"},
+            question="Run planner-selected repository discovery for: create workbook",
+        ),
+        repo_root=tmp_path,
+        index_dir=str(tmp_path),
+        tool_policy={"allowed_tools": ["repo_search", "ls", "list_files"], "search_budget": 1},
+    )
+
+    assert request.tool_policy is not None
+    assert request.tool_policy["allowed_tools"] == ["repo_search"]
+    assert "ls" not in request.tool_policy["allowed_tools"]
+    assert "list_files" not in request.tool_policy["allowed_tools"]
+
+
+def test_selected_list_files_item_policy_requires_explicit_selection(tmp_path: Path) -> None:
+    request = build_tool_run_request(
+        WorkItem(
+            kind="discover",
+            tool_name="list_files",
+            tool_args={"glob": "docs/*.md"},
+            question="List selected docs files",
+        ),
+        repo_root=tmp_path,
+        index_dir=str(tmp_path),
+        tool_policy={"allowed_tools": ["repo_search", "ls", "list_files"], "search_budget": 1},
+    )
+
+    assert request.tool_policy is not None
+    assert request.tool_policy["allowed_tools"] == ["list_files"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1491,7 +1544,18 @@ def test_deterministic_preview_uses_project_level_edit_checklist(tmp_path: Path)
     assert "imports, exports" in edit["title"]
     assert "registries" in edit["title"]
     assert "call sites" in edit["title"]
-    assert edit["requires_tools"] == ["edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file"]
+    assert set(edit["requires_tools"]) == {
+        "edit_file",
+        "multi_edit_file",
+        "apply_patch",
+        "apply_patch_batch",
+        "write_file",
+        "create_file",
+        "delete_file",
+        "document_create",
+        "document_update",
+        "document_delete",
+    }
     assert edit["checks"] == [
         "target file changed/created/deleted",
         "related imports/usages updated",

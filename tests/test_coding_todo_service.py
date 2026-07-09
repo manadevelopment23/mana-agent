@@ -33,7 +33,7 @@ def test_classify_step_uses_tools_then_title() -> None:
     assert TodoService.classify_step({"requires_tools": ["verify_project"]}) == "verify"
     assert TodoService.classify_step({"title": "Implement the parser"}) == "edit"
     assert TodoService.classify_step({"title": "Verify tests pass"}) == "verify"
-    assert TodoService.classify_step({"title": "Locate relevant files"}) == "discover"
+    assert TodoService.classify_step({"title": "Locate files"}) == "discover"
 
 
 def test_sync_from_preview_persists_todos_with_kinds(todo_service: TodoService) -> None:

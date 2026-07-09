@@ -795,6 +795,19 @@ def test_is_apply_patch_failure_treats_ok_true_payload_with_error_details_as_suc
     assert AskAgent._is_apply_patch_failure(payload) is False
 
 
+def test_document_binary_targets_are_blocked_for_text_file_tools() -> None:
+    error = AskAgent._document_binary_write_error(
+        "write_file",
+        {"path": "requested.xlsx", "content": ""},
+    )
+
+    assert error is not None
+    assert error["ok"] is False
+    assert error["error_code"] == "document_text_tool_blocked"
+    assert "document_create" in error["message"]
+    assert AskAgent._document_binary_write_error("write_file", {"path": "notes.md", "content": ""}) is None
+
+
 def test_ask_agent_stops_progress_after_apply_patch_failures_without_write_retry(tmp_path: Path) -> None:
     agent = _build_agent(tmp_path)
     agent.tools = [

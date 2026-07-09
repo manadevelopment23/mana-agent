@@ -159,7 +159,7 @@ def _fixed_checklist() -> FlowChecklist:
         constraints=["scope src/ tests/ only"],
         acceptance=["tests pass"],
         steps=[
-            FlowStep(id="s1", title="Discover relevant files", reason="find exact code", status="in_progress"),
+            FlowStep(id="s1", title="Discover selected files", reason="find exact code", status="in_progress"),
             FlowStep(id="s2", title="Inspect file contents", reason="validate behavior", status="pending"),
             FlowStep(id="s3", title="Apply edit", reason="implement request", status="pending"),
         ],
@@ -181,6 +181,23 @@ def _git_checklist(*, tools: list[str] | None = None) -> FlowChecklist:
             )
         ],
         next_action="Inspect git context.",
+    )
+
+
+def _tool_checklist(*, tools: list[str], requires_edit: bool = True) -> FlowChecklist:
+    return FlowChecklist(
+        objective="Run selected tools",
+        requires_edit=requires_edit,
+        steps=[
+            FlowStep(
+                id="s1",
+                title="Execute selected tool step",
+                reason="Planner selected the required tool capability",
+                status="in_progress",
+                requires_tools=tools,
+            )
+        ],
+        next_action="Execute selected tool step.",
     )
 
 
@@ -321,7 +338,7 @@ def test_work_queue_seed_git_commit_does_not_start_with_repo_search(tmp_path: Pa
     assert seeds
     assert seeds[0].tool_name == "git_status"
     assert all(seed.tool_name != "repo_search" for seed in seeds)
-    assert all("Locate files relevant to" not in seed.question for seed in seeds)
+    assert all("Run planner-selected repository discovery for" not in seed.question for seed in seeds)
 
 
 def test_work_queue_seed_git_status_uses_git_context_or_tool_decision(tmp_path: Path, monkeypatch) -> None:
@@ -349,12 +366,34 @@ def test_work_queue_seed_git_add_commit_push_starts_with_git_context(tmp_path: P
 
 def test_work_queue_seed_broad_code_request_can_use_repo_search(tmp_path: Path, monkeypatch) -> None:
     agent = _build_agent(tmp_path, monkeypatch, payload={"answer": "ok", "trace": [], "warnings": []})
+    monkeypatch.setattr(
+        agent,
+        "_plan_checklist",
+        lambda request, flow_context=None: (_tool_checklist(tools=["repo_search"]), []),
+    )
 
     seeds = agent._seed_items_for_request("fix bug in router")
 
     assert seeds
     assert seeds[0].tool_name == "repo_search"
-    assert "Locate files relevant to" in seeds[0].question
+    assert "Run planner-selected repository discovery for" in seeds[0].question
+
+
+def test_work_queue_seed_document_create_does_not_discover_without_planner_search(tmp_path: Path, monkeypatch) -> None:
+    agent = _build_agent(tmp_path, monkeypatch, payload={"answer": "ok", "trace": [], "warnings": []})
+    monkeypatch.setattr(
+        agent,
+        "_plan_checklist",
+        lambda request, flow_context=None: (_tool_checklist(tools=["document_create"]), []),
+    )
+
+    seeds = agent._seed_items_for_request("create an excel with row 200,300,400 and sum")
+
+    assert seeds
+    assert seeds[0].gate == "tool_manager_decision"
+    assert seeds[0].tool_name == ""
+    assert all(seed.tool_name not in {"repo_search", "list_files", "ls"} for seed in seeds)
+    assert all("Run planner-selected repository discovery for" not in seed.question for seed in seeds)
 
 
 def test_work_queue_seed_exact_target_file_reads_without_broad_repo_search(tmp_path: Path, monkeypatch) -> None:
@@ -366,7 +405,7 @@ def test_work_queue_seed_exact_target_file_reads_without_broad_repo_search(tmp_p
     assert [seed.tool_name for seed in seeds] == ["read_file"]
     assert seeds[0].tool_args == {"path": "README.md"}
     assert all(seed.tool_name != "repo_search" for seed in seeds)
-    assert all("Locate files relevant to" not in seed.question for seed in seeds)
+    assert all("Run planner-selected repository discovery for" not in seed.question for seed in seeds)
 
 
 def test_run_via_work_queue_preserves_explicit_seeds(tmp_path: Path, monkeypatch) -> None:
@@ -624,6 +663,24 @@ def test_coding_agent_tool_policy_includes_full_read_preferences(tmp_path: Path,
     assert policy["read_full_file_max_chars"] == 250000
     assert policy["read_cache_scope"] == "flow"
     assert "create_file" in policy["allowed_tools"]
+    assert "document_create" in policy["allowed_tools"]
+    assert "document_update" in policy["allowed_tools"]
+
+
+def test_coding_agent_document_create_policy_blocks_helper_file_mutations(tmp_path: Path, monkeypatch) -> None:
+    payload = {"answer": "ok", "trace": [], "warnings": []}
+    agent = _build_agent(tmp_path, monkeypatch, payload=payload, full_auto_mode=True)
+    checklist = _tool_checklist(tools=["document_create"])
+
+    policy = agent._tool_policy_for_request("create an excel workbook", checklist=checklist)
+
+    assert policy["document_artifact_mutation"] is True
+    assert "document_create" in policy["allowed_tools"]
+    assert "create_file" not in policy["allowed_tools"]
+    assert "write_file" not in policy["allowed_tools"]
+    assert "repo_search" not in policy["allowed_tools"]
+    assert "list_files" not in policy["allowed_tools"]
+    assert policy["search_budget"] == 0
 
 
 def test_coding_agent_tool_policy_treats_dotgitignore_as_single_file_edit(tmp_path: Path, monkeypatch) -> None:

@@ -374,7 +374,7 @@ def test_tool_activity_keeps_nested_subagent_events_with_shared_step_id() -> Non
         make_event(
             "tool.started",
             title="tool_worker",
-            message="Locate files relevant to rendering",
+            message="Run planner-selected repository discovery for rendering",
             status="running",
             turn_id="turn-1",
             step_id="07",
@@ -382,7 +382,7 @@ def test_tool_activity_keeps_nested_subagent_events_with_shared_step_id() -> Non
             subagent_id="subagent_tool_worker_0001",
             metadata={
                 "tool_name": "tool_worker",
-                "args_summary": "Locate files relevant to rendering",
+                "args_summary": "Run planner-selected repository discovery for rendering",
                 "agent_role": "tool_worker",
                 "model_level": "MODEL_LEVEL_1_FAST_TOOL",
                 "resolved_model": "fast-model",

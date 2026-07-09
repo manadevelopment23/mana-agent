@@ -49,6 +49,9 @@ MUTATION_ONLY_TOOLS = [
     "write_file",
     "create_file",
     "delete_file",
+    "document_create",
+    "document_update",
+    "document_delete",
 ]
 
 
@@ -100,6 +103,9 @@ _AGENTIC_EDIT_TOOLS = [
     "write_file",
     "create_file",
     "delete_file",
+    "document_create",
+    "document_update",
+    "document_delete",
 ]
 
 
@@ -181,7 +187,7 @@ def classify_result(item: WorkItem, response: ToolRunResponse, *, repo_root: Pat
             trace=list(response.trace),
         )
 
-    if tool in {"edit_file", "multi_edit_file", "apply_patch", "apply_patch_batch", "write_file", "create_file", "delete_file", "move_file"}:
+    if tool in {*_AGENTIC_EDIT_TOOLS, "move_file"}:
         changed = sorted(paths)
         for row in response.trace:
             if isinstance(row, dict):
@@ -333,13 +339,23 @@ def _normalized_repo_path(path: str, *, repo_root: Path) -> str:
 def _policy_for_item(item: WorkItem, tool_policy: dict[str, Any] | None) -> dict[str, Any]:
     item_policy = dict(tool_policy or {})
     if item.kind == "edit":
+        if bool(item_policy.get("document_artifact_mutation")):
+            item_policy["allowed_tools"] = [
+                "document_create",
+                "document_update",
+                "document_delete",
+            ]
+        else:
+            item_policy["allowed_tools"] = list(_AGENTIC_EDIT_TOOLS)
         # An edit item is an agentic analyze-then-write pass: the worker may
         # inspect the repo before authoring, but must finish with a mutation.
-        item_policy["allowed_tools"] = list(_AGENTIC_EDIT_TOOLS)
         item_policy["require_read_files"] = 0
         item_policy["mutation_required"] = True
         item_policy["verify_requires_mutation"] = True
     else:
+        selected_tool = str(item.tool_name or "").strip()
+        if selected_tool:
+            item_policy["allowed_tools"] = [selected_tool]
         item_policy.pop("mutation_required", None)
         item_policy.pop("mutation_strict", None)
         item_policy.pop("verify_requires_mutation", None)
@@ -590,7 +606,7 @@ class CodingAgentSniffer:
                 "Using the file evidence already gathered in this run, carry out "
                 f"the user's request: {self._request}. "
                 "Apply concrete changes with "
-                "edit_file/multi_edit_file/apply_patch/create_file/write_file/delete_file and report the changed files. "
+                "edit_file/multi_edit_file/apply_patch/create_file/write_file/delete_file/document_create/document_update/document_delete and report the changed files. "
                 "Before mutating, use bounded exact path/name/symbol evidence to account for "
                 "related importers, exports, registries, routers, commands, call sites, tests, "
                 "and stale docs/config references; update or remove each one required for the "
