@@ -4,6 +4,18 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-10
 
+- Fixed chat tools panel rendering so failed tool errors keep their full
+  compact detail on a dedicated line instead of being mid-wrapped and obscured
+  by the duration column. Failed validation messages remain visible while
+  long URLs stay truncated by `_compact_display_text`.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_cli_ux_helpers.py -q` passed.
+
+- Scoped `ObservabilityStore` SQLite telemetry to the per-repository path under
+  `~/.mana/repositories/<id>/observability/` instead of a single global
+  `~/.mana/observability/` database. This restores isolation for multi-repo
+  sessions and tests that pass a repository root (for example pytest `tmp_path`).
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_observability.py -q` passed.
+
 - Removed legacy Streamlit multipage stubs so the dashboard exposes only its
   active-state sidebar navigation instead of duplicate Overview, Reports, and
   Taskboard links.

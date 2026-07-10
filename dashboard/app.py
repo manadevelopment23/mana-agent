@@ -207,7 +207,9 @@ elif page == "Chat":
 
         # Persist real interaction (productional)
         try:
-            chat_dir = root / ".mana" / "dashboard" / "chats"
+            from mana_agent.workspaces.paths import repository_dir, repository_id_for_path
+
+            chat_dir = repository_dir(repository_id_for_path(root)) / "dashboard" / "chats"
             chat_dir.mkdir(parents=True, exist_ok=True)
             (chat_dir / "latest.jsonl").open("a", encoding="utf-8").write(
                 json.dumps({
@@ -361,7 +363,7 @@ elif page == "Metrics":
         st.bar_chart({row["kind"]: row["tokens"] for row in by_kind})
     else:
         st.info("No observability spans have been recorded yet. Start a chat session to populate real metrics.")
-    st.caption("Metrics are read from `.mana/observability/telemetry.sqlite`; no synthetic series is displayed.")
+    st.caption("Metrics are read from the per-repository observability store under `~/.mana/repositories/<id>/observability/`; no synthetic series is displayed.")
 
 elif page == "Automations":
     st.header("Automations (CRUD + real triggers)")
