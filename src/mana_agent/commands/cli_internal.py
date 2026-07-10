@@ -70,7 +70,10 @@ logger = logging.getLogger(__name__)
 console = get_shared_console()
 app = typer.Typer(help="mana-agent CLI", invoke_without_command=True, no_args_is_help=False)
 skills_app = typer.Typer(help="Manage Mana Agent skills.")
+automation_app = typer.Typer(help="Create, deploy, inspect, and run persistent automations.")
 app.add_typer(skills_app, name="skills")
+app.add_typer(automation_app, name="automation")
+app.add_typer(automation_app, name="cron")
 
 OUTPUT_DIR: Path | None = None
 CLI_VERBOSE_MODE = False
@@ -619,6 +622,150 @@ def dashboard_command(
         subprocess.run(cmd, env=env, check=False)
     except KeyboardInterrupt:
         console.print("\nDashboard stopped.")
+
+
+def _automation_root(root: str | None) -> Path:
+    return _resolve_repo(root)
+
+
+@automation_app.command("create")
+def automation_create_command(
+    name: str = typer.Option(..., "--name", help="Readable schedule name."),
+    action: str = typer.Option(..., "--action", help="analyze, daily_report, self_improvement, or custom."),
+    cron: str = typer.Option(..., "--cron", help="Five-field POSIX cron expression."),
+    target: list[str] = typer.Option(..., "--target", help="Deployment target: local and/or github."),
+    command: str | None = typer.Option(None, "--command", help="Required for action=custom."),
+    root: str | None = typer.Option(None, "--root-dir", "--repo", help="Repository root."),
+) -> None:
+    """Create and immediately deploy an explicitly requested schedule."""
+    from mana_agent.automations.service import AutomationValidationError, ScheduleDefinition, deploy_schedule
+
+    try:
+        schedule = ScheduleDefinition.create(name=name, action=action, cron=cron, targets=target, command=command)
+        deployed = deploy_schedule(schedule, _automation_root(root))
+    except AutomationValidationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print_json(json.dumps(deployed.to_dict()))
+
+
+@automation_app.command("list")
+def automation_list_command(root: str | None = typer.Option(None, "--root-dir", "--repo", help="Repository root.")) -> None:
+    """List saved schedules and their most recent deployment state."""
+    from mana_agent.automations.service import list_schedules
+
+    console.print_json(json.dumps([schedule.to_dict() for schedule in list_schedules(_automation_root(root))]))
+
+
+@automation_app.command("status")
+def automation_status_command(
+    schedule_id: str = typer.Argument(..., help="Schedule id."),
+    root: str | None = typer.Option(None, "--root-dir", "--repo", help="Repository root."),
+) -> None:
+    """Detect local-cron and managed-workflow deployment drift."""
+    from mana_agent.automations.service import AutomationValidationError, deployment_status, get_schedule
+
+    try:
+        status = deployment_status(get_schedule(_automation_root(root), schedule_id), _automation_root(root))
+    except AutomationValidationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print_json(json.dumps(status))
+
+
+@automation_app.command("deploy")
+def automation_deploy_command(
+    schedule_id: str = typer.Argument(..., help="Schedule id."),
+    root: str | None = typer.Option(None, "--root-dir", "--repo", help="Repository root."),
+) -> None:
+    """Reconcile a saved schedule with its selected deployment targets."""
+    from mana_agent.automations.service import AutomationValidationError, deploy_schedule, get_schedule
+
+    try:
+        schedule = deploy_schedule(get_schedule(_automation_root(root), schedule_id), _automation_root(root))
+    except AutomationValidationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print_json(json.dumps(schedule.to_dict()))
+
+
+@automation_app.command("enable")
+def automation_enable_command(
+    schedule_id: str = typer.Argument(..., help="Schedule id."),
+    root: str | None = typer.Option(None, "--root-dir", "--repo", help="Repository root."),
+) -> None:
+    """Enable or disable and immediately reconcile a schedule."""
+    from mana_agent.automations.service import AutomationValidationError, deploy_schedule, get_schedule
+
+    try:
+        schedule = get_schedule(_automation_root(root), schedule_id)
+        schedule.enabled = True
+        schedule = deploy_schedule(schedule, _automation_root(root))
+    except AutomationValidationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print_json(json.dumps(schedule.to_dict()))
+
+
+@automation_app.command("disable")
+def automation_disable_command(
+    schedule_id: str = typer.Argument(..., help="Schedule id."),
+    root: str | None = typer.Option(None, "--root-dir", "--repo", help="Repository root."),
+) -> None:
+    """Disable and immediately reconcile a schedule."""
+    from mana_agent.automations.service import AutomationValidationError, deploy_schedule, get_schedule
+
+    try:
+        schedule = get_schedule(_automation_root(root), schedule_id)
+        schedule.enabled = False
+        schedule = deploy_schedule(schedule, _automation_root(root))
+    except AutomationValidationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print_json(json.dumps(schedule.to_dict()))
+
+
+@automation_app.command("remove")
+def automation_remove_command(
+    schedule_id: str = typer.Argument(..., help="Schedule id."),
+    root: str | None = typer.Option(None, "--root-dir", "--repo", help="Repository root."),
+) -> None:
+    """Remove a saved schedule and its local deployment artifacts."""
+    from mana_agent.automations.service import AutomationValidationError, delete_schedule, remove_deployment
+
+    try:
+        root_path = _automation_root(root)
+        schedule = delete_schedule(root_path, schedule_id)
+        remove_deployment(schedule, root_path)
+    except AutomationValidationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print(f"Removed {schedule_id}")
+
+
+@automation_app.command("run-now")
+def automation_run_now_command(
+    schedule_id: str = typer.Argument(..., help="Schedule id."),
+    root: str | None = typer.Option(None, "--root-dir", "--repo", help="Repository root."),
+) -> None:
+    """Run an explicitly selected saved schedule immediately."""
+    from mana_agent.automations.service import AutomationValidationError, get_schedule, run_schedule_now
+
+    try:
+        root_path = _automation_root(root)
+        result = run_schedule_now(get_schedule(root_path, schedule_id), root_path)
+    except AutomationValidationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print_json(json.dumps(result))
+
+
+@automation_app.command("execute", hidden=True)
+def automation_execute_command(
+    action: str = typer.Option(..., "--action", help="Built-in action selected by a saved schedule."),
+    root: str | None = typer.Option(None, "--root-dir", "--repo", help="Repository root."),
+) -> None:
+    """Execute a built-in action for a deployed schedule."""
+    from mana_agent.automations.service import AutomationValidationError, execute_builtin_action
+
+    try:
+        result = execute_builtin_action(action, _automation_root(root))
+    except AutomationValidationError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    console.print_json(json.dumps(result))
 
 
 @app.command(
