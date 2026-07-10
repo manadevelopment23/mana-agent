@@ -68,6 +68,8 @@ class QueueJobType(_ValueEnum):
     GIT_STATUS = "git_status"
     GIT_DIFF = "git_diff"
     DOCUMENT = "document"
+    MCP_TOOL = "mcp_tool"
+    MCP_RESOURCE_READ = "mcp_resource_read"
 
 
 class QueueJobStatus(_ValueEnum):

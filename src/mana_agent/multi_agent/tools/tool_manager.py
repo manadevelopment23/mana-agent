@@ -14,6 +14,7 @@ from mana_agent.multi_agent.tools import git_tools
 from mana_agent.multi_agent.tools.permissions import assert_shell_allowed
 from mana_agent.tools.apply_patch import safe_apply_patch
 from mana_agent.tools.repository import repo_batch_read, repo_search
+from mana_agent.mcp import McpClient, load_mcp_servers
 
 
 class ToolsManager:
@@ -94,6 +95,20 @@ class ToolsManager:
                     result,
                     None if result.get("ok") else str(result.get("error") or "document tool failed"),
                 )
+            if job.job_type == QueueJobType.MCP_TOOL:
+                client = McpClient(load_mcp_servers(overrides=list(job.payload.get("server_overrides") or [])))
+                result = client.call_tool(
+                    str(job.payload.get("tool") or job.payload.get("tool_name") or ""),
+                    dict(job.payload.get("args") or {}),
+                )
+                return ToolResult(
+                    new_message_id(), job.task_id, bool(result.get("ok")), result,
+                    None if result.get("ok") else f"MCP tool failed: {result.get('tool_name') or 'unknown'}",
+                )
+            if job.job_type == QueueJobType.MCP_RESOURCE_READ:
+                client = McpClient(load_mcp_servers(overrides=list(job.payload.get("server_overrides") or [])))
+                result = client.read_resource(str(job.payload.get("server_id") or ""), str(job.payload.get("uri") or ""))
+                return ToolResult(new_message_id(), job.task_id, bool(result.get("ok")), result, None if result.get("ok") else "MCP resource read failed")
             if job.job_type in {QueueJobType.SHELL, QueueJobType.RUN_TESTS, QueueJobType.RUN_LINT}:
                 return self._shell(job, str(job.payload.get("command", "")))
             if job.job_type == QueueJobType.REPO_READ:
@@ -200,6 +215,8 @@ class ToolsManager:
             QueueJobType.REPO_BATCH_READ,
             QueueJobType.REPO_SEARCH,
             QueueJobType.DOCUMENT,
+            QueueJobType.MCP_TOOL,
+            QueueJobType.MCP_RESOURCE_READ,
         }:
             return ""
         payload = json.dumps(job.payload, ensure_ascii=False, sort_keys=True, default=str)

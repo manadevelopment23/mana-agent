@@ -39,6 +39,7 @@ _replace_command("api", _cli_internal.api_command)
 _replace_command("dashboard", _cli_internal.dashboard_command)
 _replace_command("git", _cli_internal.git_command, context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
 _replace_command("continue", _cli_internal.continue_command)
+# Typer sub-app registrations live on the canonical app and are preserved.
 
 
 __all__ = [

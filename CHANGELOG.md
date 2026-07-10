@@ -4,6 +4,31 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-10
 
+- Made the packaged dashboard discoverability assertion platform-neutral by
+  normalizing import-spec path separators before checking the module suffix.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_api_workspaces.py -q` passed.
+
+- Encoded model-facing MCP tool aliases as OpenAI-compatible function names (for example `mcp__context7__query-docs`) while retaining the original dotted MCP identity for dispatch.
+  - Verification: Context7 stdio discovery returned both documentation tools; focused MCP suite updated.
+
+- Passed the protected Context7 server token to its stdio process as `CONTEXT7_API_KEY`, and bounded MCP discovery, calls, and resource reads by each provider timeout.
+  - Fixed Streamable HTTP authentication for the installed MCP SDK and added `mcp add --replace` to migrate Context7 to its hosted endpoint.
+  - Verification: focused MCP configuration coverage added.
+
+- Made an explicitly named configured MCP provider an execution constraint: routing must select a tool from that provider or stop with a clear provider error, never substitute web search.
+  - Applied the same constraint to chat's immediate web/repository-search fast paths, which previously bypassed AskService routing.
+  - Verification: focused MCP routing constraint coverage added.
+
+- Restored AskAgent compatibility for test and extension construction paths that bypass initialization; MCP tool discovery now safely defaults to no invocation overrides when that optional attribute is absent.
+  - Verification: targeted AskAgent regression test run with isolated user state.
+
+- Wired configured MCP tool names into chat routing and tool-policy validation, and added `mana-agent mcp token-set` for mode-0600 per-server bearer credentials in `~/.mana/mcp_secrets.toml`.
+  - `mana-agent mcp token-set` now shows arrow-key server selection when no id is given.
+  - Verification: focused MCP suite updated with protected-token coverage.
+
+- Added bidirectional MCP interoperability: typed server configuration, stdio/Streamable HTTP/legacy SSE client discovery, namespaced external tool/resource dispatch, and a bearer-protected Mana-Agent MCP server surface (`mana-agent mcp serve`).
+  - Verification: MCP config, stdio discovery/call/resource, queue dispatch, and server authorization tests passed; CLI help checks passed with an isolated `MANA_HOME`.
+
 - Fixed chat tools panel rendering so failed tool errors keep their full
   compact detail on a dedicated line instead of being mid-wrapped and obscured
   by the duration column. Failed validation messages remain visible while
