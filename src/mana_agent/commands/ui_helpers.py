@@ -356,24 +356,38 @@ class ChatLogRenderer:
         return f"{float(duration):0.1f}s" if isinstance(duration, (int, float)) else ""
 
     def _tools_panel(self, tools: list[ChatLogEntry]) -> Panel:
-        table = Table.grid(padding=(0, 1))
-        table.add_column(no_wrap=True)
-        table.add_column(style="cyan", no_wrap=True)
-        table.add_column(style="green", no_wrap=True)
-        table.add_column(overflow="fold", style="dim")
-        table.add_column(justify="right", no_wrap=True, style="dim")
+        # Render each tool as a meta line plus a full-width detail line.
+        # Putting duration/args/error in one multi-column grid row caused Rich
+        # to wrap mid-message and hide long failure text behind the duration.
+        rows: list[Text] = []
         for entry in tools:
             if entry.status == "success":
-                status = Text("✓", style="green")
+                icon, icon_style = "✓", "green"
                 detail = entry.tool_args
             elif entry.status == "failure":
-                status = Text("✗", style="red")
+                icon, icon_style = "✗", "red"
                 detail = entry.error or entry.tool_args
             else:
-                status = Text("⠙", style="cyan")
+                icon, icon_style = "⠙", "cyan"
                 detail = entry.tool_args
-            table.add_row(status, entry.tool_name or "tool", _tool_actor_label(entry), detail, self._duration_text(entry.duration))
-        return Panel(table, title="tools", title_align="left", border_style="cyan", box=box.ROUNDED, padding=(0, 1))
+
+            meta = Text()
+            meta.append(icon, style=icon_style)
+            meta.append(" ")
+            meta.append(str(entry.tool_name or "tool"), style="cyan")
+            actor = _tool_actor_label(entry)
+            if actor and actor != "-":
+                meta.append(f" {actor}", style="green")
+            duration = self._duration_text(entry.duration)
+            if duration:
+                meta.append(f" {duration}", style="dim")
+            rows.append(meta)
+
+            detail_text = str(detail or "").strip()
+            if detail_text:
+                rows.append(Text(f"  {detail_text}", style="dim", overflow="fold"))
+        body: Any = Group(*rows) if rows else Text("No tool calls yet.")
+        return Panel(body, title="tools", title_align="left", border_style="cyan", box=box.ROUNDED, padding=(0, 1))
 
 
 class LiveToolActivity:

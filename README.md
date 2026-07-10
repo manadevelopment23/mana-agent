@@ -163,7 +163,7 @@ streamlit run dashboard/app.py -- --root-dir .
 
 ### Observability and OTLP export
 
-Mana-Agent stores dashboard telemetry locally in `.mana/observability/telemetry.sqlite`.
+Mana-Agent stores dashboard telemetry per repository under `~/.mana/repositories/<repository_id>/observability/telemetry.sqlite`.
 Payloads are bounded, structured summaries with common credentials redacted. Data is retained for 30 days and up to 500 MB by default; change these limits with `MANA_OBSERVABILITY_RETENTION_DAYS` and `MANA_OBSERVABILITY_MAX_STORAGE_MB`.
 
 Install optional OpenTelemetry support with `pip install "mana-agent[observability]"`. Export remains disabled until `MANA_OBSERVABILITY_OTLP_ENDPOINT` is set; use `MANA_OBSERVABILITY_OTLP_HEADERS` for a JSON object of endpoint headers. Local tracing remains authoritative if an export fails. The dashboard tracks exact or estimated tokens only—no dollar cost is displayed until a model-price policy is configured.

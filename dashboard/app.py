@@ -363,7 +363,7 @@ elif page == "Metrics":
         st.bar_chart({row["kind"]: row["tokens"] for row in by_kind})
     else:
         st.info("No observability spans have been recorded yet. Start a chat session to populate real metrics.")
-    st.caption("Metrics are read from `.mana/observability/telemetry.sqlite`; no synthetic series is displayed.")
+    st.caption("Metrics are read from the per-repository observability store under `~/.mana/repositories/<id>/observability/`; no synthetic series is displayed.")
 
 elif page == "Automations":
     st.header("Automations (CRUD + real triggers)")
