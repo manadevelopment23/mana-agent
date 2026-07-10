@@ -23,6 +23,7 @@ SECRET_KEYS = {
     "MANA_GITHUB_TOKEN",
     "MANA_WEB_SEARCH_API_KEY",
     "MANA_API_TOKEN",
+    "MANA_MCP_SERVER_TOKEN",
 }
 
 
@@ -62,6 +63,7 @@ DEFAULT_USER_CONFIG: dict[str, Any] = {
     "MANA_WEB_SEARCH_QUERY_PARAM": "q",
     "MANA_WORKSPACE_ALLOWED_ROOTS": "",
     "MANA_API_TOKEN": "",
+    "MANA_MCP_SERVER_TOKEN": "",
 }
 
 
@@ -90,6 +92,7 @@ FIELD_NAME_BY_ENV: dict[str, str] = {
     "MANA_MODEL_TOOL_WORKER": "mana_model_tool_worker",
     "MANA_WORKSPACE_ALLOWED_ROOTS": "mana_workspace_allowed_roots",
     "MANA_API_TOKEN": "mana_api_token",
+    "MANA_MCP_SERVER_TOKEN": "mana_mcp_server_token",
 }
 
 CONFIG_WRITE_ORDER = [

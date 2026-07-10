@@ -75,9 +75,11 @@ console = get_shared_console()
 app = typer.Typer(help="mana-agent CLI", invoke_without_command=True, no_args_is_help=False)
 skills_app = typer.Typer(help="Manage Mana Agent skills.")
 automation_app = typer.Typer(help="Create, deploy, inspect, and run persistent automations.")
+mcp_app = typer.Typer(help="Connect to or serve Model Context Protocol tools and resources.")
 app.add_typer(skills_app, name="skills")
 app.add_typer(automation_app, name="automation")
 app.add_typer(automation_app, name="cron")
+app.add_typer(mcp_app, name="mcp")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(repo_app, name="repo")
 app.add_typer(session_app, name="session")
@@ -590,6 +592,30 @@ def api_command(
     import uvicorn
 
     uvicorn.run("mana_agent.api.app:app", host=host, port=port, reload=reload)
+
+
+@mcp_app.command("serve")
+def mcp_serve_command(
+    transport: str = typer.Option("streamable-http", "--transport", help="stdio or streamable-http"),
+    root_dir: str = typer.Option(".", "--root-dir", "--repo", help="Repository root to expose."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Streamable HTTP bind host."),
+    port: int = typer.Option(8765, "--port", help="Streamable HTTP port."),
+) -> None:
+    """Serve Mana-Agent's registered repository tools through MCP."""
+    from mana_agent.mcp.server import create_mcp_server, protected_http_app
+
+    root = Path(root_dir).expanduser().resolve()
+    normalized = transport.strip().lower().replace("_", "-")
+    if normalized == "stdio":
+        create_mcp_server(repo_root=root).run(transport="stdio")
+        return
+    if normalized != "streamable-http":
+        raise typer.BadParameter("transport must be stdio or streamable-http")
+    token = str(os.getenv("MANA_MCP_SERVER_TOKEN") or load_effective_settings().get("MANA_MCP_SERVER_TOKEN") or "")
+    if not token.strip():
+        raise typer.BadParameter("MANA_MCP_SERVER_TOKEN is required for streamable-http")
+    import uvicorn
+    uvicorn.run(protected_http_app(repo_root=root, token=token), host=host, port=port)
 
 
 @app.command("dashboard")

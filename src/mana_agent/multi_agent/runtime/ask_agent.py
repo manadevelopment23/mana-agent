@@ -50,6 +50,7 @@ from mana_agent.tools.repository import (
 )
 from mana_agent.skills.manager import SkillManager
 from mana_agent.multi_agent.tools import git_tools
+from mana_agent.mcp.tools import discovered_mcp_langchain_tools
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +274,7 @@ class AskAgent:
 
         # ✅ NEW: allow external code to register extra tools (e.g. write_file/apply_patch)
         self.tools: list[BaseTool] = []
+        self.mcp_server_overrides: list[str] = []
 
     def update_model(self, model_name: str) -> None:
         resolved = str(model_name or "").strip()
@@ -1699,8 +1701,10 @@ class AskAgent:
             ),
         ]
 
+        mcp_tools, mcp_warnings = discovered_mcp_langchain_tools(overrides=self.mcp_server_overrides)
+        warnings.extend(mcp_warnings)
         # include externally-registered tools (write_file/apply_patch/etc)
-        all_tools = [*base_tools, *list(getattr(self, "tools", []) or [])]
+        all_tools = [*base_tools, *mcp_tools, *list(getattr(self, "tools", []) or [])]
         return all_tools, traces, sources, warnings
 
     # ✅ NEW: public "ask" API (what your CodingAgent expects)

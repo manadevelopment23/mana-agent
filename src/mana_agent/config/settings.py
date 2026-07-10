@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     mana_web_search_max_results: int = Field(default=8, alias="MANA_WEB_SEARCH_MAX_RESULTS")
     mana_workspace_allowed_roots: str = Field(default="", alias="MANA_WORKSPACE_ALLOWED_ROOTS")
     mana_api_token: str = Field(default="", alias="MANA_API_TOKEN")
+    mana_mcp_server_token: str = Field(default="", alias="MANA_MCP_SERVER_TOKEN")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

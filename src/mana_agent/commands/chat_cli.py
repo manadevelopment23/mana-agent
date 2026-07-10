@@ -372,6 +372,11 @@ def chat(
         "--repo",
         help="Project root used for tool execution and default index paths.",
     ),
+    mcp_server_json: list[str] = typer.Option(
+        [],
+        "--mcp-server-json",
+        help="Inline JSON MCP server definition; may be repeated for ad-hoc tool/resource providers.",
+    ),
     session_id: str | None = typer.Option(
         None,
         "--session",
@@ -559,6 +564,10 @@ def chat(
     ),
 ) -> None:
     output_file = _resolve_output_file()
+    if mcp_server_json:
+        # Worker subprocesses inherit this explicit per-invocation setting. It
+        # is parsed and validated by the MCP tool registry before discovery.
+        os.environ["MANA_MCP_SERVER_OVERRIDES"] = json.dumps(mcp_server_json)
     try:
         ensure_setup(command_needs_llm=True, console=console)
     except NonInteractivePromptError as exc:

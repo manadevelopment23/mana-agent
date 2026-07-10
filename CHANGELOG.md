@@ -4,6 +4,9 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-10
 
+- Added bidirectional MCP interoperability: typed server configuration, stdio/Streamable HTTP/legacy SSE client discovery, namespaced external tool/resource dispatch, and a bearer-protected Mana-Agent MCP server surface (`mana-agent mcp serve`).
+  - Verification: MCP config, stdio discovery/call/resource, queue dispatch, and server authorization tests passed; CLI help checks passed with an isolated `MANA_HOME`.
+
 - Fixed chat tools panel rendering so failed tool errors keep their full
   compact detail on a dedicated line instead of being mid-wrapped and obscured
   by the duration column. Failed validation messages remain visible while
