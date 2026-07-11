@@ -2,6 +2,11 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-11
+
+- Added an optional provider-neutral Email Connector with Gmail support, normalized models, keyring-backed OAuth credentials, sanitization, permission and approval primitives, account CLI commands, and model-visible tool contracts.
+  - Verification: Focused email connector tests and CLI help added.
+
 ## 2026-07-10
 
 - Made the packaged dashboard discoverability assertion platform-neutral by
