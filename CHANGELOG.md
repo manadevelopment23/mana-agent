@@ -11,7 +11,10 @@ All notable repository changes should be recorded here.
   activity, typed-secret redaction, and a read-only `browser_check_links` tool.
   Permission-denied model responses now stop after one request instead of being
   retried as transient authorization failures.
-  - Verification: browser routing, connector, terminal UX, AskAgent, compatibility, and decision tests passed (85 tests); live Playwright link checking passed for 14 links; compileall, targeted Ruff, and `git diff --check` passed. End-to-end Luna execution remains blocked by the provider's HTTP 401 insufficient-permissions response.
+  The generic entry router now advertises browser contracts and executes a
+  dedicated browser_task path instead of misrouting target-URL inspection to
+  command inventory.
+  - Verification: browser routing, entry-router, AskService, connector, terminal UX, AskAgent, compatibility, and decision tests passed (110 tests); live Playwright link checking passed for 14 links; an end-to-end `gpt-5.4-mini` CLI run used `browser_open`, `browser_inspect`, `browser_check_links`, and `browser_close`; compileall, targeted Ruff, and `git diff --check` passed.
 
 ## 2026-07-12
 
