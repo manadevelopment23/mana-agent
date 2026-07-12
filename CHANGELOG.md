@@ -4,6 +4,13 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-12
 
+- Added an optional model-controlled Playwright browser for chat, with
+  structured inspection and interaction tools, isolated multi-step sessions,
+  guarded uploads and downloads, and confirmation gates for sensitive final
+  actions. Added setup, security, examples, and local integration-test
+  documentation.
+  - Verification: browser, routing, AskAgent, CLI-event, tool-manager, and multi-agent tests passed (189 tests); compileall, targeted Ruff, CLI browser status/help, and `git diff --check` passed. The Playwright integration test skipped because local sockets are unavailable in the sandbox.
+
 - Hardened external HTTP 403 handling. Gmail now decodes string and byte error
   bodies, normalizes provider status values, and preserves non-secret provider
   diagnostics; GitHub search now labels only actual quota denials as rate

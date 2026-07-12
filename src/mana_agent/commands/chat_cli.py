@@ -1963,6 +1963,16 @@ def chat(
                 console.clear()
                 console.print("[green]Chat history cleared. Session preserved.[/green]")
                 continue
+            if question.strip().startswith("/approve-browser "):
+                from mana_agent.connectors.browser.session import BrowserConnectorError, default_browser_manager
+                token = question.strip().split(maxsplit=1)[1]
+                try:
+                    default_browser_manager().approve(None, token)
+                except BrowserConnectorError as exc:
+                    console.print(f"[red]{exc}[/red]")
+                else:
+                    console.print("[green]Browser action approved for this exact page and target. Ask Mana-Agent to continue.[/green]")
+                continue
             if pending_conflict_question is None and _is_new_topic_command(question):
                 reset_id = _start_new_topic()
                 if reset_id:
@@ -1994,6 +2004,8 @@ def chat(
                     )
                     continue
                 if action == "new":
+                    from mana_agent.connectors.browser.session import default_browser_manager
+                    default_browser_manager().close(chat_ui_state.session_id)
                     created = service.create_session(root)
                     chat_ui_state.activate_session(created.session_id)
                     session_turns.clear()
@@ -2002,6 +2014,8 @@ def chat(
                     console.print(f"[green]New isolated session:[/green] {created.session_id}")
                     continue
                 if action == "switch" and len(parts) > 2:
+                    from mana_agent.connectors.browser.session import default_browser_manager
+                    default_browser_manager().close(chat_ui_state.session_id)
                     try:
                         chat_ui_state.activate_session(parts[2])
                     except (FileNotFoundError, ValueError) as exc:
@@ -2013,6 +2027,8 @@ def chat(
                     console.print(f"[green]Switched session:[/green] {chat_ui_state.session_id}")
                     continue
                 if action == "archive":
+                    from mana_agent.connectors.browser.session import default_browser_manager
+                    default_browser_manager().close(chat_ui_state.session_id)
                     archived = service.archive_session(chat_ui_state.session_id)
                     console.print(f"[green]Archived session:[/green] {archived.session_id}")
                     continue

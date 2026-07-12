@@ -1717,9 +1717,26 @@ class AskAgent:
         # include externally-registered tools (write_file/apply_patch/etc)
         from mana_agent.connectors.email.runtime_tools import build_email_langchain_tools
 
+        from mana_agent.config.user_config import get_setting
+
+        browser_tools = []
+        if bool(get_setting("MANA_BROWSER_ENABLED", True)):
+            try:
+                from mana_agent.connectors.browser.runtime_tools import build_browser_langchain_tools
+            except ImportError:
+                pass
+            else:
+                browser_tools = build_browser_langchain_tools()
+
         # Account metadata is local; Gmail is contacted only if the model calls
         # one of these explicitly selected tools.
-        all_tools = [*base_tools, *build_email_langchain_tools(), *mcp_tools, *list(getattr(self, "tools", []) or [])]
+        all_tools = [
+            *base_tools,
+            *build_email_langchain_tools(),
+            *browser_tools,
+            *mcp_tools,
+            *list(getattr(self, "tools", []) or []),
+        ]
         return all_tools, traces, sources, warnings
 
     # ✅ NEW: public "ask" API (what your CodingAgent expects)
@@ -1929,6 +1946,16 @@ class AskAgent:
 
         final_answer = ""
 
+        def safe_tool_args(tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
+            sanitized = dict(tool_args)
+            if tool_name == "browser_type" and "value" in sanitized:
+                sanitized["value"] = "[REDACTED]"
+            if tool_name.startswith("browser_"):
+                for key in ("password", "token", "cookie", "authorization"):
+                    if key in sanitized:
+                        sanitized[key] = "[REDACTED]"
+            return sanitized
+
         def persist_tool_call(tool_name: str, tool_args: dict[str, Any], tool_result: Any, status: str) -> None:
             record_metrics(tool_name, tool_result, status)
             if not flow_id or self.coding_memory_service is None:
@@ -1937,7 +1964,7 @@ class AskAgent:
                 self.coding_memory_service.record_tool_call(
                     flow_id=flow_id,
                     tool_name=tool_name,
-                    arguments=tool_args,
+                    arguments=safe_tool_args(tool_name, tool_args),
                     result=tool_result,
                     status=status,
                 )
@@ -2164,7 +2191,7 @@ class AskAgent:
                             traces.append(
                                 ToolInvocationTrace(
                                     tool_name=name,
-                                    args_summary=json.dumps(args, sort_keys=True, default=str)[:500],
+                                    args_summary=json.dumps(safe_tool_args(name, args if isinstance(args, dict) else {}), sort_keys=True, default=str)[:500],
                                     duration_ms=(perf_counter() - tool_started) * 1000,
                                     status="ok" if not self._tool_error_detail(content) else "error",
                                     output_preview=str(content)[:4000],
@@ -2180,7 +2207,7 @@ class AskAgent:
                         traces.append(
                             ToolInvocationTrace(
                                 tool_name=name,
-                                args_summary=json.dumps(args, sort_keys=True, default=str)[:500],
+                                args_summary=json.dumps(safe_tool_args(name, args if isinstance(args, dict) else {}), sort_keys=True, default=str)[:500],
                                 duration_ms=0.0,
                                 status="error",
                                 output_preview=str(exc)[:4000],

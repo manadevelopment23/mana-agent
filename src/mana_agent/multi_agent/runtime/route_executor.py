@@ -83,7 +83,7 @@ class RouteExecutor:
             return self._semantic_qa(context)
         if decision.kind == "repo_search":
             return self._repo_search(context)
-        if decision.kind == "tool_execution":
+        if decision.kind in {"tool_execution", "browser_task"}:
             return self._tool_execution(decision, context)
         if decision.kind in {"web_search", "github_search"}:
             return self._external_search(decision, context)

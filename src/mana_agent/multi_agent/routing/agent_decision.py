@@ -48,6 +48,20 @@ KNOWN_AGENT_TOOLS = frozenset(
         "find_symbols",
         "call_graph",
         "read_skill",
+        "browser_open",
+        "browser_inspect",
+        "browser_click",
+        "browser_type",
+        "browser_select",
+        "browser_scroll",
+        "browser_wait",
+        "browser_screenshot",
+        "browser_upload",
+        "browser_download",
+        "browser_back",
+        "browser_tabs",
+        "browser_switch_tab",
+        "browser_close",
     }
 )
 
@@ -117,6 +131,23 @@ def agent_tool_descriptions() -> list[dict[str, Any]]:
                 "input_schema": contract.input_schema,
             }
         )
+    from mana_agent.config.user_config import get_setting
+
+    browser_tool_contracts = None
+    if bool(get_setting("MANA_BROWSER_ENABLED", True)):
+        try:
+            from mana_agent.connectors.browser.contracts import browser_tool_contracts
+        except ImportError:
+            browser_tool_contracts = None
+    if browser_tool_contracts is not None:
+        for contract in browser_tool_contracts():
+            descriptions.append(
+                {
+                    "name": contract.name,
+                    "description": contract.description,
+                    "input_schema": contract.input_schema,
+                }
+            )
     return descriptions
 
 
@@ -128,6 +159,8 @@ Use web_search for public/current/unknown-topic research, official docs, and que
 Use github_search for public GitHub project/repository/code research.
 Use both web_search and github_search when the user asks for internet/web plus GitHub.
 Use repo_search/read_file for local repository inspection.
+Use browser tools for interactive website tasks that require navigation, page inspection, forms, clicks, uploads, downloads, tabs, or authenticated browser state. Choose each browser action from the current page evidence; do not assume a website-specific workflow.
+Never select browser actions intended to bypass CAPTCHA, MFA, access restrictions, or website security controls. Sensitive or irreversible final actions require explicit user approval before execution.
 Use apply_patch or edit/write tools only when the user wants code or files changed.
 Return JSON only with this schema:
 {
