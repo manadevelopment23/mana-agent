@@ -36,6 +36,7 @@ from mana_agent.config.settings import default_diagrams_dir
 from mana_agent.multi_agent.runtime.ask_agent import AskAgent
 from mana_agent.multi_agent.runtime.run_logger import LlmRunLogger
 from mana_agent.services.coding_memory_service import CodingMemoryService
+from mana_agent.utils.tool_results import structured_tool_error_detail
 
 logger = logging.getLogger('mana_agent.commands.cli')
 UNLIMITED_AGENT_MAX_STEPS = 1_000_000_000
@@ -112,15 +113,9 @@ class RichToolCallbackHandler(BaseCallbackHandler):
         event_id = self._event_id
         self._tool = None
         self._event_id = None
-        try:
-            text = str(output)
-            payload = json.loads(text.split("\n", 1)[-1])
-            error = payload.get("error") if isinstance(payload, dict) else None
-            if isinstance(error, dict):
-                emit_tool_event("error", tool, duration=dt, error=str(error.get("message") or error.get("code") or "Tool failed."), event_id=event_id)
-                return
-        except (TypeError, ValueError):
-            pass
+        if error := structured_tool_error_detail(output):
+            emit_tool_event("error", tool, duration=dt, error=error, event_id=event_id)
+            return
         emit_tool_event("end", tool, duration=dt, event_id=event_id)
 
     def on_tool_error(self, error: BaseException, **kwargs) -> None:

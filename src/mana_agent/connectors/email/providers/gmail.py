@@ -23,26 +23,34 @@ GMAIL_CAPABILITIES = EmailProviderCapabilities(supports_threads=True, supports_l
 GMAIL_SYSTEM_LABEL_IDS = frozenset({"INBOX", "SENT", "DRAFT", "SPAM", "TRASH", "UNREAD", "STARRED", "IMPORTANT"})
 
 
-def _google_error_message(exc: Exception) -> str:
+def _google_error(exc: Exception) -> dict[str, Any]:
+    """Return a normalized, non-secret Google error payload when available."""
     raw = getattr(exc, "content", b"")
     try:
-        payload = json.loads(bytes(raw).decode("utf-8", "replace"))
-        error = payload.get("error", {}) if isinstance(payload, dict) else {}
-        return str(error.get("message", "")) if isinstance(error, dict) else ""
+        text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        payload = json.loads(text)
     except (TypeError, ValueError, UnicodeDecodeError):
-        return ""
+        return {}
+    error = payload.get("error", {}) if isinstance(payload, dict) else {}
+    return error if isinstance(error, dict) else {}
+
+
+def _google_error_message(exc: Exception) -> str:
+    return str(_google_error(exc).get("message", ""))
 
 
 def _google_error_reason(exc: Exception) -> str:
-    raw = getattr(exc, "content", b"")
-    try:
-        payload = json.loads(bytes(raw).decode("utf-8", "replace"))
-        error = payload.get("error", {}) if isinstance(payload, dict) else {}
-        errors = error.get("errors", []) if isinstance(error, dict) else []
-        first = errors[0] if isinstance(errors, list) and errors else {}
-        return str(first.get("reason", "")) if isinstance(first, dict) else ""
-    except (TypeError, ValueError, UnicodeDecodeError):
+    errors = _google_error(exc).get("errors", [])
+    if not isinstance(errors, list):
         return ""
+    for error in errors:
+        if isinstance(error, dict) and error.get("reason"):
+            return str(error["reason"])
+    return ""
+
+
+def _google_error_status(exc: Exception) -> str:
+    return str(_google_error(exc).get("status", ""))
 
 def gmail_query(query: EmailQuery) -> str:
     parts = [query.text or ""] + [f"from:{x}" for x in query.sender] + [f"to:{x}" for x in query.recipients]
@@ -86,17 +94,26 @@ class GmailProvider(EmailProvider):
         except Exception as exc:
             # Google returns an HttpError whose response status is available
             # without serializing its potentially sensitive response body.
-            status = getattr(getattr(exc, "resp", None), "status", None)
+            raw_status = getattr(getattr(exc, "resp", None), "status", None)
+            try:
+                status = int(raw_status) if raw_status is not None else None
+            except (TypeError, ValueError):
+                status = None
             detail = _google_error_message(exc)
             reason = _google_error_reason(exc)
-            diagnostic = {"exception_type": type(exc).__name__, "provider_reason": reason} if reason else {"exception_type": type(exc).__name__}
+            error_status = _google_error_status(exc)
+            diagnostic = {"exception_type": type(exc).__name__}
+            if reason:
+                diagnostic["provider_reason"] = reason
+            if error_status:
+                diagnostic["provider_error_status"] = error_status
             if status == 401:
                 raise AuthenticationRequired("Gmail credentials were rejected or have expired. Reconnect the account.", provider="gmail", provider_status=status, diagnostic_context=diagnostic) from exc
             if status == 403:
                 authorization_reasons = {"authError", "insufficientPermissions", "insufficientScopes"}
                 if reason in authorization_reasons or "insufficient authentication scopes" in detail.lower() or "metadata scope does not support" in detail.lower():
                     raise EmailAuthorizationError("Gmail did not grant permission for this operation. Reconnect the account with the required Gmail permission.", provider="gmail", provider_status=status, diagnostic_context=diagnostic) from exc
-                raise EmailProviderError("Gmail rejected the request, but did not report an authentication or permission failure.", provider="gmail", provider_status=status, diagnostic_context=diagnostic) from exc
+                raise EmailProviderError("Gmail denied this request (HTTP 403) without identifying an authorization failure. Check Gmail API and OAuth consent-screen access for this account.", provider="gmail", provider_status=status, diagnostic_context=diagnostic) from exc
             if status == 404:
                 raise EmailMessageNotFoundError("Gmail could not find this message.", provider="gmail", provider_status=status, diagnostic_context=diagnostic) from exc
             if status in {408, 429, 500, 502, 503, 504}:

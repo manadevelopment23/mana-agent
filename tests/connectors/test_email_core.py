@@ -83,6 +83,25 @@ def test_gmail_403_missing_scope_is_an_authorization_error():
     assert raised.value.provider_status == 403
 
 
+def test_gmail_403_decodes_string_content_and_provider_status():
+    class Request:
+        def execute(self):
+            error = RuntimeError("forbidden")
+            error.resp = type("Response", (), {"status": "403"})()
+            error.content = '{"error":{"status":"PERMISSION_DENIED","errors":[{"reason":"insufficientScopes"}]}}'
+            raise error
+    class Messages:
+        def get(self, **kwargs): return Request()
+    class Users:
+        def messages(self): return Messages()
+    provider = GmailProvider(account=EmailAccount(id="a", provider="gmail", address=EmailAddress(address="me@example.com")), service=type("Service", (), {"users": lambda self: Users()})())
+    import asyncio
+    with pytest.raises(EmailAuthorizationError) as raised:
+        asyncio.run(provider.get_message("gmail-id"))
+    assert raised.value.provider_status == 403
+    assert raised.value.diagnostic_context["provider_error_status"] == "PERMISSION_DENIED"
+
+
 @pytest.mark.parametrize(
     ("status", "content", "error_type", "reconnect"),
     [
