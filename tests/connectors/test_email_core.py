@@ -1,6 +1,6 @@
 import pytest
 from mana_agent.connectors.email.approval import ApprovalBinding, approval_for
-from mana_agent.connectors.email.exceptions import ApprovalRequired
+from mana_agent.connectors.email.exceptions import ApprovalRequired, AuthenticationRequired
 from mana_agent.connectors.email.models import EmailQuery
 from mana_agent.connectors.email.providers.gmail import GMAIL_CAPABILITIES, gmail_query
 from mana_agent.connectors.email.sanitizer import safe_attachment_filename, sanitize_html, untrusted_email_context
@@ -34,3 +34,18 @@ def test_gmail_search_reads_metadata_not_full_mime():
     import asyncio
     asyncio.run(provider.search_messages(EmailQuery(limit=1)))
     assert calls[1][1]["format"] == "metadata"
+
+def test_gmail_search_reports_reconnect_for_google_authorization_denial():
+    class Request:
+        def execute(self):
+            error = RuntimeError("forbidden")
+            error.resp = type("Response", (), {"status": 403})()
+            raise error
+    class Messages:
+        def list(self, **kwargs): return Request()
+    class Users:
+        def messages(self): return Messages()
+    provider = GmailProvider(account=EmailAccount(id="a", provider="gmail", address=EmailAddress(address="me@example.com")), service=type("Service", (), {"users": lambda self: Users()})())
+    import asyncio
+    with pytest.raises(AuthenticationRequired, match="Reconnect the account"):
+        asyncio.run(provider.search_messages(EmailQuery(limit=1)))

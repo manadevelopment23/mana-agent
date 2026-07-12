@@ -29,7 +29,20 @@ def _b64(value: str | None) -> bytes: return base64.urlsafe_b64decode((value or 
 
 class GmailProvider(EmailProvider):
     def __init__(self, *, account: EmailAccount, service: Any) -> None: self.account, self.service = account, service
-    async def _call(self, request: Any) -> Any: return await asyncio.to_thread(request.execute)
+    async def _call(self, request: Any) -> Any:
+        try:
+            return await asyncio.to_thread(request.execute)
+        except Exception as exc:
+            # Google returns an HttpError whose response status is available
+            # without serializing its potentially sensitive response body.
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            if status in {401, 403}:
+                raise AuthenticationRequired(
+                    "Gmail rejected this account's authorization "
+                    f"({status}). Reconnect the account with `email.metadata,email.read`; "
+                    "if it persists, enable Gmail API and add the readonly scope to the Google OAuth consent configuration."
+                ) from exc
+            raise
     async def connect(self) -> EmailAccount:
         profile = await self._call(self.service.users().getProfile(userId="me")); self.account.address = EmailAddress(address=str(profile["emailAddress"])); return self.account
     async def disconnect(self) -> None: return None

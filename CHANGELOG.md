@@ -4,6 +4,9 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-12
 
+- Normalized Gmail 401/403 API responses into an actionable OAuth reconnect error instead of incorrectly claiming that metadata-only access was the cause.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/connectors/test_email_core.py tests/test_ask_agent.py tests/test_llm_compatibility.py -q` passed (56 tests).
+
 - Added a centralized capability-driven LLM request compatibility layer. Tool calls with enabled reasoning now use Responses API only when the selected provider supports it; Chat Completions gateways instead retain tools and normalize incompatible reasoning effort to `none`.
   - Added one safe retry for the documented unsupported tools-plus-reasoning HTTP error, with structured API-mode/adjustment logging and no model-name-specific routing.
   - Verification: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_llm_compatibility.py tests/test_ask_agent.py tests/test_project_llm_analyze_service.py tests/test_cli_smoke.py -q` passed; compatibility regression suite has 10 passing tests.
