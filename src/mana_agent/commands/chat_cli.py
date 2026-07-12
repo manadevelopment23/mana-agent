@@ -43,6 +43,7 @@ from mana_agent.cli.renderers import InlineChatRenderer
 from mana_agent.tui.menu import NonInteractivePromptError
 from mana_agent.tui.wizard import ensure_setup
 from mana_agent.skills.chat import ChatSkillCoordinator
+from mana_agent.connectors.browser.session import BrowserSessionManager
 
 
 _NEW_TOPIC_COMMANDS = {"/new", "/new-topic", "new topic", "new topic chat"}
@@ -2350,6 +2351,85 @@ def chat(
             # -----------------------------
             # Model-selected immediate tools for read-only research/search turns.
             # -----------------------------
+            selected_browser_tools = [
+                tool for tool in agent_decision.selected_tools if str(tool).startswith("browser_")
+            ]
+            if selected_browser_tools and not agent_decision.code_editing_needed and not required_mcp_server:
+                browser_status = BrowserSessionManager.status()
+                if not browser_status.get("ok"):
+                    answer_text = (
+                        "Browser execution is unavailable. "
+                        + str(browser_status.get("error") or "Chromium is not installed; run `python -m playwright install chromium`.")
+                    )
+                    response = None
+                    sources = []
+                    warnings = [answer_text]
+                    trace = []
+                else:
+                    browser_agent = getattr(ask_service, "ask_agent", None)
+                    if browser_agent is None:
+                        answer_text = "Browser execution is unavailable because the chat tool agent is not configured."
+                        response = None
+                        sources = []
+                        warnings = [answer_text]
+                        trace = []
+                    else:
+                        selected_index = resolved_index_dir or default_index_dir(root)
+                        response = _run_chat_event_step(
+                            "Browser session...",
+                            lambda: browser_agent.run(
+                                question=question,
+                                index_dir=selected_index,
+                                k=resolved_k,
+                                max_steps=max(6, len(selected_browser_tools) + 3),
+                                timeout_seconds=min(max(agent_timeout_seconds, 60), 600),
+                                tool_policy={
+                                    "allowed_tools": selected_browser_tools,
+                                    "disable_external_search": True,
+                                },
+                                run_id=current_turn_id,
+                            ),
+                            event_type="ToolStarted",
+                            tool_name="browser",
+                        )
+                        answer_text = str(getattr(response, "answer", "") or "")
+                        sources = list(getattr(response, "sources", []) or [])
+                        warnings = [str(item) for item in (getattr(response, "warnings", []) or [])]
+                        trace = _coerce_trace_items(list(getattr(response, "trace", []) or []))
+                _render_answer_header(console, title="Browser")
+                console.print(Markdown(answer_text))
+                chat_ui_state.record_event(
+                    make_event(
+                        "agent.decision",
+                        title="Agent decision",
+                        message=agent_decision.reasoning_summary,
+                        status="success" if agent_decision.verifier_passed else "failed",
+                        session_id=chat_ui_state.session_id,
+                        turn_id=current_turn_id,
+                        step_id="05",
+                        metadata={"intent": agent_decision.intent, "selected_tools": selected_browser_tools},
+                    ).finish(status="success" if agent_decision.verifier_passed else "failed")
+                )
+                turn_record = ChatTurnTelemetry(
+                    turn_index=len(session_turns) + 1,
+                    timestamp=_now_iso(),
+                    question=question,
+                    answer_text=answer_text,
+                    sources=sources,
+                    warnings=warnings,
+                    trace=trace,
+                    tool_steps_total=len(trace),
+                    decisions=[agent_decision.to_dict()],
+                    changed_files=[],
+                    has_diff=False,
+                    coding_state={"flow_id": active_flow_id},
+                )
+                session_turns.append(turn_record)
+                chat_ui_state.add_conversation_turn(turn_record.question, turn_record.answer_text)
+                _render_turn_transparency(console, turn=turn_record, history=session_turns)
+                _finish_ui_turn(current_turn_id)
+                continue
+
             if (
                 any(tool in agent_decision.selected_tools for tool in ("web_search", "github_search"))
                 and agent_decision.web_search_needed

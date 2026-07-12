@@ -19,6 +19,17 @@ from mana_agent.connectors.browser.models import BrowserConfig
 
 BLOCKED_PATTERNS = re.compile(r"\b(captcha|two[- ]factor|verification code|multi[- ]factor|access denied|security challenge)\b", re.I)
 SENSITIVE_PATTERNS = re.compile(r"\b(pay|purchase|place order|publish|delete|remove account|accept|agree|sign up|create account|submit|send)\b", re.I)
+SYSTEM_CHROMIUM_CANDIDATES = (
+    Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+    Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+)
+
+
+def _chromium_executable(managed: str | Path) -> Path | None:
+    managed_path = Path(managed)
+    if managed_path.is_file():
+        return managed_path
+    return next((path for path in SYSTEM_CHROMIUM_CANDIDATES if path.is_file()), None)
 
 
 class BrowserConnectorError(RuntimeError):
@@ -53,10 +64,10 @@ class BrowserSessionManager:
         try:
             from playwright.sync_api import sync_playwright
             pw = sync_playwright().start()
-            executable = Path(pw.chromium.executable_path)
-            installed = executable.exists()
+            executable = _chromium_executable(pw.chromium.executable_path)
+            installed = executable is not None
             pw.stop()
-            return {"ok": installed, "package_installed": True, "chromium_installed": installed, "executable": str(executable)}
+            return {"ok": installed, "package_installed": True, "chromium_installed": installed, "executable": str(executable or "")}
         except ImportError:
             return {"ok": False, "package_installed": False, "chromium_installed": False, "error": "Install mana-agent[browser]."}
         except Exception as exc:
@@ -79,7 +90,10 @@ class BrowserSessionManager:
             directory = Path(tempfile.mkdtemp(prefix=f"{session_id[:12]}-", dir=base))
         directory.mkdir(parents=True, exist_ok=True); os.chmod(directory, 0o700)
         try:
-            browser = pw.chromium.launch(headless=self.config.headless)
+            executable = _chromium_executable(pw.chromium.executable_path)
+            if executable is None:
+                raise BrowserConnectorError("chromium_unavailable", "Chromium is unavailable. Run `python -m playwright install chromium` or install Google Chrome.")
+            browser = pw.chromium.launch(headless=self.config.headless, executable_path=str(executable))
         except Exception as exc:
             pw.stop()
             raise BrowserConnectorError("chromium_unavailable", "Chromium is unavailable. Run `python -m playwright install chromium`.") from exc

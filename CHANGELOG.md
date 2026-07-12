@@ -9,6 +9,10 @@ All notable repository changes should be recorded here.
   guarded uploads and downloads, and confirmation gates for sensitive final
   actions. Added setup, security, examples, and local integration-test
   documentation.
+  Direct chat now dispatches validated `browser_*` decisions into the AskAgent
+  tool loop instead of falling through to a plain answer, and the Playwright
+  adapter can use an installed Google Chrome/Chromium binary when its managed
+  runtime is unavailable.
   - Verification: browser, routing, AskAgent, CLI-event, tool-manager, and multi-agent tests passed (189 tests); compileall, targeted Ruff, CLI browser status/help, and `git diff --check` passed. The Playwright integration test skipped because local sockets are unavailable in the sandbox.
 
 - Hardened external HTTP 403 handling. Gmail now decodes string and byte error
