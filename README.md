@@ -16,6 +16,8 @@ Chat uses the same repository-isolated store. `/skills`, `/skills available`, `/
 
 Optional Gmail email connector setup and security guidance: [docs/16-email-connectors.md](docs/16-email-connectors.md).
 
+Telegram polling, webhook, access-control, and deployment guidance: [docs/17-telegram-connector.md](docs/17-telegram-connector.md).
+
 **Current documented version:** `v0.0.13`
 
 ---

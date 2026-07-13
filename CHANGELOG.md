@@ -2,6 +2,11 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-13
+
+- Added a production-oriented Telegram connector with default long polling, automatic or explicit webhook transport, shared normalized processing, numeric-ID access control, per-conversation Mana-Agent chat sessions, a durable idempotent SQLite queue, response chunking, safe document ingestion, CLI lifecycle commands, FastAPI webhook lifecycle integration, dashboard status, documentation, and mocked tests.
+  - Verification: `MANA_HOME=/tmp/mana-telegram-full PYTHONPATH=src .venv/bin/python -m pytest -q` passed (803 tests); final Telegram-focused tests passed (18 tests); focused API/config/chat regression tests passed (53 tests); Ruff, `compileall`, and `git diff --check` passed.
+
 ## 2026-07-12
 
 - Hardened external HTTP 403 handling. Gmail now decodes string and byte error
