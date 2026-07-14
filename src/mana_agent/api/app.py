@@ -8,6 +8,9 @@ from fastapi.responses import JSONResponse
 
 from mana_agent.api.exceptions import ManaApiError
 from mana_agent.api.routes.analyze import router as analyze_router
+from mana_agent.api.routes.conversations import router as conversations_router
+from mana_agent.api.routes.events_ws import router as events_ws_router
+from mana_agent.api.routes.repository_analyze import router as repository_analyze_router
 from mana_agent.api.routes.workspaces import router as workspaces_router
 
 
@@ -49,6 +52,9 @@ def create_app(*, telegram_config: Any | None = None, telegram_gateway: Any | No
         return JSONResponse(status_code=exc.status_code, content=payload)
 
     app.include_router(analyze_router)
+    app.include_router(repository_analyze_router)
+    app.include_router(conversations_router)
+    app.include_router(events_ws_router)
     app.include_router(workspaces_router)
     if telegram_connector is not None:
         from fastapi import Response
