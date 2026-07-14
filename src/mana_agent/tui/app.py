@@ -49,7 +49,7 @@ from typing import Any
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Input, Static
 
@@ -115,8 +115,9 @@ class ManaChatApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
 
-        # Main chat area
-        with Container(id="main"):
+        # Main chat area - Vertical ensures children with 1fr (the log) get remaining space above fixed input-bar.
+        # This allows proper scrolling on small terminal heights.
+        with Vertical(id="main"):
             self.chat_log = ChatLog(history=self.history, id="chat-log")
             yield self.chat_log
 

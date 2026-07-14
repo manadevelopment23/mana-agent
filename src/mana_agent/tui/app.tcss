@@ -40,9 +40,14 @@ Footer {
 }
 
 #chat-log {
+    height: 1fr;
     border: round #334155;
     background: #0f1117;
     padding: 1;
+}
+
+#main {
+    height: 1fr;
 }
 
 /* User message cards */
@@ -65,6 +70,8 @@ Footer {
 /* Tool cards styling is also in the Python DEFAULT_CSS of ToolCard */
 ToolCard {
     margin: 0 2 1 2;
+    min-height: 4;   /* at least the header is always visible */
+    max-height: 18;  /* fixed-ish max height on all terminal sizes; the #chat-log scrolls when needed */
 }
 
 ToolCard Collapsible {
@@ -82,6 +89,10 @@ ToolCard .tool-call-header {
 
 .tool-result-error {
     color: #f87171;
+}
+
+.tool-result-body {
+    max-height: 12;
 }
 
 /* Scrollbar */

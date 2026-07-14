@@ -38,6 +38,8 @@ class ToolCard(Vertical):
     ToolCard {
         margin: 0 0 1 0;
         padding: 0;
+        min-height: 4;   /* at least header visible */
+        max-height: 18;  /* fixed-ish max height regardless of terminal size; ChatLog scrolls the list on small heights */
     }
     ToolCard Collapsible {
         border: round $primary;
@@ -57,6 +59,7 @@ class ToolCard(Vertical):
     }
     .tool-result-body {
         padding: 0 1;
+        max-height: 12;
     }
     """
 
