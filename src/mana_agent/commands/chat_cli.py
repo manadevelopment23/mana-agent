@@ -389,6 +389,8 @@ def _render_auto_execute_pass_status(
 
 def chat(
     prompt: str | None = typer.Argument(None, help="Optional first chat prompt."),
+    # --tui is accepted for compatibility but has no effect: TUI is now always the default.
+    use_tui: bool = typer.Option(True, "--tui/--no-tui", hidden=True),
     model: str | None = typer.Option(None, "--model"),
     index_dir: str | None = typer.Option(None, "--index-dir"),
     k: int | None = typer.Option(None, "--k"),
@@ -1928,6 +1930,36 @@ def chat(
                 logger.debug("Failed to save auto-chat state: %s", exc)
 
         queued_questions = [prompt] if prompt else []
+
+        # =====================================================================
+        # Launch the enhanced TUI (default + always mode) AFTER the complete
+        # multi-agent setup. We pass chat_service, coding_agent and
+        # tools_orchestrator so the TUI drives the real flow (like old chat)
+        # instead of a toy LLM call.
+        # =====================================================================
+        from mana_agent.tui.app import run_chat_tui
+        from mana_agent.chat.history import reset_global_history
+
+        reset_global_history()
+
+        effective_model_for_tui = model or getattr(settings, "openai_chat_model", None)
+        api_key = getattr(settings, "openai_api_key", None)
+        base_url = getattr(settings, "openai_base_url", None) or os.getenv("OPENAI_BASE_URL")
+
+        # Pass the prepared multi-agent objects so the TUI can drive the real flow
+        # (routing, tool execution via orchestrator, memory, auto-execute, etc.)
+        run_chat_tui(
+            repo_root=root,
+            model=effective_model_for_tui,
+            initial_prompt=prompt,
+            api_key=api_key,
+            base_url=base_url,
+            # These enable full multi-agent behavior inside the TUI handler
+            chat_service=chat_service,
+            coding_agent=coding_agent_instance,
+            tools_orchestrator=tools_manager_orchestrator,
+        )
+        return
 
         while True:
             try:

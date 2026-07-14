@@ -14,6 +14,7 @@ dependencies = [
   # CLI / UX
   "typer>=0.6.0,<1.0.0",
   "rich>=12.0,<15.0",
+  "textual>=0.80.0,<1.0.0",
   "prompt_toolkit>=3.0,<4.0",
   "fastapi>=0.110,<1.0",
   "uvicorn>=0.27,<1.0",
@@ -92,4 +93,4 @@ full = [
 mana-agent = "mana_agent.commands.cli:app"
 
 [tool.setuptools.package-data]
-mana_agent = ["default_skills/*.md"]
+mana_agent = ["default_skills/*.md", "tui/app.tcss"]
