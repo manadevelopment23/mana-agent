@@ -4,6 +4,23 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-14
 
+- Made `apply_patch` self-healing for stale or incomplete patch context. On
+  `patch_context_not_found`, the tool re-reads targets, matches unique anchors
+  (exact → reduced context → unique removed lines → headings/symbols/table rows
+  → whitespace-normalized when safe), rebuilds minimal hunks, retries within a
+  strict three-attempt bound, and treats already-applied content as an
+  idempotent success. Ambiguous multi-location matches fail without writing and
+  return structured recovery metadata (`strategy`, `attempts`, `matched_anchor`,
+  `candidate_count`, `changed_ranges`, `already_applied`, `recovery_error`).
+  Runtime integration re-reads failed targets, attaches fresh contents, and
+  refuses to resubmit the original stale patch unchanged after recovery is
+  exhausted. Added focused recovery tests covering stale lines, Markdown table
+  inserts, idempotency, whitespace drift, ambiguity, multi-hunk recovery,
+  `check_only`, metadata, and post-apply verification.
+  - Verification: `./venv/bin/python -m pytest -q` passed 852 tests (2 skipped);
+    3 pre-existing failures in `tests/test_chat_ui_events_tokens.py` (UI mode /
+    subagent rendering) are unrelated to patch recovery. Focused patch/recovery
+    suite passed (40 tests, 1 skipped). Targeted `py_compile` passed.
 - Removed post-response diagnostic panels (Summary, Steps, Decisions, History /
   Session History) from chat presentation. Final turns now render the normal
   assistant answer plus concise warnings; live tool progress while a request is
