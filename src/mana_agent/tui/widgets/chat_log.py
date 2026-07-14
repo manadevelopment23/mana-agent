@@ -16,11 +16,15 @@ This widget + ChatHistory subscription is the core fix for the
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
+
 from rich.console import Console, RenderableType
 from rich.markdown import Markdown as RichMarkdown
 from rich.panel import Panel
 from rich.text import Text
 from textual.containers import Vertical, VerticalScroll
+from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Markdown, Static
 
@@ -34,6 +38,19 @@ from mana_agent.chat.events import (
 )
 from mana_agent.chat.history import ChatHistory
 from mana_agent.tui.widgets.tool_card import ToolCard
+
+
+class ChatHistoryMessage(Message):
+    """Thread-safe notification that ChatHistory received a new event.
+
+    Posted via ``Widget.post_message`` (non-blocking, safe from worker threads).
+    Prefer this over ``App.call_from_thread`` which blocks the worker until the
+    UI callback finishes and can deadlock if the UI thread is waiting on that worker.
+    """
+
+    def __init__(self, event: ChatEvent) -> None:
+        super().__init__()
+        self.event = event
 
 
 class ChatLog(VerticalScroll):
@@ -82,10 +99,14 @@ class ChatLog(VerticalScroll):
     def __init__(self, history: ChatHistory | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self._history: ChatHistory | None = None
-        self._unsubscribe: callable | None = None
+        self._unsubscribe: Callable[[], None] | None = None
         self._assistant_widgets: dict[str, Static | Markdown] = {}  # event_id -> widget
         self._tool_cards: dict[str, ToolCard] = {}  # call_id -> card
         self._current_turn_id: str | None = None
+        # Deduplicate live + replay so the same event_id is only painted once
+        self._rendered_ids: set[str] = set()
+        # App thread id once mounted (for low-latency same-thread rendering)
+        self._ui_thread_id: int | None = None
 
         if history is not None:
             self.set_history(history)
@@ -95,7 +116,7 @@ class ChatLog(VerticalScroll):
 
         NOTE: Replay of past events is deferred to on_mount + call_after_refresh
         to avoid "Can't mount widget(s) before Vertical() is mounted" errors.
-        Live events use call_after_refresh in _on_event.
+        Live events are scheduled onto the UI thread immediately (thread-safe).
         """
         if self._unsubscribe:
             self._unsubscribe()
@@ -105,9 +126,66 @@ class ChatLog(VerticalScroll):
         # Do NOT replay here (constructor time). on_mount will handle it safely.
 
     def _on_event(self, event: ChatEvent) -> None:
-        """Callback from ChatHistory. Always runs on add()."""
-        # Schedule render on the Textual thread
-        self.call_after_refresh(self._render_event, event)
+        """Callback from ChatHistory.add().
+
+        Must be thread-safe: tool start/end often arrive from worker threads
+        (CodingAgent / tool workers via emit_tool_event bridge). We schedule
+        rendering onto the UI thread so ToolCards and messages appear immediately
+        while the agent is still running, not only after the turn finishes.
+        """
+        self._schedule_render(event)
+
+    def _schedule_render(self, event: ChatEvent) -> None:
+        """Schedule _safe_render on the Textual UI thread with minimal latency.
+
+        - Same UI thread: mount immediately (user pressed Enter → bubble shows now).
+        - Other threads: non-blocking ``post_message`` (thread-safe; no deadlock risk
+          with ``asyncio.to_thread`` / blocking workers).
+        """
+        # Same UI thread: mount immediately when possible so user messages appear
+        # in the message box without waiting for the next refresh cycle.
+        if self._ui_thread_id is not None and threading.get_ident() == self._ui_thread_id:
+            if self.is_mounted:
+                try:
+                    self._safe_render(event)
+                    return
+                except Exception:
+                    pass
+
+        # Worker / other thread (or not yet ready for direct mount):
+        # post_message is non-blocking and thread-safe in Textual.
+        try:
+            self.post_message(ChatHistoryMessage(event))
+            return
+        except Exception:
+            pass
+
+        # Last-resort fallbacks (e.g. very early lifecycle)
+        def _render() -> None:
+            self._safe_render(event)
+
+        try:
+            self.call_later(_render)
+        except Exception:
+            try:
+                self.call_after_refresh(_render)
+            except Exception:
+                pass
+
+    def on_chat_history_message(self, message: ChatHistoryMessage) -> None:
+        """Handle thread-safe history notifications posted from any thread."""
+        self._safe_render(message.event)
+
+    def _safe_render(self, event: ChatEvent) -> None:
+        """Render only when mounted; skip duplicates (live vs history replay)."""
+        if not self.is_mounted:
+            return
+        event_id = getattr(event, "event_id", None)
+        if event_id and event_id in self._rendered_ids:
+            return
+        if event_id:
+            self._rendered_ids.add(event_id)
+        self._render_event(event)
 
     def _render_event(self, event: ChatEvent) -> None:
         """Create appropriate visual representation and mount it."""
@@ -230,11 +308,13 @@ class ChatLog(VerticalScroll):
             child.remove()
         self._assistant_widgets.clear()
         self._tool_cards.clear()
+        self._rendered_ids.clear()
 
     def on_mount(self) -> None:
         """Defer initial replay until after this VerticalScroll (and its internal Vertical)
         has been mounted. This prevents MountError when populating from history.
         """
+        self._ui_thread_id = threading.get_ident()
         if self._history:
             self.call_after_refresh(self._replay_history)
 
@@ -243,4 +323,4 @@ class ChatLog(VerticalScroll):
         if not self._history:
             return
         for ev in self._history.get_events():
-            self._render_event(ev)
+            self._safe_render(ev)

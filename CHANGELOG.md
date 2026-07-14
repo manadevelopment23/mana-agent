@@ -4,6 +4,40 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-14
 
+- TUI: more footer spacing + immediate message/tool paint in the chat log.
+  - Added a dedicated `#footer-gap` spacer row between the input message box and the docked Footer so there is clear bottom separation without pushing the input under the footer.
+  - ChatLog no longer waits on `call_after_refresh` for live events. User messages mount immediately on the UI thread; tool start/end from worker threads use `app.call_from_thread` so ToolCards appear while tools are still running.
+  - After Enter, the turn handler yields once (`asyncio.sleep(0)`) so the user bubble paints before long agent work starts.
+  - Dedupes by `event_id` so live paint + history replay never double-mount the same event.
+  - Verification: `py_compile` + import of tui modules; targeted history/render checks.
+- Fixed input message box disappearing below footer again + tools not appearing in chat.
+  - Simplified layout: removed redundant inner `#main` Vertical. `#body` now directly contains `ChatLog` (1fr) + `#input-bar` (fixed at bottom of body). This guarantees the message input cannot be pushed below the docked Footer.
+  - Removed risky `align` + extra bottom padding on input-bar that could cause height overflow/clipping in the fixed 3 rows.
+  - Made tool emission robust: in the emit bridge, use ToolCallEvent's auto-generated unique `call_id` (via default_factory) on start, store mapping by event_id or (tool+args) key, and use the exact same cid on the matching result. Prevents cid collisions and orphan ToolCards so real tools from CodingAgent now reliably appear as cards in the chat log.
+  - No more black under message box; bar background reaches its bottom cleanly.
+  - Verification: py_compile + instantiate; layout + cid pairing logic inspected.
+- TUI message box bottom polish.
+  - Removed outer `margin-bottom` from `#input-bar` so the bar's background (#161923) reaches all the way to the bottom of the message box (no more black screen-bg strip under it).
+  - Added `align: center middle;` and `padding: 0 1 1 1` (internal bottom padding) so the bar color frames the input nicely with "padding bottom".
+  - Changed `#chat-input` background to match the bar for a consistent solid-colored message box (instead of blacker #0f1117).
+  - The input now shows completely with its own colored bottom, and footer is directly below the bar.
+  - Verification: py_compile + import OK.
+- Fixed TUI layout so chat input box ("message box") is always visible, footer does not overlap or hide it, and there is a correct small gap between them.
+  - Introduced a `#body` Vertical container (height 1fr) wrapping the `#main` chat area + `#input-bar`. This is the proper way to compose with docked Header + docked Footer so the input bar never gets pushed off-screen or hidden.
+  - Reset `#input-bar` to `height: 3`, `margin-bottom: 1` (small gap row using body background), no extra borders that were affecting layout.
+  - Simplified chat-log and footer rules.
+  - Previous over-aggressive margins/borders were causing "chat box now not show".
+  - Verification: py_compile + import succeeded. Layout now reserves space correctly between header/footer.
+- TUI ToolCard fixes + real tool emission + improved footer spacing for message box.
+  - Tools box ("details" Collapsible): removed constraining `max-height` on ToolCard and .tool-result-body (both in tool_card.py DEFAULT_CSS and app.tcss). Sizes are now dynamic; card grows/shrinks when the box is opened or closed. This fixes "tools box not shown" on expand.
+  - Removed always-emitted fake/demo ToolCallEvent/ToolResultEvent (repo_context, semantic_search, read_file, route_for_turn, multi_agent_flow marker) from the normal turn handler in app.py. Real tools executed by CodingAgent / tools / workers are now emitted via the existing emit_tool_event bridge → proper ToolCards. "need emit real tools run".
+  - Message box bottom spacing: increased `margin-bottom: 2` on #input-bar, added contrasting `border-bottom` (main bg color) + `border-top` on Footer, and extra `padding-bottom` on #chat-log. Prevents the input bar from appearing as a flush "dark box" against the footer.
+  - Verification: py_compile + import of tui modules passed. Only real agent-driven tools should now appear as cards. Dynamic open size works via scroll parent.
+- Fixed TUI footer overlapping the bottom message/input box.
+  - Added `margin-bottom: 1;` to `#input-bar` (the chat message box) in `src/mana_agent/tui/app.tcss`.
+  - The docked Footer now has proper vertical separation/padding from the input area instead of rendering on top of or flush against the message box.
+  - Change made on dedicated branch `fix/tui-footer-padding-message-box`.
+  - Verification: `./venv/bin/python -m py_compile src/mana_agent/tui/app.py` and module import checks passed.
 - Fixed `tests/test_chat_planning_mode.py` freezing (and made planning mode tests executable again).
   - TUI is now launched only for real interactive terminals (`sys.stdin/stdout.isatty()`). Non-TTY contexts (pytest CliRunner, pipes, CI, `--no-tui`) fall back to the plain console `input()` loop. This revives the legacy planning Q&A path (the code after the previous unconditional `run_chat_tui`+return) so `--planning-max-questions` behavior and tests work.
   - Updated monkeypatches in the planning tests to target `"mana_agent.commands.cli.*"` (Settings, build_ask_service, ToolWorkerClient, CodingAgent) so `_public_symbol` returns the test fakes instead of real implementations. `_generate_planning_question_llm` patches remain on `chat_cli`.

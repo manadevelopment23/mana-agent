@@ -95,10 +95,12 @@ class ManaChatApp(App):
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        self.history = history or get_history()
+        # Use `is not None` — empty ChatHistory is falsy (__len__==0) and must still be kept.
+        self.history = history if history is not None else get_history()
         self.chat_log: ChatLog | None = None
         self.input: Input | None = None
         self._turn_counter = 0
+        self._tool_cid_map: dict[str, str] = {}  # key -> call_id for reliable start/end pairing in bridge
 
         # Configuration for real agent behavior
         self.repo_root: Path = Path(repo_root).resolve() if repo_root else Path.cwd().resolve()
@@ -115,19 +117,21 @@ class ManaChatApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
 
-        # Main chat area - Vertical ensures children with 1fr (the log) get remaining space above fixed input-bar.
-        # This allows proper scrolling on small terminal heights.
-        with Vertical(id="main"):
+        # Body takes the space between docked Header and docked Footer.
+        # Log gets 1fr, input bar is fixed at the bottom of the body so it cannot
+        # go below the footer.
+        with Vertical(id="body"):
             self.chat_log = ChatLog(history=self.history, id="chat-log")
             yield self.chat_log
 
-        # Bottom input bar
-        with Horizontal(id="input-bar"):
-            self.input = Input(
-                placeholder="Type a message and press Enter...  (Ctrl+R for demo tool flow)",
-                id="chat-input",
-            )
-            yield self.input
+            # Bottom input bar (message box)
+            with Horizontal(id="input-bar"):
+                self.input = Input(
+                    placeholder="Type a message and press Enter...  (Ctrl+R for demo tool flow)",
+                    id="chat-input",
+                )
+                yield self.input
+
 
         yield Footer()
 
@@ -284,11 +288,15 @@ class ManaChatApp(App):
         self.update_status("Thinking...")
         self.token_count += len(text.split())
 
-        # Record + process (real LLM + tool demo cards)
+        # Record user message first so ChatLog can paint the bubble immediately
         user_event = UserMessageEvent(content=text)
         self.history.add(user_event)
 
-        # Run the turn off the main thread so UI stays responsive
+        # Yield so the Textual message pump can mount/paint the user bubble
+        # before long agent/tool work starts (immediate feedback in the message box).
+        await asyncio.sleep(0)
+
+        # Run the turn as a worker so the UI stays responsive and tool events can paint live
         self.run_worker(self._handle_real_turn(user_event), exclusive=True)
 
     async def _send_initial_prompt(self) -> None:
@@ -319,101 +327,40 @@ class ManaChatApp(App):
         question = user_event.content
         turn_id = user_event.turn_id
 
-        # 1. Emit a visible "repo inspection" tool (like old chat would do semantic_search / list / read)
-        ctx_call = ToolCallEvent(
-            tool_name="repo_context",
-            args={"root": str(self.repo_root)},
-            summary=f"scan {self.repo_root.name}",
-            turn_id=turn_id,
-        )
-        self.history.add(ctx_call)
-        await asyncio.sleep(0.05)
-
-        try:
-            entries = sorted(p.name for p in self.repo_root.iterdir() if not p.name.startswith("."))[:12]
-            ctx_result = {"top_level": entries, "root": str(self.repo_root)}
-            ctx_success = True
-        except Exception as exc:
-            ctx_result = f"Could not list: {exc}"
-            ctx_success = False
-
-        self.history.add(ToolResultEvent(
-            call_id=ctx_call.call_id,
-            tool_name="repo_context",
-            success=ctx_success,
-            result=ctx_result,
-            summary="context ready",
-            duration_ms=30,
-            turn_id=turn_id,
-        ))
-
-        # Connect to multi-agent routing (like old chat)
-        try:
-            from mana_agent.multi_agent.runtime.agent_session import route_for_turn
-            r = route_for_turn(coding_agent_available=True, agent_tools=True)
-            route_call = ToolCallEvent(
-                tool_name="route_for_turn",
-                args={"coding_agent_available": True, "agent_tools": True},
-                summary=f"route={getattr(r, 'route', 'coding_agent')}",
-                turn_id=turn_id,
-            )
-            self.history.add(route_call)
-            self.history.add(ToolResultEvent(
-                call_id=route_call.call_id,
-                tool_name="route_for_turn",
-                success=True,
-                result=str(r),
-                summary=getattr(r, "reason", "multi-agent route"),
-                duration_ms=5,
-                turn_id=turn_id,
-            ))
-        except Exception:
-            pass
-
         self.update_status("Thinking with multi-agent flow...")
 
-        # Emit additional tool events for visibility. In real multi-agent flow the internal
-        # tools (semantic_search, read_file, apply_patch etc) are executed inside the agent,
-        # but we surface representative ones here + the routing marker so they always appear
-        # in the TUI (no more "not show" or "immediately gone").
-        for tname, targs, tsummary in [
-            ("semantic_search", {"query": question[:80]}, "search project"),
-            ("read_file", {"path": "relevant_file.py"}, "inspect source"),
-        ]:
-            tcall = ToolCallEvent(tool_name=tname, args=targs, summary=tsummary, turn_id=turn_id)
-            self.history.add(tcall)
-            await asyncio.sleep(0.08)
-            self.history.add(ToolResultEvent(
-                call_id=tcall.call_id, tool_name=tname, success=True,
-                result={"status": "ok", "note": "executed via multi-agent"},
-                summary=tsummary, duration_ms=42, turn_id=turn_id
-            ))
-
-        # Bridge the old emit_tool_event (used inside coding_agent, tools_orchestrator etc.)
-        # so that REAL tool calls made by the multi-agent flow are translated to our
-        # ToolCallEvent/ToolResultEvent and appear as cards in the TUI.
+        # Bridge the old emit_tool_event (used inside coding_agent, tools_orchestrator, workers etc.)
+        # so that *real* tool calls made by the multi-agent flow are translated into
+        # ToolCallEvent/ToolResultEvent and rendered as proper ToolCards.
+        # No more hardcoded fake "semantic_search", "read_file", "repo_context" etc.
         import mana_agent.commands.ui_helpers as ui_helpers
         original_emit = ui_helpers.emit_tool_event
 
         def bridged_emit(kind, tool, *, args="", duration=None, error="", event_id=None, **kwargs):
-            # Let the original run (it may update internal state/activity)
+            # Let the original run (updates internal activity panels etc.)
             try:
                 original_emit(kind, tool, args=args, duration=duration, error=error, event_id=event_id, **kwargs)
             except Exception:
                 pass
-            # Translate to TUI events so cards show
+            # Translate to TUI history events → real ToolCards for actual tools executed.
+            # Use agent's event_id when present (consistent across start/end).
+            # Otherwise let ToolCallEvent auto-generate a unique call_id and remember it
+            # via a key so the matching result pairs correctly (prevents orphan cards).
             kind_l = str(kind).lower()
-            cid = str(event_id) if event_id else f"tool-{tool}"
+            key = str(event_id).strip() if event_id else f"{tool}:{str(args)[:80]}"
             if any(x in kind_l for x in ("start", "started")):
                 tcall = ToolCallEvent(
                     tool_name=str(tool),
                     args=args or {},
-                    call_id=cid,
+                    # do not pass call_id -> dataclass default_factory gives unique good id
                     summary=str(args)[:60] if args else "",
                     turn_id=turn_id,
                 )
+                cid = tcall.call_id
+                self._tool_cid_map[key] = cid
                 self.history.add(tcall)
             elif any(x in kind_l for x in ("end", "finished", "done", "success")):
+                cid = self._tool_cid_map.get(key) or (str(event_id) if event_id else f"tool-{tool}")
                 tres = ToolResultEvent(
                     call_id=cid,
                     tool_name=str(tool),
@@ -425,6 +372,7 @@ class ManaChatApp(App):
                 )
                 self.history.add(tres)
             elif "error" in kind_l or "fail" in kind_l:
+                cid = self._tool_cid_map.get(key) or (str(event_id) if event_id else f"tool-{tool}")
                 tres = ToolResultEvent(
                     call_id=cid,
                     tool_name=str(tool),
@@ -437,15 +385,17 @@ class ManaChatApp(App):
 
         ui_helpers.emit_tool_event = bridged_emit
 
-        # 2. Use the real multi-agent objects if provided by chat_cli (preferred path, like old chat)
+        # Use the real multi-agent objects if provided (preferred). Real tool events
+        # will be emitted via the bridged_emit above from inside CodingAgent etc.
         answer = None
         used_full_flow = False
+
+        ctx_result = {"root": str(self.repo_root)}  # minimal context for fallbacks only
 
         try:
             if self.coding_agent is not None and hasattr(self.coding_agent, "handle"):
                 try:
                     # Drive the actual CodingAgent (full flow: planning, tools, memory, edits, verification)
-                    # Many implementations are async; fall back to thread if needed.
                     if asyncio.iscoroutinefunction(self.coding_agent.handle):
                         result = await self.coding_agent.handle(question, context={"root": str(self.repo_root)})
                     else:
@@ -456,7 +406,6 @@ class ManaChatApp(App):
                     pass
 
             if not answer and self.tools_orchestrator is not None:
-                # Fall back to tools orchestrator if available
                 try:
                     if hasattr(self.tools_orchestrator, "run"):
                         result = await asyncio.to_thread(self.tools_orchestrator.run, question)
@@ -474,7 +423,7 @@ class ManaChatApp(App):
                 except Exception:
                     pass
 
-            # 3. Repo-aware ask (from project services) as next best
+            # Repo-aware ask (from project services) as next best (may use tools internally)
             if not answer:
                 try:
                     from mana_agent.config.settings import Settings
@@ -491,31 +440,18 @@ class ManaChatApp(App):
                 except Exception:
                     pass
 
-            # 4. Direct LLM (with correct credentials)
+            # Direct LLM fallback (no real tool cards expected in this path)
             if not answer:
                 try:
                     answer = await self._call_llm(question, extra_context=str(ctx_result))
                 except Exception as exc:
                     answer = f"Understood: {question[:80]}. (All paths failed: {exc})"
-
-            if used_full_flow:
-                # Emit an extra visible marker that we used the real multi-agent path
-                self.history.add(ToolCallEvent(
-                    tool_name="multi_agent_flow",
-                    args={"objects": "coding_agent+tools_orchestrator"},
-                    summary="used real multi-agent runtime",
-                    turn_id=turn_id,
-                ))
-                self.history.add(ToolResultEvent(
-                    call_id="multi-flow",
-                    tool_name="multi_agent_flow",
-                    success=True,
-                    result="full flow (routing + execution + memory)",
-                    summary="connected",
-                    turn_id=turn_id,
-                ))
         finally:
             ui_helpers.emit_tool_event = original_emit
+
+        # Optional marker (non-tool) that full flow was used. Real tool cards come from the bridge.
+        if used_full_flow:
+            self.update_status("Ready (real multi-agent tools)")
 
         # Stream the final assistant response (tokens visible live)
         assistant = AssistantMessageEvent(
