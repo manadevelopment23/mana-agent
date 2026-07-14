@@ -83,7 +83,8 @@ class ToolCard(Vertical):
 
         # Use 'with' so yields inside become children of the Collapsible,
         # and the Collapsible itself becomes a child of this ToolCard (Vertical).
-        with Collapsible(collapsed=True, title=header) as collapsible:
+        # Start expanded so tool call details are visible immediately (no click needed).
+        with Collapsible(collapsed=False, title=header) as collapsible:
             self._collapsible = collapsible
 
             # Yield the call args as a normal child (no .mount() call here)
