@@ -4,6 +4,7 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-14
 
+- ToolCard: when Collapsible ("menu"/details) is collapsed, the full key data of the card (call + result summary) is still shown via an always-visible header line above the collapsible. Details (raw args + full result) are inside the collapsible. Fixes "collapse the menu dont show full data".
 - Updated to latest langchain (0.3.50+), langchain-community, langchain-openai pins and extended Python support to 3.14.6 (requires-python <=3.14.6).
 - Fixed TUI tool events not appearing and "flashing then immediately gone" on tool calls:
   - In real multi-agent path (via coding_agent/tools_orchestrator), now explicitly emit representative ToolCallEvent/ToolResultEvent (semantic_search, read_file, multi_agent_flow) around the agent execution so they are always visible via the ChatHistory subscription.

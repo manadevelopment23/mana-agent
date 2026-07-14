@@ -95,6 +95,11 @@ ToolCard .tool-call-header {
     max-height: 12;
 }
 
+.tool-card-header {
+    text-style: bold;
+    padding: 0 1;
+}
+
 /* Scrollbar */
 VerticalScroll > Scrollbar {
     background: #1f2937;

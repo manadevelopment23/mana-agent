@@ -61,6 +61,10 @@ class ToolCard(Vertical):
         padding: 0 1;
         max-height: 12;
     }
+    .tool-card-header {
+        text-style: bold;
+        padding: 0 1;
+    }
     """
 
     def __init__(
@@ -74,6 +78,7 @@ class ToolCard(Vertical):
         self.result_event: ToolResultEvent | None = None
         self._collapsible: Collapsible | None = None
         self.content_container: Vertical | None = None
+        self.header_line: Static | None = None  # always-visible summary line with full key data
 
     def compose(self):
         """Build the collapsible card using proper compose context managers.
@@ -84,10 +89,14 @@ class ToolCard(Vertical):
         """
         header = self._build_call_header()
 
-        # Use 'with' so yields inside become children of the Collapsible,
-        # and the Collapsible itself becomes a child of this ToolCard (Vertical).
-        # Start expanded so tool call details are visible immediately (no click needed).
-        with Collapsible(collapsed=False, title=header) as collapsible:
+        # Always-visible compact line with "full data" (tool + summary).
+        # This stays visible even if the details "menu" (Collapsible) is collapsed.
+        self.header_line = Static(header, classes="tool-card-header")
+        yield self.header_line
+
+        # Collapsible "menu" for verbose/full details (args + result body).
+        # Start collapsed. The header_line above ensures data is not lost on collapse.
+        with Collapsible(collapsed=True, title="details") as collapsible:
             self._collapsible = collapsible
 
             # Yield the call args as a normal child (no .mount() call here)
@@ -120,26 +129,37 @@ class ToolCard(Vertical):
             return Syntax(str(args), "json", theme="ansi_dark", line_numbers=False)
 
     def set_result(self, result_event: ToolResultEvent) -> None:
-        """Update the card when the matching result arrives. Safe to call multiple times."""
+        """Update the card when the matching result arrives. Safe to call multiple times.
+
+        The title is updated with a compact summary of BOTH call + result so that
+        even when the Collapsible is collapsed, the "full data" (tool + args summary + result)
+        remains visible in the header. Detailed content is still inside when expanded.
+        """
         self.result_event = result_event
 
-        # Update collapsible title with status
         status_icon = "✅" if result_event.success else "❌"
         color_class = "tool-result-success" if result_event.success else "tool-result-error"
-        header = f"{status_icon} {result_event.tool_name}"
-        if result_event.summary:
-            header += f"  {result_event.summary}"
+
+        # Build a title that carries the full relevant data even when collapsed.
+        # Format: "✅ toolname [call_summary] → [result_summary] (time)"
+        call_part = self.call_event.tool_name
+        if self.call_event.summary:
+            call_part += f" {self.call_event.summary}"
+
+        result_part = result_event.summary or ("success" if result_event.success else "error")
+        header = f"{status_icon} {call_part} → {result_part}"
         if result_event.duration_ms is not None:
-            header += f"  ({result_event.duration_ms}ms)"
+            header += f" ({result_event.duration_ms}ms)"
 
         # Rebuild or append result section
         try:
             if self._collapsible:
-                # Do not overwrite the original call header (keeps "🔧 toolname" visible).
-                # This prevents the "tool call immediately gone" visual after result.
-                # Status is shown inside the result body instead.
-                # Open it automatically on result for visibility (premium feel)
-                self._collapsible.collapsed = False
+                self._collapsible.title = "details"
+                # Collapse after result (clean UI). The *header_line* (outside collapsible)
+                # carries the full call+result summary, so data is visible even collapsed.
+                self._collapsible.collapsed = True
+            if self.header_line:
+                self.header_line.update(header)
         except Exception:
             pass
 
