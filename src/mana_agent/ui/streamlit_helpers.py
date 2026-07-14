@@ -434,7 +434,16 @@ def trigger_automation(action: str, *, root: Path | None = None, **kwargs: Any) 
         return {"ok": False, "action": action, "error": str(e)}
 
 
-def run_dashboard_chat(prompt: str, root: Path | None = None, k: int = 6) -> dict[str, Any]:
+def run_dashboard_chat(
+    prompt: str,
+    root: Path | None = None,
+    k: int = 6,
+    *,
+    conversation_id: str = "",
+    execution_id: str = "",
+    event_sink: Any | None = None,
+    **_: Any,
+) -> dict[str, Any]:
     """Real model-routed chat response, using the exact same service/ask stack as CLI chat.
 
     Tries hard to give responses "routed via models" like the full CLI experience:
@@ -442,43 +451,52 @@ def run_dashboard_chat(prompt: str, root: Path | None = None, k: int = 6) -> dic
     - Prefers ask_with_tools for agentic/tool-using behavior (closer to rich chat)
     - Falls back gracefully to preview if no key / no index / import error.
 
+    Optional ``event_sink(event_type, title, **kwargs)`` publishes normalized runtime
+    events for dashboard sockets (same ChatEvent vocabulary as the CLI/TUI).
+
     Returns dict with "answer", "mode" ("real"|"preview"), "sources", "warnings", etc.
-    This is the core to make dashboard chat "like cli chat".
     """
     root = find_mana_root(root)
     prompt = (prompt or "").strip()
     if not prompt:
         return {"answer": "", "mode": "empty"}
 
+    def _emit(event_type: str, title: str, **kwargs: Any) -> None:
+        if callable(event_sink):
+            try:
+                event_sink(event_type, title, **kwargs)
+            except Exception:
+                pass
+
     try:
         from mana_agent.config.settings import Settings
         from mana_agent.commands.cli_internal import build_ask_service
-        from mana_agent.services.ask_service import AskResponseWithTrace  # type: ignore
 
         settings = Settings()
         api_key = getattr(settings, "openai_api_key", "") or os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
+            _emit("warning", "Missing API key", message="OPENAI_API_KEY not configured", status="failed")
             return {
                 "answer": "(No OPENAI_API_KEY configured) Routed via model decision layer would happen here. "
                           "Set key in env or ~/.mana and ensure index is built (run chat in CLI first).",
                 "mode": "preview",
                 "sources": [],
+                "conversation_id": conversation_id,
+                "execution_id": execution_id,
             }
 
         service = build_ask_service(settings, None, project_root=root)
-
-        # Default index
         idx_dir = repository_index_dir(repository_id_for_path(root))
-        if not (idx_dir / "chunks.jsonl").exists():
-            # Try to let service handle or give useful message
-            pass
+        _emit("agent.planning", "Planning", message="Preparing repository answer", status="running")
+        _emit("tool.started", "repo_search", message=f"Gathering evidence for: {prompt[:80]}", status="running", metadata={"tool_name": "repo_search"})
 
-        # Use ask_with_tools to get closer to full CLI chat agentic behavior (tool use, multi-step)
         try:
             resp = service.ask_with_tools(str(idx_dir), prompt, k=k, max_steps=5, timeout_seconds=45)
-        except Exception:
-            # Fallback to classic ask
+            _emit("tool.finished", "ask_with_tools", message="Tool-assisted answer complete", status="success", metadata={"tool_name": "ask_with_tools"})
+        except Exception as tool_exc:
+            _emit("tool.failed", "ask_with_tools", message=str(tool_exc)[:200], status="failed", metadata={"tool_name": "ask_with_tools"})
             resp = service.ask(str(idx_dir), prompt, k=k)
+            _emit("tool.finished", "ask", message="Classic ask complete", status="success", metadata={"tool_name": "ask"})
 
         answer = ""
         sources = []
@@ -495,20 +513,31 @@ def run_dashboard_chat(prompt: str, root: Path | None = None, k: int = 6) -> dic
         if not answer or answer.startswith("Selected route failed"):
             mode = "preview"
             answer = answer or "(Model route produced no answer. Try again or use CLI for full session.)"
+            _emit("warning", "Preview mode", message="Model route produced no full answer", status="failed")
 
+        for source in (sources or [])[:5]:
+            path = str(source.get("file_path") or source.get("path") or source)
+            if path:
+                _emit("file.read", "read_file", message=path, status="success", metadata={"tool_name": "read_file", "path": path})
+
+        _emit("agent.decision", "Routing complete", message=f"mode={mode}", status="success")
         return {
             "answer": answer,
             "mode": mode,
             "sources": sources[:5] if sources else [],
             "warnings": warnings,
             "root": str(root),
+            "conversation_id": conversation_id,
+            "execution_id": execution_id,
         }
     except Exception as e:
-        # Graceful: never break the dashboard UI
+        _emit("error", "Chat failed", message=str(e)[:200], status="failed")
         return {
             "answer": f"(Preview - real routing failed: {str(e)[:120]}) Evidence would be collected by AskAgent/MainAgent. "
                       "Run `mana-agent chat` in terminal for full CLI experience.",
             "mode": "preview",
             "error": str(e),
             "sources": [],
+            "conversation_id": conversation_id,
+            "execution_id": execution_id,
         }

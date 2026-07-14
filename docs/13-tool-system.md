@@ -19,6 +19,16 @@ inspection, file patching, file writing, and verification steps.
    anchors → rebuild → bounded retry. Ambiguous locations fail without writing.
 5. Run checks to confirm the change, using `run_script_once` for grouped checks.
 
+## Dashboard Chat and Events
+
+The optional Streamlit dashboard uses multipage navigation and persistent
+conversations under `~/.mana/repositories/<id>/dashboard/conversations/`.
+Runtime activity is the same normalized `ChatEvent` model used by the CLI/TUI,
+published through `ExecutionEventHub` and delivered over FastAPI WebSocket
+(`/api/v1/ws/conversations/{id}`) with durable JSONL replay for reconnects.
+Analyze from the dashboard starts `ProjectAnalyzeService` jobs (not a separate
+pipeline) and surfaces repository analysis artifacts.
+
 ## Available Tool Categories
 
 - Search tools: semantic search, text search, and grouped text search.
