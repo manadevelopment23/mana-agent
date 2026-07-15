@@ -1544,11 +1544,9 @@ def chat(
                 ).finish(status="success" if not preview_warning else "skipped")
             )
             if render_progress and preview_checklist is not None:
-                _render_prechecklist_preview(
-                    console,
-                    prechecklist=preview_checklist,
-                    warning=preview_warning,
-                )
+                _render_flow_checklist(console, preview_checklist)
+                if preview_warning:
+                    console.print(f"[yellow]Warning: {preview_warning}[/yellow]")
 
             if render_progress:
                 console.print(

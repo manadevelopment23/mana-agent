@@ -1134,7 +1134,7 @@ def test_chat_plan_trigger_auto_execute_without_coding_agent_hides_progress(monk
 
     result = runner.invoke(
         app,
-        ["chat", "--agent-tools"],
+        ["chat", "--agent-tools", "--no-coding-agent"],
         input="implement plan.\nquit\n",
     )
     assert result.exit_code == 0
@@ -1215,7 +1215,7 @@ def test_chat_redis_backend_falls_back_to_local_executor_when_unavailable(monkey
 
     result = runner.invoke(
         app,
-        ["chat", "--agent-tools", "--tool-exec-backend", "redis"],
+        ["chat", "--agent-tools", "--no-coding-agent", "--tool-exec-backend", "redis"],
         input="implement plan.\nquit\n",
     )
     assert result.exit_code == 0
@@ -1365,14 +1365,14 @@ def test_chat_planning_mode_no_auto_execute_keeps_plan_only_behavior(monkeypatch
         def generate_auto_execute(self, *_args: object, **_kwargs: object) -> dict:  # pragma: no cover
             raise AssertionError("default planning requests should not auto-execute")
 
-    monkeypatch.setattr("mana_agent.commands.chat_cli.Settings", lambda: DummySettings())
-    monkeypatch.setattr("mana_agent.commands.chat_cli.build_ask_service", lambda _s, model_override=None: _AskService())
-    monkeypatch.setattr("mana_agent.commands.chat_cli.ToolWorkerClient", _FakeWorkerClient)
-    monkeypatch.setattr("mana_agent.commands.chat_cli.CodingAgent", _FakeCodingAgent)
+    monkeypatch.setattr("mana_agent.commands.cli.Settings", lambda: DummySettings())
+    monkeypatch.setattr("mana_agent.commands.cli.build_ask_service", lambda _s, model_override=None: _AskService())
+    monkeypatch.setattr("mana_agent.commands.cli.ToolWorkerClient", _FakeWorkerClient)
+    monkeypatch.setattr("mana_agent.commands.cli.CodingAgent", _FakeCodingAgent)
 
     result = runner.invoke(
         app,
-        ["chat"],
+        ["chat", "--planning-mode", "--no-auto-execute-plan"],
         input="plan auth module\nanswer one\nanswer two\nanswer three\nquit\n",
     )
     assert result.exit_code == 0
@@ -3727,6 +3727,7 @@ def test_chat_full_auto_tools_manager_path_auto_resumes_docs_update_pass_cap(mon
         [
             "chat",
             "--agent-tools",
+            "--no-coding-agent",
             "--execution-profile",
             "full-auto",
             "--full-auto-status-every",

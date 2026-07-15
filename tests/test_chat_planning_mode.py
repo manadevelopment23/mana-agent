@@ -118,7 +118,7 @@ def test_chat_planning_mode_asks_questions_and_resets(monkeypatch, tmp_path: Pat
 
     result = runner.invoke(
         cli.app,
-        ["chat", "--planning-max-questions", "3"],
+        ["chat", "--planning-mode", "--no-auto-execute-plan", "--planning-max-questions", "3"],
         input=user_input,
     )
 
@@ -188,7 +188,7 @@ def test_chat_planning_mode_uses_llm_generated_questions(monkeypatch, tmp_path: 
 
     result = runner.invoke(
         cli.app,
-        ["chat", "--planning-max-questions", "3"],
+        ["chat", "--planning-mode", "--no-auto-execute-plan", "--planning-max-questions", "3"],
         input=user_input,
     )
 
@@ -227,7 +227,7 @@ def test_chat_planning_mode_falls_back_to_static_on_llm_question_failure(monkeyp
 
     result = runner.invoke(
         cli.app,
-        ["chat", "--planning-max-questions", "3"],
+        ["chat", "--planning-mode", "--no-auto-execute-plan", "--planning-max-questions", "3"],
         input=user_input,
     )
 
@@ -267,7 +267,7 @@ def test_planning_question_auth_failure_logs_once_and_uses_static_fallback(monke
     with caplog.at_level(logging.WARNING, logger="mana_agent.commands.chat_cli"):
         result = runner.invoke(
             cli.app,
-            ["chat", "--planning-max-questions", "3"],
+            ["chat", "--planning-mode", "--no-auto-execute-plan", "--planning-max-questions", "3"],
             input=user_input,
         )
 

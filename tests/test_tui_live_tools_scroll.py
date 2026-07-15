@@ -57,13 +57,13 @@ def test_handle_real_turn_uses_generate_and_emits_tools_live() -> None:
         resolved_k=5,
     )
 
-    user = UserMessageEvent(content="read the readme")
+    user = UserMessageEvent(content="plan the readme")
     history.add(user)
 
     asyncio.run(app._handle_real_turn(user))
 
     assert agent.calls, "coding agent generate() must be invoked"
-    assert agent.calls[0]["request"] == "read the readme"
+    assert agent.calls[0]["request"] == "plan the readme"
     assert "index_dir" in agent.calls[0]
     # Full parity context is threaded through (exact same kwargs surface as console path)
     assert agent.calls[0].get("max_steps") == 42
