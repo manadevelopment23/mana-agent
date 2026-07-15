@@ -495,8 +495,10 @@ def test_startup_header_is_compact_and_uses_clean_prompt() -> None:
     assert "mana ❯" not in rendered
     assert "Mana-Agent" in rendered
     assert "Ready. Ask for code changes" in rendered
-    assert len([line for line in rendered.splitlines() if line.strip()]) <= 9
+    # Startup stays compact: session chrome + auto-tools summary/highlights, no box art.
+    assert len([line for line in rendered.splitlines() if line.strip()]) <= 14
     assert not any("╭" in line or "┌" in line for line in rendered.splitlines())
+    assert "auto tools" in rendered.lower() or "available" in rendered.lower()
 
 
 def test_status_full_includes_trace_and_log_paths(tmp_path: Path) -> None:

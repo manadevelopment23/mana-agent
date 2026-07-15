@@ -19,6 +19,11 @@ from mana_agent.cli.renderers import EventRenderer
 from mana_agent.telemetry.session_trace import SessionTrace
 from mana_agent.telemetry.tokens import TokenUsageTracker
 from mana_agent.observability import ObservabilityStore
+from mana_agent.tools.catalog import (
+    ToolCatalogEntry,
+    format_tool_catalog_summary,
+    list_auto_chat_tools,
+)
 from mana_agent.workspaces.paths import session_dir
 from mana_agent.workspaces.service import WorkspaceService
 
@@ -80,6 +85,8 @@ class ChatUIState:
     test_runs: list[ChatEvent] = field(default_factory=list)
     log_events: list[ChatEvent] = field(default_factory=list)
     conversation: list[dict[str, str]] = field(default_factory=list)
+    # Auto-chat tool catalog (name + description) for TUI visibility.
+    available_tools: list[ToolCatalogEntry] = field(default_factory=list)
     active_panel: str = "chat"
     verbose_logs: bool = False
     compact_mode: bool = False
@@ -87,6 +94,9 @@ class ChatUIState:
 
     def __post_init__(self) -> None:
         self.repo_root = Path(self.repo_root).resolve()
+        if not self.available_tools:
+            # Lazy, side-effect-light discovery (no MCP process start).
+            self.available_tools = list_auto_chat_tools(include_mcp_discovery=False)
         service = WorkspaceService()
         try:
             context = service.context_for_session(self.session_id)
@@ -372,6 +382,7 @@ def compact_path(path: str | Path, *, width: int = 72) -> str:
 
 
 def render_startup_header(console: Console, state: ChatUIState) -> None:
+    tools_summary = format_tool_catalog_summary(state.available_tools)
     if state.ui_mode == "json":
         event = make_event(
             "session.started",
@@ -383,6 +394,19 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
         ).finish(status="success")
         state.record_event(event)
         console.print(state.renderer.render_event(event))
+        tools_event = make_event(
+            "session.tools",
+            title="Auto-chat tools",
+            status="success",
+            session_id=state.session_id,
+            message=tools_summary,
+            metadata={
+                "tools": [entry.to_dict() for entry in state.available_tools],
+                "count": len(state.available_tools),
+            },
+        ).finish(status="success")
+        state.record_event(tools_event)
+        console.print(state.renderer.render_event(tools_event))
         ready = make_event(
             "session.ready",
             title="Ready",
@@ -403,6 +427,7 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
             f"Mana-Agent v{__version__}  repo: {state.repo_root.name}  branch: {branch}",
             f"model {state.model}   mode {state.mode}   tools {'auto' if state.tools_enabled else 'off'}   memory {'on' if state.memory_enabled else 'off'}   skills {state.skills_status}   tokens exact/~",
             f"cwd {cwd_text}",
+            f"auto tools  {tools_summary}",
             "",
             "Ready. Ask for code changes, repo analysis, debugging, or planning.",
             "/help  /status  /tokens  /tools  /agents  /trace  /ui  /exit",
@@ -411,6 +436,10 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
             "Enter send · Shift+Enter newline · Ctrl+C cancel · Ctrl+D exit",
         ]
         console.print("\n".join(lines))
+        # Compact highlights so key connectors are always visible at session start.
+        highlights = _startup_tool_highlights(state.available_tools)
+        if highlights:
+            console.print("key tools  " + " · ".join(highlights))
     else:
         header.append("Mana-Agent", style="bold bright_cyan")
         header.append(f" v{__version__}", style="dim")
@@ -423,6 +452,10 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
             f"[bold]skills[/bold] {state.skills_status}   [bold]tokens[/bold] exact/~"
         )
         console.print(f"[bold]cwd[/bold] {cwd_text}")
+        console.print(f"[bold]auto tools[/bold] {tools_summary}")
+        highlights = _startup_tool_highlights(state.available_tools)
+        if highlights:
+            console.print("[dim]key tools[/dim] " + " · ".join(f"[cyan]{name}[/cyan]" for name in highlights))
         console.print()
         console.print("Ready. Ask for code changes, repo analysis, debugging, or planning.")
         console.print("[dim]/help  /status  /tokens  /tools  /agents  /trace  /ui  /exit[/dim]")
@@ -441,6 +474,19 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
     )
     state.record_event(
         make_event(
+            "session.tools",
+            title="Auto-chat tools",
+            status="success",
+            session_id=state.session_id,
+            message=tools_summary,
+            metadata={
+                "tools": [entry.to_dict() for entry in state.available_tools],
+                "count": len(state.available_tools),
+            },
+        ).finish(status="success")
+    )
+    state.record_event(
+        make_event(
             "session.ready",
             title="Ready",
             status="success",
@@ -449,6 +495,42 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
             metadata={"prompt": "mana ❯"},
         ).finish(status="success")
     )
+
+
+def _startup_tool_highlights(tools: list[ToolCatalogEntry], *, limit: int = 8) -> list[str]:
+    """Pick a short, recognizable subset for the welcome banner."""
+    preferred = (
+        "web_search",
+        "email_read",
+        "email_search",
+        "mcp",
+        "github_search",
+        "repo_search",
+        "read_file",
+        "semantic_search",
+        "browser_open",
+    )
+    names = {entry.name for entry in tools}
+    # Include first configured MCP connector id if present.
+    mcp_names = sorted(
+        entry.name for entry in tools if entry.category == "mcp" and entry.name.startswith("mcp:")
+    )
+    ordered: list[str] = []
+    for name in preferred:
+        if name == "mcp":
+            if "mcp" in names:
+                ordered.append("mcp")
+            elif mcp_names:
+                ordered.append(mcp_names[0])
+            continue
+        if name in names:
+            ordered.append(name)
+    for name in mcp_names:
+        if name not in ordered:
+            ordered.append(name)
+        if len(ordered) >= limit:
+            break
+    return ordered[:limit]
 
 
 def render_status(state: ChatUIState, *, full: bool = False) -> Table:
@@ -492,6 +574,8 @@ def startup_metadata(state: ChatUIState) -> dict[str, Any]:
         "model": state.model,
         "mode": state.mode,
         "tools_enabled": state.tools_enabled,
+        "available_tools_count": len(state.available_tools),
+        "available_tool_names": [entry.name for entry in state.available_tools[:40]],
         "approvals": state.approvals,
         "memory_enabled": state.memory_enabled,
         "skills_status": state.skills_status,
