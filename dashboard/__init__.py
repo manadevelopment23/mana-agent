@@ -9,4 +9,7 @@ Or via CLI: mana-agent dashboard (after integration).
 
 See dashboard/app.py for implementation.
 """
-__version__ = "0.0.12"
+
+from mana_agent import __version__
+
+__all__ = ["__version__"]

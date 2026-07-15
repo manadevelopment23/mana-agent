@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from mana_agent import __version__
 from mana_agent.api.exceptions import ManaApiError
 from mana_agent.api.routes.analyze import router as analyze_router
 from mana_agent.api.routes.conversations import router as conversations_router
@@ -45,7 +46,7 @@ def create_app(
 
     app = FastAPI(
         title="Mana-Agent API",
-        version="0.0.14",
+        version=__version__,
         description="HTTP API for Mana-Agent repository intelligence workflows.",
         lifespan=lifespan,
     )

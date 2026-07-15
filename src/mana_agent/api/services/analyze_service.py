@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import UploadFile
 
+from mana_agent._version import get_version
 from mana_agent.api.services.zip_service import (
     create_zip_from_directory,
     extract_zip_safely,
@@ -17,15 +18,6 @@ from mana_agent.commands.chat_analyze_command import run_project_analysis
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _safe_version_string() -> str:
-    try:
-        import importlib.metadata as md
-
-        return md.version("mana-agent")
-    except Exception:
-        return "dev"
 
 
 async def _save_upload(file: UploadFile, target: Path) -> None:
@@ -160,7 +152,7 @@ def _write_api_outputs(
         "extracted_root": project_root.name or "project",
         "analyze_mode": "api_zip",
         "created_at": _now_iso(),
-        "mana_agent_version": _safe_version_string(),
+        "mana_agent_version": get_version(),
         "result_files": [
             "analysis-report.md",
             "analysis-report.json",
