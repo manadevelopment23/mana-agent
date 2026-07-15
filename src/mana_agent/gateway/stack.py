@@ -14,6 +14,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from mana_agent.commands.cli_internal import (
+    build_ask_service as _ORIGINAL_BUILD_ASK_SERVICE,
+)
 from mana_agent.config.settings import Settings, default_index_dir, default_logs_dir
 from mana_agent.gateway.config import ChatGatewayConfig
 from mana_agent.multi_agent.core.types import AgentRole
@@ -31,6 +34,10 @@ from mana_agent.services.chat_service import ChatService
 from mana_agent.services.coding_memory_service import CodingMemoryService
 
 logger = logging.getLogger(__name__)
+
+# _ORIGINAL_BUILD_ASK_SERVICE is bound at import time so later monkeypatches of
+# cli_internal.build_ask_service (and re-exports on chat_cli/cli) can be detected
+# by identity comparison in _resolve_build_ask_service.
 
 
 def _public_symbol(name: str, default: Any) -> Any:
@@ -61,17 +68,30 @@ def _public_symbol(name: str, default: Any) -> Any:
 
 
 def _resolve_build_ask_service() -> Any:
-    """Return build_ask_service, honoring chat_cli/cli monkeypatches."""
-    from mana_agent.commands.cli_internal import build_ask_service as original
+    """Return build_ask_service, honoring chat_cli/cli/cli_internal monkeypatches.
 
-    for mod_name in ("mana_agent.commands.chat_cli", "mana_agent.commands.cli"):
-        mod = sys.modules.get(mod_name)
+    Gateway unit tests patch ``mana_agent.commands.cli_internal.build_ask_service``.
+    CLI smoke tests patch the public re-export on ``chat_cli`` or ``cli``.
+    Re-exports keep a stale reference when only ``cli_internal`` is patched, so we
+    compare against the import-time original and prefer any replaced callable.
+    """
+    import mana_agent.commands.cli_internal as cli_internal_mod
+
+    for mod_name in (
+        "mana_agent.commands.chat_cli",
+        "mana_agent.commands.cli",
+        "mana_agent.commands.cli_internal",
+    ):
+        if mod_name == "mana_agent.commands.cli_internal":
+            mod = cli_internal_mod
+        else:
+            mod = sys.modules.get(mod_name)
         if mod is None or not hasattr(mod, "build_ask_service"):
             continue
         candidate = getattr(mod, "build_ask_service")
-        if candidate is not original:
+        if candidate is not _ORIGINAL_BUILD_ASK_SERVICE:
             return candidate
-    return original
+    return _ORIGINAL_BUILD_ASK_SERVICE
 
 
 def _resolve_agent_max_steps(
