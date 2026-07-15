@@ -4,6 +4,10 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-15
 
+- Fixed `AgentChatGateway` construction tests failing in CI without `OPENAI_API_KEY`.
+  - Root cause: `_resolve_build_ask_service` preferred stale `chat_cli`/`cli` re-exports when tests monkeypatched only `cli_internal.build_ask_service`, so the real builder still ran and OpenAI client init raised.
+  - Fix: capture the import-time original and prefer any replaced callable on `chat_cli`, `cli`, or `cli_internal`.
+  - Verification: `env -u OPENAI_API_KEY ./venv/bin/python -m pytest tests/gateway/test_chat_gateway.py -q` passed.
 - Fixed gateway + TUI auto-chat routing for connector queries (e.g. "check my latest gmail").
   - Root cause: `process_turn` used `general_coding_agent_turns=True`, so every turn with a coding stack entered CodingAgent instead of auto-chat / `ChatService.ask` (email_* / MCP / browser tools).
   - Gateway now routes answer/review/verify/analyze and email_/browser_/web tools through auto-chat; CodingAgent only for edit/plan/mutation.
