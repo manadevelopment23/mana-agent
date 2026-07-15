@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from mana_agent._version import get_version
 from mana_agent.models import (
     ProjectAuditReport,
     ProjectReportSummary,
@@ -22,15 +23,6 @@ from mana_agent.services.vulnerability_service import VulnerabilityService
 
 def _iso_utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _safe_version_string() -> str:
-    try:
-        import importlib.metadata as md
-
-        return md.version("mana-agent")  # adjust if dist name differs
-    except Exception:
-        return "dev"
 
 
 def _find_project_root(start: Path) -> Path:
@@ -223,7 +215,7 @@ class ReportService:
         meta = ProjectReportMeta(
             project_root=str(project_root),
             generated_at=_iso_utc_now(),
-            tool_version=_safe_version_string(),
+            tool_version=get_version(),
             online=online,
             llm_enabled=with_llm,
             output_format="all",

@@ -4,6 +4,11 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-15
 
+- Single-sourced package version from `pyproject.toml` `[project].version`.
+  - Added `mana_agent._version.get_version()` (pyproject first, then `importlib.metadata`, else `"dev"`).
+  - `mana_agent.__version__`, FastAPI app version, report/analyze tool version, and optional `dashboard` / `automations` packages all use the shared value.
+  - README remains static Markdown (update badge / documented version on release).
+  - Verification: `./venv/bin/python -m pytest tests/test_package_version.py -q` and import/API version asserts.
 - Fixed `AgentChatGateway` construction tests failing in CI without `OPENAI_API_KEY`.
   - Root cause: `_resolve_build_ask_service` preferred stale `chat_cli`/`cli` re-exports when tests monkeypatched only `cli_internal.build_ask_service`, so the real builder still ran and OpenAI client init raised.
   - Fix: capture the import-time original and prefer any replaced callable on `chat_cli`, `cli`, or `cli_internal`.
