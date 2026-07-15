@@ -436,10 +436,13 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
             "Enter send · Shift+Enter newline · Ctrl+C cancel · Ctrl+D exit",
         ]
         console.print("\n".join(lines))
-        # Compact highlights so key connectors are always visible at session start.
-        highlights = _startup_tool_highlights(state.available_tools)
-        if highlights:
-            console.print("key tools  " + " · ".join(highlights))
+        # Full catalog on start so tools are visible without running /tools.
+        console.print(
+            state.renderer.render_available_tools(
+                state.available_tools,
+                title="Auto-chat tools",
+            )
+        )
     else:
         header.append("Mana-Agent", style="bold bright_cyan")
         header.append(f" v{__version__}", style="dim")
@@ -453,9 +456,14 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
         )
         console.print(f"[bold]cwd[/bold] {cwd_text}")
         console.print(f"[bold]auto tools[/bold] {tools_summary}")
-        highlights = _startup_tool_highlights(state.available_tools)
-        if highlights:
-            console.print("[dim]key tools[/dim] " + " · ".join(f"[cyan]{name}[/cyan]" for name in highlights))
+        console.print()
+        # Always print the full name+description catalog at session start.
+        console.print(
+            state.renderer.render_available_tools(
+                state.available_tools,
+                title="Auto-chat tools",
+            )
+        )
         console.print()
         console.print("Ready. Ask for code changes, repo analysis, debugging, or planning.")
         console.print("[dim]/help  /status  /tokens  /tools  /agents  /trace  /ui  /exit[/dim]")
@@ -495,42 +503,6 @@ def render_startup_header(console: Console, state: ChatUIState) -> None:
             metadata={"prompt": "mana ❯"},
         ).finish(status="success")
     )
-
-
-def _startup_tool_highlights(tools: list[ToolCatalogEntry], *, limit: int = 8) -> list[str]:
-    """Pick a short, recognizable subset for the welcome banner."""
-    preferred = (
-        "web_search",
-        "email_read",
-        "email_search",
-        "mcp",
-        "github_search",
-        "repo_search",
-        "read_file",
-        "semantic_search",
-        "browser_open",
-    )
-    names = {entry.name for entry in tools}
-    # Include first configured MCP connector id if present.
-    mcp_names = sorted(
-        entry.name for entry in tools if entry.category == "mcp" and entry.name.startswith("mcp:")
-    )
-    ordered: list[str] = []
-    for name in preferred:
-        if name == "mcp":
-            if "mcp" in names:
-                ordered.append("mcp")
-            elif mcp_names:
-                ordered.append(mcp_names[0])
-            continue
-        if name in names:
-            ordered.append(name)
-    for name in mcp_names:
-        if name not in ordered:
-            ordered.append(name)
-        if len(ordered) >= limit:
-            break
-    return ordered[:limit]
 
 
 def render_status(state: ChatUIState, *, full: bool = False) -> Table:

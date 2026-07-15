@@ -88,8 +88,22 @@ def test_startup_header_emits_auto_tools(tmp_path: Path) -> None:
 
     assert "Mana-Agent" in rendered
     assert "auto tools" in rendered.lower() or "available" in rendered.lower()
-    assert "web_search" in rendered or "email_read" in rendered
+    # Catalog is printed by default (name + description), not only via /tools.
+    assert "web_search" in rendered
+    assert "email_read" in rendered
+    assert "Auto-chat tools" in rendered
     assert any(event.type == "session.tools" for event in state.events)
+
+
+def test_tui_welcome_tools_show_full_catalog_by_default() -> None:
+    from mana_agent.tui.app import ManaChatApp
+
+    app = ManaChatApp(repo_root=Path.cwd(), model="gpt-test")
+    body = app._format_welcome_tools()
+    assert "Available auto-chat tools" in body
+    assert "web_search" in body
+    assert "email_read" in body
+    assert "mcp" in body.lower()
 
 
 def test_tools_command_lists_available_catalog(tmp_path: Path) -> None:
