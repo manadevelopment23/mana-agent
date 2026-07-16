@@ -70,6 +70,63 @@ def test_environment_and_repository_dotenv_do_not_override_user_config(
     assert settings.openai_chat_model == "file-model"
 
 
+def test_runtime_compatibility_settings_ignore_environment(
+    isolated_user_config: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mana_agent.multi_agent.runtime.compatibility import create_chat_model
+
+    user_config.save_effective_user_config(
+        {
+            "MANA_LLM_API_MODE": "chat_completions",
+            "MANA_LLM_REASONING_EFFORT": "low",
+            "MANA_LLM_SUPPORTS_RESPONSES_API": False,
+        },
+        merge=False,
+    )
+    monkeypatch.setenv("MANA_LLM_API_MODE", "responses")
+    monkeypatch.setenv("MANA_LLM_REASONING_EFFORT", "high")
+    monkeypatch.setenv("MANA_LLM_SUPPORTS_RESPONSES_API", "true")
+
+    llm = create_chat_model(api_key="saved-key", model="saved-model", base_url="https://gateway.example/v1")
+
+    assert llm.compatibility_api_mode == "chat_completions"
+    assert llm.reasoning_effort == "low"
+    assert llm.compatibility_capabilities.supports_responses_api is False
+
+
+def test_tool_worker_connection_settings_ignore_environment(
+    isolated_user_config: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mana_agent.multi_agent.runtime.tool_worker_process import ToolWorkerClient
+
+    user_config.save_effective_user_config(
+        {
+            "OPENAI_API_KEY": "file-key",
+            "OPENAI_BASE_URL": "https://saved.example/v1",
+            "OPENAI_TOOL_WORKER_MODEL": "saved-worker-model",
+        },
+        merge=False,
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://env.example/v1")
+    monkeypatch.setenv("OPENAI_TOOL_WORKER_MODEL", "env-worker-model")
+    settings = Settings()
+
+    worker = ToolWorkerClient(
+        api_key=settings.openai_api_key,
+        model=settings.openai_tool_worker_model or settings.openai_chat_model,
+        repo_root=isolated_user_config.parent,
+        project_root=isolated_user_config.parent,
+    )
+
+    payload = worker.init_payload_dict()
+    assert payload["api_key"] == "file-key"
+    assert payload["base_url"] == "https://saved.example/v1"
+    assert payload["model"] == "saved-worker-model"
+
+
 def test_llm_model_alias_applies_when_saved_chat_model_is_missing(isolated_user_config: Path) -> None:
     user_config.save_effective_user_config({"LLM_MODEL": "alias-model"}, merge=False)
 

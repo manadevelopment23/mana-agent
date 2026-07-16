@@ -8,11 +8,11 @@ preserving LangChain's tool adapter and response parsing.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, replace
 from typing import Any, Iterator, Literal
 
 from langchain_openai import ChatOpenAI
+from mana_agent.config.user_config import get_setting
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +31,10 @@ class ModelCapabilities:
 
 
 def _optional_bool(name: str) -> bool | None:
-    value = os.getenv(name)
-    if value is None or not value.strip():
+    value = get_setting(name)
+    if value is None or not str(value).strip():
         return None
-    normalized = value.strip().lower()
+    normalized = str(value).strip().lower()
     if normalized in {"1", "true", "yes", "on"}:
         return True
     if normalized in {"0", "false", "no", "off"}:
@@ -42,8 +42,8 @@ def _optional_bool(name: str) -> bool | None:
     raise ValueError(f"{name} must be a boolean value")
 
 
-def _api_mode_from_env() -> ApiMode:
-    value = str(os.getenv("MANA_LLM_API_MODE") or "auto").strip().lower()
+def _api_mode_from_config() -> ApiMode:
+    value = str(get_setting("MANA_LLM_API_MODE", "auto") or "auto").strip().lower()
     if value not in {"auto", "responses", "chat_completions"}:
         raise ValueError("MANA_LLM_API_MODE must be auto, responses, or chat_completions")
     return value  # type: ignore[return-value]
@@ -73,7 +73,7 @@ def resolve_model_capabilities(*, base_url: str | None) -> tuple[ApiMode, ModelC
             "MANA_LLM_SUPPORTS_TOOLS_WITH_CHAT_REASONING"
         ),
     }
-    return _api_mode_from_env(), replace(
+    return _api_mode_from_config(), replace(
         defaults, **{key: value for key, value in overrides.items() if value is not None}
     )
 
@@ -205,7 +205,7 @@ def create_chat_model(*, api_key: str, model: str, base_url: str | None = None, 
     """Create the shared compatibility-aware LLM client used by every runtime role."""
 
     api_mode, capabilities = resolve_model_capabilities(base_url=base_url)
-    reasoning_effort = str(os.getenv("MANA_LLM_REASONING_EFFORT") or "").strip() or None
+    reasoning_effort = str(get_setting("MANA_LLM_REASONING_EFFORT", "") or "").strip() or None
     init_kwargs: dict[str, Any] = {
         "api_key": api_key,
         "model": model,

@@ -38,6 +38,13 @@ DEFAULT_USER_CONFIG: dict[str, Any] = {
     "DEFAULT_TOP_K": 8,
     "MANA_LLM_LOG_FILE": "",
     "LLM_MODEL": "",
+    "MANA_LLM_API_MODE": "auto",
+    "MANA_LLM_REASONING_EFFORT": "",
+    "MANA_LLM_SUPPORTS_RESPONSES_API": "",
+    "MANA_LLM_SUPPORTS_CHAT_COMPLETIONS": "",
+    "MANA_LLM_SUPPORTS_TOOLS": "",
+    "MANA_LLM_SUPPORTS_REASONING": "",
+    "MANA_LLM_SUPPORTS_TOOLS_WITH_CHAT_REASONING": "",
     "MANA_MODEL_MAIN": "MODEL_LEVEL_3_HIGH_REASONING",
     "MANA_MODEL_HEAD_DECISION": "MODEL_LEVEL_3_HIGH_REASONING",
     "MANA_MODEL_PLANNER": "MODEL_LEVEL_3_HIGH_REASONING",
@@ -165,6 +172,13 @@ CONFIG_WRITE_ORDER = [
     "MANA_MODEL_SUMMARIZER",
     "DEFAULT_TOP_K",
     "MANA_LLM_LOG_FILE",
+    "MANA_LLM_API_MODE",
+    "MANA_LLM_REASONING_EFFORT",
+    "MANA_LLM_SUPPORTS_RESPONSES_API",
+    "MANA_LLM_SUPPORTS_CHAT_COMPLETIONS",
+    "MANA_LLM_SUPPORTS_TOOLS",
+    "MANA_LLM_SUPPORTS_REASONING",
+    "MANA_LLM_SUPPORTS_TOOLS_WITH_CHAT_REASONING",
     "MANA_SEARCH_ENABLE_WEB",
     "MANA_SEARCH_ENABLE_GITHUB",
     "MANA_SEARCH_MAX_RESULTS",
@@ -396,9 +410,18 @@ def validate_config_values(values: dict[str, Any]) -> dict[str, Any]:
     ):
         if name in cleaned:
             cleaned[name] = validate_positive_int(name, cleaned[name], minimum=1, maximum=1000)
-    for name in ("MANA_SEARCH_ENABLE_WEB", "MANA_SEARCH_ENABLE_GITHUB"):
+    for name in (
+        "MANA_SEARCH_ENABLE_WEB",
+        "MANA_SEARCH_ENABLE_GITHUB",
+        "MANA_LLM_SUPPORTS_RESPONSES_API",
+        "MANA_LLM_SUPPORTS_CHAT_COMPLETIONS",
+        "MANA_LLM_SUPPORTS_TOOLS",
+        "MANA_LLM_SUPPORTS_REASONING",
+        "MANA_LLM_SUPPORTS_TOOLS_WITH_CHAT_REASONING",
+    ):
         if name in cleaned:
-            cleaned[name] = validate_bool(cleaned[name])
+            if str(cleaned[name] or "").strip():
+                cleaned[name] = validate_bool(cleaned[name])
     for name in (
         "MANA_MODEL_MAIN",
         "MANA_MODEL_HEAD_DECISION",

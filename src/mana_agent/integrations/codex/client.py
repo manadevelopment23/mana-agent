@@ -8,6 +8,7 @@ from collections import defaultdict
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
+from mana_agent._version import get_version
 from mana_agent.integrations.codex.exceptions import CodexProtocolError, CodexUnavailableError
 
 
@@ -52,7 +53,7 @@ class AsyncCodexAppServer:
                 "clientInfo": {
                     "name": "mana-agent",
                     "title": "Mana-Agent",
-                    "version": "0.0.15",
+                    "version": get_version(),
                 },
                 "capabilities": {},
             },

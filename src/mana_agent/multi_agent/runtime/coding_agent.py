@@ -13,7 +13,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 import ast
 import json
 import logging
-import os
 import re
 import subprocess
 from contextlib import contextmanager
@@ -51,6 +50,7 @@ from mana_agent.multi_agent.runtime.tool_worker_process import (
 )
 
 from mana_agent.services.coding_memory_service import CodingMemoryService
+from mana_agent.config.user_config import get_setting
 from mana_agent.tools import (
     build_apply_patch_tool,
     build_create_file_tool,
@@ -345,7 +345,7 @@ class CodingAgent:
         planner_model: str | None = None,
     ) -> None:
         self.api_key = api_key
-        self.base_url = str(base_url or os.getenv("OPENAI_BASE_URL") or "").strip() or None
+        self.base_url = str(base_url or get_setting("OPENAI_BASE_URL", "") or "").strip() or None
         self.repo_root = repo_root.resolve()
         self.ask_agent: AskAgentLike = ask_agent
         self.allowed_prefixes = allowed_prefixes
@@ -411,16 +411,12 @@ class CodingAgent:
     def _setup_planner(self):
         """تنظیم و مقداردهی اولیه LLM با قابلیت Retry"""
         try:
-            env_planner_model = str(
-                os.getenv("OPENAI_CODING_PLANNER_MODEL")
-                or os.getenv("CODING_AGENT_PLANNER_MODEL")
-                or ""
-            ).strip()
+            configured_planner_model = str(get_setting("OPENAI_CODING_PLANNER_MODEL", "") or "").strip()
             current_model = (
-                env_planner_model
+                configured_planner_model
                 or str(self.planner_model or "").strip()
                 or str(getattr(self.ask_agent, "model", "")).strip()
-                or str(os.getenv("OPENAI_CHAT_MODEL") or "").strip()
+                or str(get_setting("OPENAI_CHAT_MODEL", "") or "").strip()
                 or "gpt-4.1-mini"
             )
             

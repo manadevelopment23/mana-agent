@@ -850,7 +850,7 @@ def chat(
     if stack.tools_execution_config is not None:
         tools_execution_config = stack.tools_execution_config
     tools_execution_boot_warnings = list(stack.tools_execution_boot_warnings or [])
-    effective_base_url = settings.openai_base_url or os.getenv("OPENAI_BASE_URL")
+    effective_base_url = settings.openai_base_url
     tool_worker_model_assignment = resolve_model_for_role(
         AgentRole.TOOL_WORKER,
         global_model=settings.openai_tool_worker_model or effective_model,
@@ -1926,7 +1926,7 @@ def chat(
 
             effective_model_for_tui = model or getattr(settings, "openai_chat_model", None)
             api_key = getattr(settings, "openai_api_key", None)
-            base_url = getattr(settings, "openai_base_url", None) or os.getenv("OPENAI_BASE_URL")
+            base_url = getattr(settings, "openai_base_url", None)
 
             # Gateway already owns the stack (built at chat start). TUI connects
             # through the gateway and also receives rich objects for tool-card UI.

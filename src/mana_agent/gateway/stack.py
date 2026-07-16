@@ -7,7 +7,6 @@ frontends share one coding agent, tool worker, and queue manager setup.
 from __future__ import annotations
 
 import logging
-import os
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -281,7 +280,7 @@ def build_chat_stack(
         global_model=settings.openai_tool_worker_model or effective_model,
     )
     effective_tool_worker_model = tool_worker_model_assignment.resolved_model
-    effective_base_url = settings.openai_base_url or os.getenv("OPENAI_BASE_URL")
+    effective_base_url = settings.openai_base_url
 
     coding_agent_instance = cfg.coding_agent_instance
     coding_memory_service = None

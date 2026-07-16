@@ -1065,11 +1065,14 @@ class ManaChatApp(App):
             from mana_agent.multi_agent.runtime.compatibility import create_chat_model
 
             model_name = self.model or "gpt-4o-mini"
-            api_key = self.api_key or os.getenv("OPENAI_API_KEY")
-            base_url = self.base_url or os.getenv("OPENAI_BASE_URL")
+            from mana_agent.config.settings import Settings
+
+            settings = Settings()
+            api_key = self.api_key or settings.openai_api_key
+            base_url = self.base_url or settings.openai_base_url
 
             if not api_key:
-                raise RuntimeError("No OPENAI_API_KEY (or settings.openai_api_key) available")
+                raise RuntimeError("No OPENAI_API_KEY is saved in ~/.mana/secrets.toml")
 
             llm = create_chat_model(
                 api_key=api_key,

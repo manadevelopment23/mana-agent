@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any, Literal
@@ -246,5 +245,7 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 
 def _router_model_name() -> str:
-    main_model = os.getenv("MANA_MODEL_MAIN") or os.getenv("OPENAI_CHAT_MODEL") or ""
+    from mana_agent.config.user_config import get_setting
+
+    main_model = str(get_setting("OPENAI_CHAT_MODEL", "") or "")
     return resolve_model_for_role(AgentRole.HEAD_DECISION, global_model=main_model).resolved_model

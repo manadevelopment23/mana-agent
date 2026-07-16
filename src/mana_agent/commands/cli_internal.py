@@ -195,7 +195,7 @@ def _build_main_agent_routing_llm() -> Any | None:
     return create_chat_model(
         api_key=api_key,
         model=model,
-        base_url=getattr(settings, "openai_base_url", None) or os.getenv("OPENAI_BASE_URL") or None,
+        base_url=getattr(settings, "openai_base_url", None),
         temperature=0,
     )
 
@@ -617,7 +617,7 @@ def mcp_serve_command(
         return
     if normalized != "streamable-http":
         raise typer.BadParameter("transport must be stdio or streamable-http")
-    token = str(os.getenv("MANA_MCP_SERVER_TOKEN") or load_effective_settings().get("MANA_MCP_SERVER_TOKEN") or "")
+    token = str(load_effective_settings(include_env=False).get("MANA_MCP_SERVER_TOKEN") or "")
     if not token.strip():
         raise typer.BadParameter("MANA_MCP_SERVER_TOKEN is required for streamable-http")
     import uvicorn
@@ -1273,7 +1273,7 @@ def continue_command(
     worker = worker_client_cls(
         api_key=settings.openai_api_key,
         model=settings.openai_chat_model,
-        base_url=os.getenv("OPENAI_BASE_URL") or None,
+        base_url=settings.openai_base_url,
         project_root=root,
         repo_root=root,
     )
@@ -1289,7 +1289,7 @@ def continue_command(
     orchestrator = tools_manager_orchestrator_cls(
         api_key=settings.openai_api_key,
         model=settings.openai_chat_model,
-        base_url=os.getenv("OPENAI_BASE_URL") or None,
+        base_url=settings.openai_base_url,
         worker_client=worker,
         repo_root=root,
         executor=LocalToolsExecutor(worker_client=worker),

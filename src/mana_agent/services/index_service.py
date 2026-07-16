@@ -27,6 +27,8 @@ from mana_agent.workspaces.store import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
+CHUNK_SCHEMA_VERSION = 2
+
 
 class IndexService:
     def __init__(self, parser: PythonParser, chunker: CodeChunker, store: FaissStore) -> None:
@@ -123,9 +125,11 @@ class IndexService:
         current_files = iter_source_files(target)
         logger.info("Discovered %d source files", len(current_files))
         current_hashes = {str(path): sha256_file(path) for path in current_files}
+        chunk_schema_changed = manifest.get("chunk_schema_version") != CHUNK_SCHEMA_VERSION
         manifest.update(
             {
                 "schema_version": 2,
+                "chunk_schema_version": CHUNK_SCHEMA_VERSION,
                 "repository_id": repository_id,
                 "repository_name": repository_name,
                 "repository_root": str(target),
@@ -137,6 +141,8 @@ class IndexService:
         changed_files = {
             path for path, digest in current_hashes.items() if manifest["files"].get(path, {}).get("sha256") != digest
         }
+        if chunk_schema_changed:
+            changed_files = set(existing_files)
         deleted_files = known_files - existing_files
         logger.info(
             "Index delta computed: changed=%d deleted=%d unchanged=%d",

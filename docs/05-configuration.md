@@ -112,6 +112,13 @@ MODEL_LEVEL_2_CODING="gpt-4.1"
 MODEL_LEVEL_1_FAST_TOOL="gpt-4.1-mini"
 DEFAULT_TOP_K=8
 MANA_LLM_LOG_FILE=
+MANA_LLM_API_MODE=auto
+MANA_LLM_REASONING_EFFORT=
+MANA_LLM_SUPPORTS_RESPONSES_API=
+MANA_LLM_SUPPORTS_CHAT_COMPLETIONS=
+MANA_LLM_SUPPORTS_TOOLS=
+MANA_LLM_SUPPORTS_REASONING=
+MANA_LLM_SUPPORTS_TOOLS_WITH_CHAT_REASONING=
 MANA_MANAGED_WORKTREES_ENABLED=true
 MANA_CODEX_ENABLED=false
 MANA_CODEX_BIN=codex
@@ -139,6 +146,13 @@ checkout. Explicit merge intent is still required after review
 (`mana-agent worktree merge <task-id> --yes`).
 
 Set `MANA_MANAGED_WORKTREES_ENABLED=false` to preserve the legacy in-checkout coding path.
+
+All LLM credentials, base URLs, chat/planner/tool-worker models, role mappings,
+reasoning options, and provider capability flags are resolved from
+`~/.mana/config.toml` and `~/.mana/secrets.toml`. Shell variables and repository
+`.env` files do not override them. Tool-worker subprocesses receive those values
+through their validated initialization payload and remove conflicting LLM
+configuration variables from the inherited process environment.
 
 ## OpenAI-Compatible LLM Capabilities
 

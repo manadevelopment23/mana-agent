@@ -24,6 +24,7 @@ def parse_codex_result(
     summary = ""
     usage: dict[str, int] | None = None
     status = "completed"
+    test_failures: list[str] = []
 
     for notification in notifications:
         method = str(notification.get("method") or "")
@@ -37,6 +38,10 @@ def parse_codex_result(
                 commands.append(command)
                 if _is_test_command(command):
                     tests.append(command)
+                    exit_code = item.get("exitCode")
+                    command_status = str(item.get("status") or "").lower()
+                    if (isinstance(exit_code, int) and exit_code != 0) or command_status in {"failed", "error"}:
+                        test_failures.append(command)
             if item_type in {"agentMessage", "agent_message"}:
                 text = str(item.get("text") or item.get("message") or "").strip()
                 if text:
@@ -61,8 +66,16 @@ def parse_codex_result(
                     for key, value in raw_usage.items()
                     if isinstance(value, int) and not isinstance(value, bool)
                 }
+            turn_status = str(turn.get("status") or "").lower() if isinstance(turn, dict) else ""
+            if turn_status in {"interrupted", "cancelled"}:
+                status = "cancelled"
+            elif turn_status in {"failed", "error"}:
+                status = "failed"
+                errors.append("Codex turn completed with a failed status")
 
-    tests_passed = bool(tests) and status == "completed" and not errors
+    if test_failures:
+        warnings.append("Test command failed: " + ", ".join(test_failures))
+    tests_passed = bool(tests) and not test_failures and status == "completed" and not errors
     return CodingTaskResult(
         task_id=task.task_id,
         worker_id=worker_id,

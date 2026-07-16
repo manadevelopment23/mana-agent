@@ -2,17 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 from mana_agent.config.settings import default_llm_logs_dir
+from mana_agent.config.user_config import get_setting
 from mana_agent.utils.io import ensure_dir
 
 
 class LlmRunLogger:
     def __init__(self, log_file: str | Path | None = None) -> None:
-        env_path = os.getenv("MANA_LLM_LOG_FILE")
+        configured_path = str(get_setting("MANA_LLM_LOG_FILE", "") or "").strip()
 
         project_root = Path.cwd().resolve()
         project_name = project_root.name or "project"
@@ -22,9 +22,9 @@ class LlmRunLogger:
         if log_file:
             resolved = Path(log_file)
 
-        # 2️⃣ Environment variable
-        elif env_path:
-            resolved = Path(env_path)
+        # 2️⃣ User-level Mana configuration
+        elif configured_path:
+            resolved = Path(configured_path)
 
         # 3️⃣ Default location (safe)
         else:

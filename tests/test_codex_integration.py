@@ -14,6 +14,7 @@ from mana_agent.integrations.codex.backend import CodexCodingBackend
 from mana_agent.integrations.codex.config import CodexSettings
 from mana_agent.integrations.codex.event_adapter import adapt_codex_event
 from mana_agent.integrations.codex.health import check_codex_health
+from mana_agent.integrations.codex.result_parser import parse_codex_result
 from mana_agent.multi_agent.codex_pool import _scopes_overlap
 
 
@@ -214,3 +215,46 @@ def test_disabled_codex_health_is_explicit(tmp_path: Path) -> None:
     report = check_codex_health(CodexSettings(enabled=False), tmp_path)
     assert report.healthy is False
     assert "Codex integration is disabled" in report.errors
+
+
+def test_failed_test_command_is_not_reported_as_passing(tmp_path: Path) -> None:
+    result = parse_codex_result(
+        task=_task(),
+        workspace=_workspace(tmp_path),
+        worker_id="worker-1",
+        thread_id="thread-1",
+        turn_id="turn-1",
+        changed_files=[],
+        notifications=[
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "commandExecution",
+                        "command": "pytest -q",
+                        "exitCode": 1,
+                        "status": "failed",
+                    }
+                },
+            },
+            {"method": "turn/completed", "params": {"turn": {"status": "completed"}}},
+        ],
+    )
+    assert result.status == "completed"
+    assert result.tests_passed is False
+    assert result.warnings == ["Test command failed: pytest -q"]
+
+
+def test_interrupted_turn_is_cancelled(tmp_path: Path) -> None:
+    result = parse_codex_result(
+        task=_task(),
+        workspace=_workspace(tmp_path),
+        worker_id="worker-1",
+        thread_id="thread-1",
+        turn_id="turn-1",
+        changed_files=[],
+        notifications=[
+            {"method": "turn/completed", "params": {"turn": {"status": "interrupted"}}},
+        ],
+    )
+    assert result.status == "cancelled"
