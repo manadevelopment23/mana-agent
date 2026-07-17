@@ -967,7 +967,9 @@ class ToolWorkerClient:
         workspace_id: str | None = None,
         repository_id: str | None = None,
     ) -> None:
-        resolved_base_url = str(base_url or os.getenv("OPENAI_BASE_URL") or "").strip() or None
+        from mana_agent.config.user_config import get_setting
+
+        resolved_base_url = str(base_url or get_setting("OPENAI_BASE_URL", "") or "").strip() or None
         self._init_payload = WorkerInitPayload(
             api_key=api_key,
             model=model,
@@ -1010,6 +1012,13 @@ class ToolWorkerClient:
         
         logger.info("[ToolWorkerClient] Starting worker process...")
         env = os.environ.copy()
+        # Runtime credentials and model choices are transferred in the validated
+        # init payload. Do not let shell or repository dotenv-derived values
+        # override ~/.mana configuration inside the child process.
+        from mana_agent.config.user_config import DEFAULT_USER_CONFIG, SECRET_KEYS
+
+        for key in set(DEFAULT_USER_CONFIG) | SECRET_KEYS:
+            env.pop(key, None)
         repo_root = Path(self._init_payload.repo_root).resolve()
         pythonpath_entries: list[str] = []
         src_dir = repo_root / "src"

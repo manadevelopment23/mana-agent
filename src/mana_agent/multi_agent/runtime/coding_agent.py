@@ -13,7 +13,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 import ast
 import json
 import logging
-import os
 import re
 import subprocess
 from contextlib import contextmanager
@@ -51,6 +50,7 @@ from mana_agent.multi_agent.runtime.tool_worker_process import (
 )
 
 from mana_agent.services.coding_memory_service import CodingMemoryService
+from mana_agent.config.user_config import get_setting
 from mana_agent.tools import (
     build_apply_patch_tool,
     build_create_file_tool,
@@ -325,6 +325,27 @@ class CodingAgent:
 
         raise json.JSONDecodeError("No checklist payload found", raw, 0)
 
+    @staticmethod
+    def _flow_checklist_tool_schema() -> dict[str, Any]:
+        return {
+            "name": "ManaFlowChecklistEnvelopeV1",
+            "description": "Return the complete coding flow checklist JSON in checklist_json.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "checklist_json": {
+                        "type": "string",
+                        "description": (
+                            "A JSON-serialized FlowChecklist object including the complete "
+                            "execution_scope decision."
+                        ),
+                    }
+                },
+                "required": ["checklist_json"],
+                "additionalProperties": False,
+            },
+        }
+
     def __init__(
         self,
         *,
@@ -345,7 +366,7 @@ class CodingAgent:
         planner_model: str | None = None,
     ) -> None:
         self.api_key = api_key
-        self.base_url = str(base_url or os.getenv("OPENAI_BASE_URL") or "").strip() or None
+        self.base_url = str(base_url or get_setting("OPENAI_BASE_URL", "") or "").strip() or None
         self.repo_root = repo_root.resolve()
         self.ask_agent: AskAgentLike = ask_agent
         self.allowed_prefixes = allowed_prefixes
@@ -411,16 +432,12 @@ class CodingAgent:
     def _setup_planner(self):
         """تنظیم و مقداردهی اولیه LLM با قابلیت Retry"""
         try:
-            env_planner_model = str(
-                os.getenv("OPENAI_CODING_PLANNER_MODEL")
-                or os.getenv("CODING_AGENT_PLANNER_MODEL")
-                or ""
-            ).strip()
+            configured_planner_model = str(get_setting("OPENAI_CODING_PLANNER_MODEL", "") or "").strip()
             current_model = (
-                env_planner_model
+                configured_planner_model
                 or str(self.planner_model or "").strip()
                 or str(getattr(self.ask_agent, "model", "")).strip()
-                or str(os.getenv("OPENAI_CHAT_MODEL") or "").strip()
+                or str(get_setting("OPENAI_CHAT_MODEL", "") or "").strip()
                 or "gpt-4.1-mini"
             )
             
@@ -2317,6 +2334,19 @@ class CodingAgent:
             SystemMessage(content=CODING_FLOW_PLANNER_PROMPT),
             HumanMessage(content=human_prompt),
         ]
+        if hasattr(self.planner_llm, "with_structured_output"):
+            structured_planner = self.planner_llm.with_structured_output(
+                self._flow_checklist_tool_schema(),
+                method="function_calling",
+                strict=True,
+            )
+            structured_response = structured_planner.invoke(messages)
+            if not isinstance(structured_response, dict):
+                raise TypeError("planner structured response must be an object")
+            checklist_json = structured_response.get("checklist_json")
+            if not isinstance(checklist_json, str) or not checklist_json.strip():
+                raise ValueError("planner structured response is missing checklist_json")
+            return checklist_json.strip()
         response = self.planner_llm.invoke(messages)
         return str(getattr(response, "content", response) or "").strip()
 

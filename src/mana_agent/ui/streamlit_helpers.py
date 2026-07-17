@@ -475,12 +475,12 @@ def run_dashboard_chat(
         from mana_agent.gateway import AgentChatGateway
 
         settings = Settings()
-        api_key = getattr(settings, "openai_api_key", "") or os.environ.get("OPENAI_API_KEY", "")
+        api_key = getattr(settings, "openai_api_key", "")
         if not api_key:
             _emit("warning", "Missing API key", message="OPENAI_API_KEY not configured", status="failed")
             return {
                 "answer": "(No OPENAI_API_KEY configured) Routed via model decision layer would happen here. "
-                          "Set key in env or ~/.mana and ensure index is built (run chat in CLI first).",
+                          "Save the key in ~/.mana/secrets.toml and ensure the index is built (run chat in CLI first).",
                 "mode": "preview",
                 "sources": [],
                 "conversation_id": conversation_id,

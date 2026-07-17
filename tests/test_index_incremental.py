@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from mana_agent.analysis.chunker import CodeChunker
@@ -54,3 +55,25 @@ def test_incremental_index_includes_non_python_source_files(tmp_path: Path) -> N
 
     result = service.index(project, index_dir, rebuild=False)
     assert result["indexed_files"] == 3
+
+
+def test_incremental_index_rebuilds_chunks_when_chunk_schema_changes(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    index_dir = tmp_path / "index"
+    store = FakeStore()
+    service = IndexService(MultiLanguageParser(), CodeChunker(), store)
+    service.index(project, index_dir, rebuild=False)
+
+    manifest_path = index_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["chunk_schema_version"] = 1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = service.index(project, index_dir, rebuild=False)
+
+    assert result["indexed_files"] == 1
+    assert result["removed_chunks"] >= 1
+    updated_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert updated_manifest["chunk_schema_version"] == 2

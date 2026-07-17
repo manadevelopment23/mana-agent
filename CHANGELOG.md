@@ -2,7 +2,35 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-17
+
+- Made Codex the authoritative coding runtime across the shared CLI, TUI, and dashboard stack.
+  - Replaced the production legacy `CodingAgent` construction with a compatibility shim that delegates repository inspection, coding decisions, planning, editing, review, and verification to one Codex app-server turn.
+  - Removed the separate preflight checklist/planner from the Codex path, retained isolated write worktrees and explicit merge candidates, and made missing or disabled Codex fail without a native coding fallback.
+  - Added explicit protection against arbitrary edits for underspecified requests and removed the generated README example that was not requested.
+  - Verification: `MANA_HOME=/tmp/mana-codex-authoritative-full-3 .venv/bin/python -m pytest -q` passed (966 passed, 1 skipped); focused Ruff checks and Python compilation passed; live `mana-agent codex doctor --repo .` reported the installed Codex app-server healthy with repository access.
+
 ## 2026-07-16
+
+- Corrected repository index chunk citations so overlapping character slices record the source lines each slice actually covers instead of repeating the parent symbol's full line range.
+  - Added a versioned chunk schema so existing indexes are automatically refreshed once, and clarified that the range embedded in chunk text describes the complete parent symbol.
+  - Added regression coverage for progressive, bounded line metadata and chunk-schema invalidation.
+  - Verification: `MANA_HOME=/tmp/mana-agent-tests-index-planner-fix-20260716 .venv/bin/python -m pytest -q` passed (963 passed, 1 skipped); regenerated the supplied index and audited 10,873 unique chunks with zero invalid or repeated full-symbol ranges.
+
+- Made the coding execution-scope planner return its decision through a strict structured-output envelope before full `FlowChecklist` validation, preventing successful-but-empty free-form message content from surfacing as `No checklist payload found`.
+  - Missing or invalid `execution_scope` decisions still stop safely; no default or heuristic scope is introduced.
+  - Verification: the exact live `update readme.md` planner request returned a validated edit scope with no warnings; the full suite passed (963 passed, 1 skipped).
+
+- Added an optional, provider-neutral Codex coding backend integration using the official `codex app-server` JSON-RPC protocol.
+  - Added typed coding task, workspace, backend-decision, event, and result contracts; a strict backend registry and orchestrator; managed Codex process lifecycle; thread/turn streaming; cancellation; event/result normalization; health checks; and a bounded worker pool that serializes overlapping file scopes.
+  - Codex writing tasks require clean isolated Git worktrees, cannot self-approve permission requests, and cannot silently fall back to another backend when the validated model selection is missing or unavailable.
+  - Added user configuration, `mana-agent codex status|doctor|login|logout`, integration documentation, and focused protocol/decision/safety tests. The implementation intentionally does not add the attachment's proposed `openai-codex` dependency because no official Python Codex SDK exists; the official SDK is TypeScript and wraps the CLI.
+  - Verification: `MANA_HOME=/tmp/mana-agent-tests-20260716 .venv/bin/python -m pytest -q` passed (959 passed, 2 skipped); real `codex app-server` initialize/close handshake passed.
+
+- Removed remaining LLM runtime environment fallbacks so credentials, base URLs, models, model-role assignments, reasoning settings, provider capability flags, and LLM log paths resolve from `~/.mana/config.toml` / `secrets.toml`.
+  - Tool-worker subprocesses now receive the persisted values through their typed initialization payload and strip conflicting Mana/OpenAI configuration keys from their inherited environment.
+  - Added regression coverage proving shell variables and repository `.env` values cannot override the saved runtime configuration.
+  - Verification: `MANA_HOME=/tmp/mana-agent-tests-20260716 .venv/bin/python -m pytest -q` passed (959 passed, 2 skipped); focused configuration, LLM compatibility, tool-worker, gateway, and Codex tests passed (81 tests).
 
 - Added a production PyPI release workflow using GitHub Release publication, PyPI Trusted Publishing/OIDC, immutable action pins, once-built verified artifacts, version/PyPI availability gates, and serialized non-cancelling deployment concurrency.
   - Manual dispatches can validate and rebuild an existing tag but cannot reach the production publish job; push and pull-request CI now tests, builds, and checks distributions without publishing.

@@ -28,7 +28,10 @@ def _payload(llm: CompatibleChatOpenAI, *, tools: bool = False) -> dict:
 
 
 def test_tools_and_reasoning_use_responses_when_supported(monkeypatch) -> None:
-    monkeypatch.setenv("MANA_LLM_REASONING_EFFORT", "high")
+    monkeypatch.setattr(
+        "mana_agent.multi_agent.runtime.compatibility.get_setting",
+        lambda name, default=None: {"MANA_LLM_REASONING_EFFORT": "high"}.get(name, default),
+    )
     llm = create_chat_model(api_key="test", model="gpt-5", base_url="https://api.openai.com/v1")
     payload = _payload(llm, tools=True)
     assert "input" in payload
@@ -78,14 +81,20 @@ def test_plain_request_is_unchanged() -> None:
 
 
 def test_explicit_gateway_capability_override_selects_responses(monkeypatch) -> None:
-    monkeypatch.setenv("MANA_LLM_SUPPORTS_RESPONSES_API", "true")
-    monkeypatch.setenv("MANA_LLM_REASONING_EFFORT", "high")
+    configured = {"MANA_LLM_SUPPORTS_RESPONSES_API": True, "MANA_LLM_REASONING_EFFORT": "high"}
+    monkeypatch.setattr(
+        "mana_agent.multi_agent.runtime.compatibility.get_setting",
+        lambda name, default=None: configured.get(name, default),
+    )
     llm = create_chat_model(api_key="test", model="gateway-model", base_url="https://gateway.example/v1")
     assert "input" in _payload(llm, tools=True)
 
 
 def test_custom_gateway_does_not_assume_responses_api(monkeypatch) -> None:
-    monkeypatch.setenv("MANA_LLM_REASONING_EFFORT", "high")
+    monkeypatch.setattr(
+        "mana_agent.multi_agent.runtime.compatibility.get_setting",
+        lambda name, default=None: {"MANA_LLM_REASONING_EFFORT": "high"}.get(name, default),
+    )
     llm = create_chat_model(api_key="test", model="gateway-model", base_url="https://gateway.example/v1")
     payload = _payload(llm, tools=True)
     assert "messages" in payload
