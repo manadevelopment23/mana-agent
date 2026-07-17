@@ -4,6 +4,13 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-17
 
+- Redesigned terminal startup and configuration around a chat-first Textual experience.
+  - Bare `mana-agent` now opens chat for the current directory without a mode menu; `mana-agent chat` remains an alias, `mana-agent --configure` is the preferred settings entry point, and non-TTY startup fails without launching Textual or hanging.
+  - Added centralized inference/search provider registries, conservative model-capability normalization, provider-qualified canonical selections, separate agent/embedding filtering, recommended logical levels, advanced role mappings, and an in-chat credential-free `/models` modal with session-only and persistent selection actions.
+  - Added atomic normal/secret/cache persistence, explicit credential removal, unchanged masked-secret preservation, legacy migration with backup, environment-secret references, GitHub CLI authentication by reference, and cache invalidation when provider identity changes.
+  - Updated README and quick-start/routing documentation for the new startup, configuration, model, search, GitHub, secret-storage, migration, and non-interactive behavior.
+  - Verification: `MANA_HOME=/tmp/mana-agent-chat-first-tests-final .venv/bin/python -m pytest -q` passed (986 passed, 1 skipped); final focused CLI/configuration/Textual/provider-validation/model-switch checks passed (18 tests); Python compilation, touched-file Ruff `F,E9`, CLI help, chat help, and `git diff --check` passed.
+
 - Fixed Codex turns being rejected by the current app-server because Mana's internal `readOnly` / `workspaceWrite` sandbox values were sent without protocol translation.
   - The Codex boundary now emits `read-only` / `workspace-write`, with regression coverage for both modes; failed turn summaries also retain the first backend error instead of only reporting `Codex task did not complete.`
   - Verification: `MANA_HOME=/tmp/mana-agent-codex-sandbox-tests .venv/bin/python -m pytest -q tests/test_codex_integration.py tests/gateway/test_chat_gateway.py` passed (30 tests); a live read-only turn using the configured `gpt-5.6-luna` model completed successfully and returned the repository title; Ruff, Python compilation, and `git diff --check` passed.
