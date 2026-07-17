@@ -56,6 +56,36 @@ def _is_new_topic_command(text: str) -> bool:
     return str(text or "").strip().lower() in _NEW_TOPIC_COMMANDS
 
 
+def _apply_session_model_change(model_name: str, *runtime_objects: Any) -> None:
+    """Switch already-built model clients between turns, with rollback on error."""
+    selected = str(model_name or "").strip()
+    if not selected:
+        raise ValueError("A model ID is required.")
+    targets: list[tuple[Any, str | None]] = []
+    seen: set[int] = set()
+    for obj in runtime_objects:
+        if obj is None or id(obj) in seen or not callable(getattr(obj, "update_model", None)):
+            continue
+        seen.add(id(obj))
+        previous = getattr(obj, "model", None)
+        if previous is None:
+            previous = getattr(obj, "model_name", None)
+        targets.append((obj, str(previous) if previous else None))
+    changed: list[tuple[Any, str | None]] = []
+    try:
+        for obj, previous in targets:
+            obj.update_model(selected)
+            changed.append((obj, previous))
+    except Exception as exc:
+        for obj, previous in reversed(changed):
+            if previous:
+                try:
+                    obj.update_model(previous)
+                except Exception:
+                    logger.error("Failed to roll back a session model client", exc_info=True)
+        raise RuntimeError("The session model could not be applied to every active model client.") from exc
+
+
 def _is_interactive_terminal() -> bool:
     """Return True only for real TTYs.
 
@@ -2037,8 +2067,21 @@ def chat(
                     continue
                 console.print(message)
                 if selection is not None:
+                    try:
+                        _apply_session_model_change(
+                            selection.model_id,
+                            getattr(ask_service, "ask_agent", None),
+                            getattr(ask_service, "qna_chain", None),
+                            coding_agent_instance,
+                            tools_manager_orchestrator,
+                            tool_worker_client,
+                        )
+                    except RuntimeError as exc:
+                        console.print(f"[red]{exc}[/red]")
+                        continue
                     model = selection.model_id
-                    console.print("[yellow]The session model will be used by direct model calls; restart chat to rebuild all agent-role clients.[/yellow]")
+                    effective_model = selection.model_id
+                    gateway.config.model = selection.model_id
                 continue
             if question.strip().startswith("/session"):
                 from mana_agent.workspaces.service import WorkspaceService

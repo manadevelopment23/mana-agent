@@ -7,6 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from mana_agent.commands.cli import app
+from mana_agent.commands.chat_cli import _apply_session_model_change
 from mana_agent.config import user_config
 from mana_agent.config.catalog_service import ModelCatalogService
 from mana_agent.config.model_catalog import (
@@ -17,6 +18,7 @@ from mana_agent.config.model_catalog import (
 from mana_agent.config.session import ConfigurationDraft
 from mana_agent.search.config import SearchConfig
 from mana_agent.tui.model_management import ModelSelection, plain_models_command, save_default_model
+from mana_agent.tui.configuration_app import validate_github_connection, validate_search_connection
 
 
 @pytest.fixture()
@@ -186,6 +188,28 @@ def test_session_and_persistent_model_changes_are_distinct(isolated_config: Path
     assert session.persist is False
 
 
+def test_session_model_change_updates_active_clients_and_rolls_back_on_failure() -> None:
+    class Client:
+        def __init__(self, model: str, *, fail: bool = False) -> None:
+            self.model = model
+            self.fail = fail
+
+        def update_model(self, model: str) -> None:
+            if self.fail:
+                raise RuntimeError("no")
+            self.model = model
+
+    first = Client("old")
+    second = Client("old")
+    _apply_session_model_change("new", first, second)
+    assert first.model == second.model == "new"
+
+    failing = Client("old", fail=True)
+    with pytest.raises(RuntimeError):
+        _apply_session_model_change("other", first, failing)
+    assert first.model == "new"
+
+
 def test_search_and_github_credential_sources_remain_separate(isolated_config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     user_config.save_effective_user_config(
         {
@@ -204,6 +228,30 @@ def test_search_and_github_credential_sources_remain_separate(isolated_config: P
     assert config.web_api_key == "search-secret"
     assert config.github_credential_source == "environment"
     assert config.github_token == "github-secret"
+
+
+def test_search_and_github_connection_tests_use_existing_provider_layers(monkeypatch: pytest.MonkeyPatch) -> None:
+    search_calls: list[str] = []
+    monkeypatch.setattr(
+        "mana_agent.search.web_provider.ConfiguredWebSearchProvider.search_sync",
+        lambda self, query, max_results=1: search_calls.append(f"{self.provider}:{query}:{max_results}") or [],
+    )
+    validate_search_connection(
+        {
+            "MANA_WEB_SEARCH_PROVIDER": "brave",
+            "MANA_WEB_SEARCH_API_KEY": "secret",
+            "MANA_SEARCH_TIMEOUT_SECONDS": 1,
+        }
+    )
+    assert search_calls and search_calls[0].startswith("brave:")
+
+    monkeypatch.setattr(
+        "mana_agent.search.github_provider.GitHubSearchProvider._get_json",
+        lambda _self, url: {"login": "mana-user", "url": url},
+    )
+    assert validate_github_connection(
+        {"MANA_GITHUB_CREDENTIAL_SOURCE": "token", "MANA_GITHUB_TOKEN": "secret"}
+    ) == "mana-user"
 
 
 def test_models_slash_command_opens_modal() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import os
 from typing import Any
 
 from textual.app import App, ComposeResult
@@ -16,6 +17,45 @@ from mana_agent.config.provider_registry import PROVIDERS
 from mana_agent.config.session import ConfigurationDraft
 from mana_agent.config.user_config import migrate_legacy_config
 from mana_agent.search.registry import SEARCH_PROVIDERS
+
+
+def validate_search_connection(values: dict[str, Any]) -> None:
+    from mana_agent.search.web_provider import ConfiguredWebSearchProvider
+
+    provider = str(values.get("MANA_WEB_SEARCH_PROVIDER") or "")
+    if not provider:
+        raise ValueError("Select a web search provider first.")
+    client = ConfiguredWebSearchProvider(
+        provider=provider,
+        api_key=str(values.get("MANA_WEB_SEARCH_API_KEY") or ""),
+        endpoint=str(values.get("MANA_WEB_SEARCH_ENDPOINT") or ""),
+        engine_id=str(values.get("MANA_WEB_SEARCH_ENGINE_ID") or ""),
+        timeout_seconds=int(values.get("MANA_SEARCH_TIMEOUT_SECONDS") or 15),
+    )
+    client.search_sync("Mana-Agent connection test", max_results=1)
+
+
+def validate_github_connection(values: dict[str, Any]) -> str:
+    from mana_agent.search.github_provider import GitHubSearchProvider
+
+    source = str(values.get("MANA_GITHUB_CREDENTIAL_SOURCE") or "disabled")
+    if source == "disabled":
+        raise ValueError("Select a GitHub credential source first.")
+    if source == "gh_cli":
+        client = GitHubSearchProvider(credential_source="gh_cli")
+    else:
+        token = str(values.get("MANA_GITHUB_TOKEN") or "")
+        if source == "environment":
+            reference = str(values.get("MANA_GITHUB_SECRET_REF") or "")
+            token = str(os.getenv(reference) or "") if reference else ""
+        if not token:
+            raise ValueError("GitHub authentication is not configured.")
+        client = GitHubSearchProvider(token=token, credential_source="token")
+    payload = client._get_json("https://api.github.com/user")
+    username = str(payload.get("login") or "").strip()
+    if not username:
+        raise ValueError("GitHub authentication succeeded without an account name.")
+    return username
 
 
 class DiscardChangesScreen(ModalScreen[bool]):
@@ -61,6 +101,17 @@ class ManaConfigurationApp(App[bool]):
             self.draft.original.get("OPENAI_API_KEY")
             and self.draft.original.get("OPENAI_BASE_URL")
             and self.draft.original.get("OPENAI_CHAT_MODEL")
+        )
+        self._search_validated = bool(
+            not self.draft.original.get("MANA_SEARCH_ENABLE_WEB")
+            or (
+                self.draft.original.get("MANA_WEB_SEARCH_PROVIDER")
+                and self.draft.original.get("MANA_WEB_SEARCH_API_KEY")
+            )
+        )
+        self._github_validated = bool(
+            not self.draft.original.get("MANA_SEARCH_ENABLE_GITHUB")
+            or self.draft.original.get("MANA_GITHUB_CREDENTIAL_SOURCE") not in (None, "", "disabled")
         )
 
     def compose(self) -> ComposeResult:
@@ -278,15 +329,29 @@ class ManaConfigurationApp(App[bool]):
             return
         if button_id == "test-search":
             self._collect()
-            provider = self.draft.values.get("MANA_WEB_SEARCH_PROVIDER")
-            configured = bool(provider and (self.draft.values.get("MANA_WEB_SEARCH_API_KEY") or provider == "custom"))
-            self.query_one("#search-status", Static).update("Ready to use" if configured else "Not configured; enter required credentials")
+            status = self.query_one("#search-status", Static)
+            status.update("Testing…")
+            try:
+                await self.run_worker(lambda: validate_search_connection(self.draft.values), thread=True, exclusive=True).wait()
+            except Exception as exc:
+                status.update(f"Validation failed: {exc}")
+                self._search_validated = False
+                return
+            self._search_validated = True
+            status.update("Connected and ready to use")
             return
         if button_id == "test-github":
             self._collect()
-            source = self.draft.values.get("MANA_GITHUB_CREDENTIAL_SOURCE")
-            okay = (source == "gh_cli" and "authenticated" in self._github_cli_status().lower()) or (source == "token" and bool(self.draft.values.get("MANA_GITHUB_TOKEN"))) or (source == "environment" and bool(self.draft.values.get("MANA_GITHUB_SECRET_REF")))
-            self.query_one("#github-status", Static).update("Authentication source configured" if okay else "Authentication is not configured")
+            status = self.query_one("#github-status", Static)
+            status.update("Testing…")
+            try:
+                username = await self.run_worker(lambda: validate_github_connection(self.draft.values), thread=True, exclusive=True).wait()
+            except Exception as exc:
+                status.update(f"Validation failed: {exc}")
+                self._github_validated = False
+                return
+            self._github_validated = True
+            status.update(f"Authenticated as {username}")
             return
         if button_id == "save":
             self.action_save()
@@ -308,6 +373,10 @@ class ManaConfigurationApp(App[bool]):
             self._collect()
             if not self._provider_validated:
                 raise ValueError("Test the selected inference provider before saving.")
+            if self.draft.values.get("MANA_SEARCH_ENABLE_WEB") and not self._search_validated:
+                raise ValueError("Test the selected web search provider before saving.")
+            if self.draft.values.get("MANA_SEARCH_ENABLE_GITHUB") and not self._github_validated:
+                raise ValueError("Test the selected GitHub authentication before saving.")
             self.draft.save()
         except Exception as exc:
             self.notify(str(exc), title="Configuration not saved", severity="error")
@@ -328,10 +397,18 @@ class ManaConfigurationApp(App[bool]):
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "provider-select":
             self._provider_validated = False
+        elif event.select.id == "search-provider":
+            self._search_validated = False
+        elif event.select.id == "github-source":
+            self._github_validated = False
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id in {"provider-api-key", "provider-base-url"} and event.value:
             self._provider_validated = False
+        elif event.input.id in {"search-api-key", "search-engine-id", "search-endpoint"} and event.value:
+            self._search_validated = False
+        elif event.input.id in {"github-token", "github-secret-ref"} and event.value:
+            self._github_validated = False
 
 
 def run_configuration_tui() -> bool:
