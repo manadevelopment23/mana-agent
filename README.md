@@ -115,7 +115,7 @@ flowchart LR
 
 The model chooses capabilities from tool metadata and active policy. Fixed chat keywords should not silently replace model routing for repository, connector, search, or mutation work.
 
-Every chat turn first passes through the gateway's typed entry router. It selects a registered conversation, coding, connector, search, repository, or automation path from live runtime availability before any response is generated. One session is opened per chat, reused for all turns, and explicitly finalized on exit or `/new`; see [entry routing and chat sessions](docs/20-entry-routing-and-chat-sessions.md).
+Every chat turn first passes through the gateway's typed entry router. It selects a registered conversation, coding, connector, search, repository, or automation path from live runtime availability before any response is generated. One session is opened per chat, reused for all turns, and explicitly finalized on exit or `/new`; see [entry routing and chat sessions](docs/21-entry-routing-and-chat-sessions.md).
 
 ---
 
@@ -322,10 +322,11 @@ support `/models current`, `/models refresh`, and
 Chat messages remain attached to one durable workspace session for the lifetime
 of the conversation. Both the plain CLI and Textual TUI accept `/new` to archive
 the current session and start an isolated conversation; `/models`, UI refreshes,
-tool calls, model routing, and restarting chat preserve and automatically restore
-the active session. Mana also reuses one automatic repository record and one
-standalone workspace for each canonical repository path. A specific stored
-conversation can be selected with `mana-agent chat --session <session-id>`.
+tool calls, and model routing reuse that session. Each new chat process creates a
+fresh session and abandons any active session left by an earlier process. Mana
+still reuses one automatic repository record and one standalone workspace for
+each canonical repository path. A specific stored conversation can be selected
+explicitly with `mana-agent chat --session <session-id>`.
 
 ### Start a planning and coding session
 
@@ -951,7 +952,7 @@ Optional packages are lazy-loaded. Install only the extras required by the activ
 | [`docs/03-quick-start.md`](docs/03-quick-start.md) | First commands and workflows. |
 | [`docs/04-commands.md`](docs/04-commands.md) | CLI command reference. |
 | [`docs/19-experience-to-skill-workshop.md`](docs/19-experience-to-skill-workshop.md) | Verified experience, proposal review, installation, and quarantine. |
-| [`docs/20-entry-routing-and-chat-sessions.md`](docs/20-entry-routing-and-chat-sessions.md) | Typed entry routing, connector availability, and chat-session lifecycle. |
+| [`docs/21-entry-routing-and-chat-sessions.md`](docs/21-entry-routing-and-chat-sessions.md) | Typed entry routing, connector availability, and chat-session lifecycle. |
 | [`docs/05-configuration.md`](docs/05-configuration.md) | Provider, model, search, and runtime settings. |
 | [`docs/06-workflows.md`](docs/06-workflows.md) | Common analysis and coding workflows. |
 | [`docs/07-diagram.md`](docs/07-diagram.md) | Standalone Mermaid architecture diagram. |

@@ -4,6 +4,14 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-18
 
+- Enforced one fresh persisted session per chat start and one additional fresh session per `/new`.
+  - Root chat startup now lets the chat frontend create its session before the mandatory route decision, avoiding a hidden pre-chat session. The legacy restoration API now abandons prior active sessions and opens a new identity instead of reusing or reopening one.
+  - Verification: `MANA_HOME=<isolated> PYTHONPATH=src venv/bin/python -m pytest -q tests/test_workspaces.py tests/gateway/test_entry_routing.py tests/gateway/test_chat_gateway.py tests/test_main_cli_session_lifecycle.py` passed (41 tests); Python compilation and `git diff --check` passed.
+
+- Repaired implicit workspace and active-session repository references when a legacy repository identity no longer has a persisted record.
+  - Valid repository attachments are preserved, missing secondary references are removed from both workspace and session state, and a missing session primary still stops safely instead of being hidden.
+  - Verification: `PYTHONPATH=src venv/bin/python -m pytest -q tests/test_workspaces.py` passed (11 tests); isolated-home `tests/gateway/test_entry_routing.py` passed (9 tests); Python compilation and `git diff --check` passed. Ruff was unavailable in the repository environment. A broader multi-agent run passed 60 tests but retained two unrelated verification-pipeline failures in `tests/test_multi_agent_core.py`.
+
 - Added one gateway-owned typed entry router that runs before every conversational response and selects `conversation`, `coding`, `gmail`, `calendar`, `search`, `repository`, `automation`, or `unsupported` from a dynamic route registry.
   - Gmail routing now checks enabled account configuration, `email.read` permission, and keyring credential availability before execution; configured requests run through an email-only tool policy, while genuine setup/authorization failures retain actionable provider details.
   - Invalid routing-model output stops safely as an unsupported route and never falls through to ordinary conversation or a false integration-unavailable response.
