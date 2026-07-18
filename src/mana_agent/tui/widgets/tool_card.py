@@ -15,15 +15,13 @@ Features:
 from __future__ import annotations
 
 import json
-from typing import Any
 
-from rich.json import JSON as RichJSON
-from rich.syntax import Syntax
 from rich.text import Text
 from textual.containers import Vertical
 from textual.widgets import Collapsible, Static
 
 from mana_agent.chat.events import ToolCallEvent, ToolResultEvent
+from mana_agent.tui.widgets.selectable_text import SelectableText
 
 
 def _safe_textual_id(raw: str | None) -> str | None:
@@ -104,7 +102,7 @@ class ToolCard(Vertical):
         self.result_event: ToolResultEvent | None = None
         self._collapsible: Collapsible | None = None
         self.header_line: Static | None = None  # always-visible summary line with full key data
-        self.result_body: Static | None = None
+        self.result_body: SelectableText | None = None
 
     def compose(self):
         """Build the collapsible card using proper compose context managers.
@@ -126,12 +124,12 @@ class ToolCard(Vertical):
             self._collapsible = collapsible
 
             # Yield the call args as a normal child (no .mount() call here)
-            call_body = self._build_call_body()
-            yield Static(call_body, classes="tool-args")
+            call_body, call_language = self._build_call_body()
+            yield SelectableText(call_body, language=call_language, classes="tool-args")
 
             # Keep one result widget for the card's lifetime. Replacing a mounted
             # subtree during live updates can leave Textual with stale measurements.
-            self.result_body = Static("", classes="tool-result-body -empty")
+            self.result_body = SelectableText("", classes="tool-result-body -empty")
             yield self.result_body
 
     def _build_call_header(self) -> str:
@@ -139,20 +137,19 @@ class ToolCard(Vertical):
         summary = self.call_event.summary or ""
         return f"🔧 {name}" + (f"  {summary}" if summary else "")
 
-    def _build_call_body(self) -> Text | Syntax | str:
+    def _build_call_body(self) -> tuple[str, str | None]:
         args = self.call_event.args
         if args is None or args == {} or args == "":
-            return Text("(no arguments)", style="dim")
+            return "(no arguments)", None
         try:
             if isinstance(args, str):
                 # try parse for pretty
                 parsed = json.loads(args)
-                return RichJSON.from_data(parsed, indent=2)
+                return json.dumps(parsed, indent=2, ensure_ascii=False), "json"
             else:
-                return RichJSON.from_data(args, indent=2)
+                return json.dumps(args, indent=2, ensure_ascii=False), "json"
         except Exception:
-            # fallback to raw repr
-            return Syntax(str(args), "json", theme="ansi_dark", line_numbers=False)
+            return str(args), "json"
 
     def set_result(self, result_event: ToolResultEvent) -> None:
         """Update the card when the matching result arrives. Safe to call multiple times.
@@ -180,7 +177,9 @@ class ToolCard(Vertical):
         if self.header_line:
             self.header_line.update(header)
         if self.result_body:
-            self.result_body.update(self._build_result_body(result_event))
+            result_text, result_language = self._build_result_body(result_event)
+            self.result_body.load_text(result_text)
+            self.result_body.language = result_language
             self.result_body.remove_class("-empty")
             self.result_body.set_class(result_event.success, "tool-result-success")
             self.result_body.set_class(not result_event.success, "tool-result-error")
@@ -202,21 +201,21 @@ class ToolCard(Vertical):
             # A result can arrive before mount; first mount will measure it.
             pass
 
-    def _build_result_body(self, res: ToolResultEvent) -> Text | Syntax | str:
+    def _build_result_body(self, res: ToolResultEvent) -> tuple[str, str | None]:
         if not res.success:
             err = res.error or str(res.result) or "Unknown error"
-            return Text(f"Error: {err}", style="bold red")
+            return f"Error: {err}", "python" if "Traceback" in err else None
 
         result = res.result
         if result is None:
-            return Text("(no output)", style="dim")
+            return "(no output)", None
 
         # Pretty JSON when possible
         if isinstance(result, (dict, list)):
             try:
-                return RichJSON.from_data(result, indent=2)
+                return json.dumps(result, indent=2, ensure_ascii=False), "json"
             except Exception:
-                pass
+                return str(result), None
 
         text = str(result)
         # If it looks like code or long structured output, syntax highlight
@@ -224,11 +223,11 @@ class ToolCard(Vertical):
             # Heuristic: try json first, else python
             try:
                 json.loads(text)
-                return Syntax(text, "json", theme="ansi_dark", line_numbers=False)
+                return text, "json"
             except Exception:
-                return Syntax(text[:2000], "python", theme="ansi_dark", line_numbers=False)
+                return text, "python"
 
-        return Text(text)
+        return text, None
 
     def __rich__(self) -> Text:
         # Fallback rich representation

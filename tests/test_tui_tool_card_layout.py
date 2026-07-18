@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 
-from textual.widgets import Collapsible, Markdown, Static
+from textual.widgets import Collapsible
 
 from mana_agent.chat.events import AssistantMessageEvent, ToolCallEvent, ToolResultEvent, UserMessageEvent
 from mana_agent.chat.history import ChatHistory
 from mana_agent.tui.app import ManaChatApp
+from mana_agent.tui.widgets.selectable_text import SelectableText
 from mana_agent.tui.widgets.tool_card import ToolCard
 
 
@@ -16,13 +17,11 @@ def _run(coroutine) -> None:  # noqa: ANN001
     asyncio.run(coroutine)
 
 
-def test_message_widgets_are_passive_and_do_not_capture_mouse_drags() -> None:
-    """Native terminal selection remains available via the terminal modifier key.
+def _rendered_source(widget: SelectableText) -> str:
+    return widget.text
 
-    Textual enables mouse tracking globally, so terminal selection is delegated to
-    the terminal emulator (normally Shift-drag). Message renderers must not add
-    their own mouse handlers or capture state on top of that protocol.
-    """
+
+def test_message_widgets_support_textual_mouse_selection_and_copy() -> None:
     history = ChatHistory()
     app = ManaChatApp(history=history)
 
@@ -33,14 +32,18 @@ def test_message_widgets_are_passive_and_do_not_capture_mouse_drags() -> None:
             await pilot.pause()
 
             chat_log = app.query_one("#chat-log")
-            user_message = chat_log.query_one(".user-message", Static)
-            assistant_message = chat_log.query_one(".assistant-message", Markdown)
+            user_message = chat_log.query_one(".user-message", SelectableText)
+            assistant_message = chat_log.query_one(".assistant-message", SelectableText)
 
             assert app.mouse_captured is None
-            assert user_message.can_focus is False
-            assert assistant_message.can_focus is False
-            assert "on_mouse_down" not in type(user_message).__dict__
-            assert "on_mouse_down" not in type(assistant_message).__dict__
+            assert user_message.can_focus
+            assert assistant_message.can_focus
+            user_message.selection = ((0, 0), (0, 4))
+            copied: list[str] = []
+            app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
+            user_message.focus()
+            await pilot.press("ctrl+c")
+            assert copied == ["copy"]
 
     _run(run())
 
@@ -54,7 +57,7 @@ def test_tool_card_remeasures_after_toggle_live_updates_and_resize() -> None:
         async with app.run_test(size=(100, 24)) as pilot:
             history.add(call)
             await pilot.pause()
-            card = app.query_one("#layout-card", ToolCard)
+            card = app.query_one(ToolCard)
             collapsible = card.query_one(Collapsible)
             collapsed_height = card.size.height
 
@@ -73,8 +76,8 @@ def test_tool_card_remeasures_after_toggle_live_updates_and_resize() -> None:
                 )
             )
             await pilot.pause()
-            result_body = card.query_one(".tool-result-body", Static)
-            assert "line 39: detailed live output" in str(result_body.renderable)
+            result_body = card.query_one(".tool-result-body", SelectableText)
+            assert "line 39: detailed live output" in _rendered_source(result_body)
             assert card.size.height >= expanded_height
             assert app.query_one("#chat-log").virtual_size.height >= card.size.height
 
@@ -88,7 +91,7 @@ def test_tool_card_remeasures_after_toggle_live_updates_and_resize() -> None:
 
             await pilot.resize_terminal(70, 24)
             await pilot.pause()
-            assert "line 39: detailed live output" in str(result_body.renderable)
+            assert "line 39: detailed live output" in _rendered_source(result_body)
             assert app.query_one("#chat-log").virtual_size.height >= card.size.height
 
             history.add(
@@ -101,7 +104,7 @@ def test_tool_card_remeasures_after_toggle_live_updates_and_resize() -> None:
                 )
             )
             await pilot.pause()
-            assert "RuntimeError: failed" in str(result_body.renderable)
+            assert "RuntimeError: failed" in _rendered_source(result_body)
             assert card.has_class("tool-result-error") is False
             assert result_body.has_class("tool-result-error")
 

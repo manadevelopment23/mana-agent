@@ -330,12 +330,11 @@ explicitly with `mana-agent chat --session <session-id>`.
 
 ### Copying TUI text
 
-The Textual terminal UI keeps mouse support enabled for controls, scrolling, and
-tool-card expand/collapse actions. Most terminal emulators reserve normal mouse
-dragging for that mouse-tracking protocol; hold **Shift** while dragging to make
-a native terminal text selection, then use the terminal's usual copy shortcut.
-This works for messages, Markdown, code blocks, logs, errors, and expanded tool
-output. The precise modifier is terminal-dependent.
+Messages, Markdown source, code blocks, logs, errors, and expanded tool output
+support direct mouse-drag selection inside the TUI. Press `Ctrl+C` to copy the
+selected text. Terminal-native Shift-drag selection remains available where the
+terminal supports it; card controls and scrolling continue to use ordinary mouse
+events.
 
 ### Start a planning and coding session
 
