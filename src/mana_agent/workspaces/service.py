@@ -309,10 +309,22 @@ class WorkspaceService:
         )
         if existing:
             workspace = existing[0]
-            if repo.repository_id not in workspace.repository_ids:
-                workspace.repository_ids.append(repo.repository_id)
-                workspace.repository_ids = list(dict.fromkeys(workspace.repository_ids))
-                workspace.primary_repository_id = workspace.primary_repository_id or repo.repository_id
+            available_ids = []
+            for repository_id in dict.fromkeys(workspace.repository_ids):
+                try:
+                    self.store.get_repository(repository_id)
+                except FileNotFoundError:
+                    continue
+                available_ids.append(repository_id)
+            if repo.repository_id not in available_ids:
+                available_ids.append(repo.repository_id)
+            if (
+                workspace.repository_ids != available_ids
+                or workspace.primary_repository_id not in available_ids
+            ):
+                workspace.repository_ids = available_ids
+                if workspace.primary_repository_id not in available_ids:
+                    workspace.primary_repository_id = repo.repository_id
                 workspace.updated_at = _now()
                 self.store.save_workspace(workspace)
             return workspace
@@ -336,57 +348,8 @@ class WorkspaceService:
         *,
         workspace_id: str | None = None,
     ) -> SessionRecord:
-        """Restore the latest active chat session, creating only the first one."""
-        repo = self.register_repository(cwd)
-        workspace = (
-            self.store.get_workspace(workspace_id)
-            if workspace_id
-            else self.workspace_for_repository(repo.repository_id)
-        )
-        active = [
-            item
-            for item in self.store.list_sessions()
-            if item.status == "active"
-            and item.workspace_id == workspace.workspace_id
-            and item.primary_repository_id == repo.repository_id
-        ]
-        if active:
-            session = active[0]
-            for duplicate in active[1:]:
-                duplicate.status = "archived"
-                duplicate.updated_at = _now()
-                self.store.save_session(duplicate)
-            attached = list(dict.fromkeys(workspace.repository_ids))
-            if session.attached_repository_ids != attached or session.cwd != repo.canonical_path:
-                session.attached_repository_ids = attached
-                session.cwd = repo.canonical_path
-                session.updated_at = _now()
-                self.store.save_session(session)
-            return session
-        previous = [
-            item
-            for item in self.store.list_sessions()
-            if item.workspace_id == workspace.workspace_id
-            and item.primary_repository_id == repo.repository_id
-        ]
-        if previous:
-            session = previous[0]
-            session.status = "active"
-            session.attached_repository_ids = list(dict.fromkeys(workspace.repository_ids))
-            session.cwd = repo.canonical_path
-            session.updated_at = _now()
-            return self.store.save_session(session)
-        initial_session_id = (
-            "session_"
-            + hashlib.sha256(
-                f"initial:{workspace.workspace_id}:{repo.repository_id}".encode("utf-8")
-            ).hexdigest()[:20]
-        )
-        return self.create_session(
-            repo.canonical_path,
-            workspace_id=workspace.workspace_id,
-            session_id=initial_session_id,
-        )
+        """Open a fresh session; retained as a compatibility API for older callers."""
+        return self.open_chat_session(cwd, workspace_id=workspace_id)
 
     def create_session(
         self,
@@ -472,7 +435,32 @@ class WorkspaceService:
     def context_for_session(self, session_id: str) -> WorkspaceContext:
         session = self.store.get_session(session_id)
         workspace = self.store.get_workspace(session.workspace_id)
-        repos = {repo_id: self.store.get_repository(repo_id) for repo_id in session.attached_repository_ids}
+        repos: dict[str, RepositoryRecord] = {}
+        missing_repository_ids: list[str] = []
+        for repo_id in dict.fromkeys(session.attached_repository_ids):
+            try:
+                repos[repo_id] = self.store.get_repository(repo_id)
+            except FileNotFoundError:
+                if repo_id == session.primary_repository_id:
+                    raise
+                missing_repository_ids.append(repo_id)
+        if missing_repository_ids:
+            missing = set(missing_repository_ids)
+            session.attached_repository_ids = [
+                repo_id for repo_id in session.attached_repository_ids if repo_id not in missing
+            ]
+            session.updated_at = _now()
+            self.store.save_session(session)
+
+            workspace.repository_ids = [
+                repo_id for repo_id in workspace.repository_ids if repo_id not in missing
+            ]
+            if session.primary_repository_id not in workspace.repository_ids:
+                workspace.repository_ids.append(session.primary_repository_id)
+            if workspace.primary_repository_id in missing:
+                workspace.primary_repository_id = session.primary_repository_id
+            workspace.updated_at = _now()
+            self.store.save_workspace(workspace)
         return WorkspaceContext(workspace=workspace, session=session, repositories=repos)
 
     def archive_session(self, session_id: str) -> SessionRecord:

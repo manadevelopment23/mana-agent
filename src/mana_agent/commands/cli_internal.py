@@ -230,16 +230,28 @@ def _record_multi_agent_request(
     return result.task_id
 
 
-def _invoke_with_multi_agent_route(ctx, name: str, args: list[str] | None, *, root: str | Path, request: str, entrypoint: str) -> None:
-    """Invoke a Typer subcommand after recording the root-level command route once."""
-    _record_multi_agent_request(root, request, entrypoint=entrypoint, command_scope=True)
-    token = _SKIP_NEXT_COMMAND_ROUTE.set(True)
+def _invoke_with_multi_agent_route(
+    ctx,
+    name: str,
+    args: list[str] | None,
+    *,
+    root: str | Path,
+    request: str,
+    entrypoint: str,
+    route_in_subcommand: bool = False,
+) -> None:
+    """Invoke a subcommand with exactly one route decision at the selected boundary."""
+    token = None
+    if not route_in_subcommand:
+        _record_multi_agent_request(root, request, entrypoint=entrypoint, command_scope=True)
+        token = _SKIP_NEXT_COMMAND_ROUTE.set(True)
     try:
         command = ctx.command.commands[name]
         with command.make_context(name, args or [], parent=ctx) as sub_ctx:
             command.invoke(sub_ctx)
     finally:
-        _SKIP_NEXT_COMMAND_ROUTE.reset(token)
+        if token is not None:
+            _SKIP_NEXT_COMMAND_ROUTE.reset(token)
 
 
 def _analyze_report_markdown(result, *, root: Path, focus: str | None = None) -> str:

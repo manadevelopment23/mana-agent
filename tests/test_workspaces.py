@@ -57,7 +57,7 @@ def test_workspace_discovers_repositories_and_preserves_stable_identity(tmp_path
     assert not (first / ".mana").exists()
 
 
-def test_automatic_repository_workspace_and_session_are_reused_across_runs(
+def test_automatic_repository_and_workspace_are_reused_but_each_start_gets_a_new_session(
     tmp_path: Path, isolated_home: Path
 ) -> None:
     repo_path = _repo(tmp_path / "repo")
@@ -74,13 +74,64 @@ def test_automatic_repository_workspace_and_session_are_reused_across_runs(
 
     assert second_repo.repository_id == first_repo.repository_id
     assert second_workspace.workspace_id == first_workspace.workspace_id
-    assert second_session.session_id == first_session.session_id
+    assert second_session.session_id != first_session.session_id
+    assert second_service.store.get_session(first_session.session_id).status == "abandoned"
+    assert second_session.status == "active"
     assert len(second_service.store.list_repositories()) == 1
     assert len(second_service.store.list_workspaces()) == 1
-    assert len(second_service.store.list_sessions()) == 1
+    assert len(second_service.store.list_sessions()) == 2
 
 
-def test_restore_archives_duplicate_active_sessions_and_reuses_latest(
+def test_implicit_workspace_replaces_missing_legacy_repository_identity(
+    tmp_path: Path, isolated_home: Path
+) -> None:
+    repo_path = _repo(tmp_path / "repo")
+    service = WorkspaceService()
+    repo = service.register_repository(repo_path)
+    workspace = service.workspace_for_repository(repo.repository_id)
+    workspace.repository_ids = ["repo_missing_legacy"]
+    workspace.primary_repository_id = "repo_missing_legacy"
+    service.store.save_workspace(workspace)
+
+    restored = service.workspace_for_repository(repo.repository_id)
+
+    assert restored.repository_ids == [repo.repository_id]
+    assert restored.primary_repository_id == repo.repository_id
+
+
+def test_session_context_removes_missing_non_primary_repository_references(
+    tmp_path: Path, isolated_home: Path
+) -> None:
+    repo_path = _repo(tmp_path / "repo")
+    service = WorkspaceService()
+    repo = service.register_repository(repo_path)
+    workspace = service.workspace_for_repository(repo.repository_id)
+    workspace.repository_ids.append("repo_missing_secondary")
+    service.store.save_workspace(workspace)
+    session = service.create_session(repo_path, workspace_id=workspace.workspace_id)
+
+    context = service.context_for_session(session.session_id)
+
+    assert list(context.repositories) == [repo.repository_id]
+    assert context.session.attached_repository_ids == [repo.repository_id]
+    assert context.workspace.repository_ids == [repo.repository_id]
+
+
+def test_session_context_does_not_hide_missing_primary_repository(
+    tmp_path: Path, isolated_home: Path
+) -> None:
+    repo_path = _repo(tmp_path / "repo")
+    service = WorkspaceService()
+    repo = service.register_repository(repo_path)
+    workspace = service.workspace_for_repository(repo.repository_id)
+    session = service.create_session(repo_path, workspace_id=workspace.workspace_id)
+    (isolated_home / "repositories" / repo.repository_id / "repository.json").unlink()
+
+    with pytest.raises(FileNotFoundError):
+        service.context_for_session(session.session_id)
+
+
+def test_legacy_restore_api_abandons_active_sessions_and_opens_a_fresh_one(
     tmp_path: Path, isolated_home: Path
 ) -> None:
     repo_path = _repo(tmp_path / "repo")
@@ -93,9 +144,10 @@ def test_restore_archives_duplicate_active_sessions_and_reuses_latest(
     restored = service.restore_or_create_session(repo_path)
     sessions = service.store.list_sessions()
 
-    assert restored.session_id == newer.session_id
-    assert [item.session_id for item in sessions if item.status == "active"] == [newer.session_id]
-    assert service.store.get_session(older.session_id).status == "archived"
+    assert restored.session_id not in {older.session_id, newer.session_id}
+    assert [item.session_id for item in sessions if item.status == "active"] == [restored.session_id]
+    assert service.store.get_session(older.session_id).status == "abandoned"
+    assert service.store.get_session(newer.session_id).status == "abandoned"
 
 
 def test_sessions_and_repository_memory_are_isolated(tmp_path: Path, isolated_home: Path) -> None:
