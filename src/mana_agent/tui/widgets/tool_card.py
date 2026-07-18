@@ -61,9 +61,7 @@ class ToolCard(Vertical):
     ToolCard {
         margin: 0 0 1 0;
         padding: 0;
-        min-height: 3;   /* at least the always-visible header line */
-        /* Dynamic height: allow the card (and Collapsible content) to grow when "details" is opened.
-           The parent ChatLog (VerticalScroll) handles scrolling for tall content. No max-height. */
+        height: auto;
     }
     ToolCard Collapsible {
         border: round $primary;
@@ -83,7 +81,10 @@ class ToolCard(Vertical):
     }
     .tool-result-body {
         padding: 0 1;
-        /* No max-height so expanded details are fully visible and size can change on open */
+        height: auto;
+    }
+    .tool-result-body.-empty {
+        display: none;
     }
     .tool-card-header {
         text-style: bold;
@@ -102,8 +103,8 @@ class ToolCard(Vertical):
         self.call_event = call_event
         self.result_event: ToolResultEvent | None = None
         self._collapsible: Collapsible | None = None
-        self.content_container: Vertical | None = None
         self.header_line: Static | None = None  # always-visible summary line with full key data
+        self.result_body: Static | None = None
 
     def compose(self):
         """Build the collapsible card using proper compose context managers.
@@ -128,10 +129,10 @@ class ToolCard(Vertical):
             call_body = self._build_call_body()
             yield Static(call_body, classes="tool-args")
 
-            # Empty container for future result(s). We will .mount() into it
-            # later (from set_result), after this whole card has been mounted.
-            self.content_container = Vertical(classes="tool-result-body")
-            yield self.content_container
+            # Keep one result widget for the card's lifetime. Replacing a mounted
+            # subtree during live updates can leave Textual with stale measurements.
+            self.result_body = Static("", classes="tool-result-body -empty")
+            yield self.result_body
 
     def _build_call_header(self) -> str:
         name = self.call_event.tool_name or "tool"
@@ -163,8 +164,6 @@ class ToolCard(Vertical):
         self.result_event = result_event
 
         status_icon = "✅" if result_event.success else "❌"
-        color_class = "tool-result-success" if result_event.success else "tool-result-error"
-
         # Build a title that carries the full relevant data even when collapsed.
         # Format: "✅ toolname [call_summary] → [result_summary] (time)"
         call_part = self.call_event.tool_name
@@ -176,31 +175,32 @@ class ToolCard(Vertical):
         if result_event.duration_ms is not None:
             header += f" ({result_event.duration_ms}ms)"
 
-        # Rebuild or append result section
+        if self._collapsible:
+            self._collapsible.title = "details"
+        if self.header_line:
+            self.header_line.update(header)
+        if self.result_body:
+            self.result_body.update(self._build_result_body(result_event))
+            self.result_body.remove_class("-empty")
+            self.result_body.set_class(result_event.success, "tool-result-success")
+            self.result_body.set_class(not result_event.success, "tool-result-error")
+        # Do not force a completed card closed: a user may have expanded it to
+        # inspect live output. The initial state is already collapsed.
+        self._invalidate_layout()
+
+    def on_collapsible_toggled(self, _: Collapsible.Toggled) -> None:
+        """Invalidate this card and its scrollable ancestors after a state change."""
+        self._invalidate_layout()
+
+    def _invalidate_layout(self) -> None:
+        """Request fresh measurement from the card through the chat timeline."""
         try:
-            if self._collapsible:
-                self._collapsible.title = "details"
-                # Collapse after result (clean UI). The *header_line* (outside collapsible)
-                # carries the full call+result summary, so data is visible even collapsed.
-                self._collapsible.collapsed = True
-            if self.header_line:
-                self.header_line.update(header)
+            self.refresh(layout=True)
+            for ancestor in self.ancestors:
+                ancestor.refresh(layout=True)
         except Exception:
+            # A result can arrive before mount; first mount will measure it.
             pass
-
-        result_widget = Static(
-            self._build_result_body(result_event),
-            classes="tool-result-body " + color_class,
-        )
-
-        # Mount the result into the dedicated container.
-        # This is safe because set_result is called from a deferred _render_event
-        # (via call_after_refresh in ChatLog) after the ToolCard has been mounted.
-        if self.content_container:
-            # Remove any previous result children (keep the container itself)
-            for child in list(self.content_container.children):
-                child.remove()
-            self.content_container.mount(result_widget)
 
     def _build_result_body(self, res: ToolResultEvent) -> Text | Syntax | str:
         if not res.success:

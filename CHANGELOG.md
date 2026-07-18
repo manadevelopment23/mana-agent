@@ -4,6 +4,9 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-18
 
+- Fixed Textual chat tool cards to retain a single result widget and explicitly invalidate card and timeline layout after result, expand/collapse, and live-output updates. Collapsed cards now use content-driven height, while expanded cards remeasure their complete output without stale sizing. Documented Shift-drag native terminal text selection while preserving mouse controls.
+  - Verification: Pending targeted TUI tests, full `pytest`, Ruff, and diff checks.
+
 - Fixed transient Windows CI failures while replacing workspace, repository, and chat-session JSON state files.
   - The shared workspace atomic writer now retries Windows sharing violations without changing validation or persistence behavior, and cleans up its collision-safe temporary file on failure.
   - Added regression coverage for `PermissionError(13, "Access is denied")` during an existing session-state replacement.

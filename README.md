@@ -328,6 +328,15 @@ still reuses one automatic repository record and one standalone workspace for
 each canonical repository path. A specific stored conversation can be selected
 explicitly with `mana-agent chat --session <session-id>`.
 
+### Copying TUI text
+
+The Textual terminal UI keeps mouse support enabled for controls, scrolling, and
+tool-card expand/collapse actions. Most terminal emulators reserve normal mouse
+dragging for that mouse-tracking protocol; hold **Shift** while dragging to make
+a native terminal text selection, then use the terminal's usual copy shortcut.
+This works for messages, Markdown, code blocks, logs, errors, and expanded tool
+output. The precise modifier is terminal-dependent.
+
 ### Start a planning and coding session
 
 ```bash
