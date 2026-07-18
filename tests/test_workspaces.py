@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from mana_agent.workspaces.relationships import RelationshipService
 from mana_agent.workspaces.routing import RepositoryScopeDecisionEngine
 from mana_agent.workspaces.search import WorkspaceSearchService
 from mana_agent.workspaces.service import WorkspaceService
+from mana_agent.workspaces.store import atomic_write_json
 
 
 def _git(path: Path, *args: str) -> None:
@@ -34,6 +36,31 @@ def _repo(path: Path, files: dict[str, str] | None = None) -> Path:
     _git(path, "add", ".")
     _git(path, "commit", "-m", "initial")
     return path
+
+
+def test_atomic_workspace_write_retries_transient_windows_access_denial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "session.json"
+    atomic_write_json(target, {"status": "active"})
+    real_replace = os.replace
+    replace_calls = 0
+
+    def transiently_denied(source: str | Path, destination: str | Path) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 1:
+            raise PermissionError(13, "Access is denied")
+        real_replace(source, destination)
+
+    monkeypatch.setattr("mana_agent.workspaces.store.os.replace", transiently_denied)
+
+    atomic_write_json(target, {"status": "closed"})
+
+    assert replace_calls == 2
+    assert json.loads(target.read_text(encoding="utf-8")) == {"status": "closed"}
+    assert not list(tmp_path.glob(".session.json.*.tmp"))
 
 
 @pytest.fixture
