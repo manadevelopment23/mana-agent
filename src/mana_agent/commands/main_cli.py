@@ -101,7 +101,15 @@ def main(
             args = ["--root-dir", str(root)]
             if model:
                 args += ["--model", model]
-            _invoke("chat", args)
+            _invoke_with_multi_agent_route(
+                ctx,
+                "chat",
+                args,
+                root=root,
+                request="root --chat",
+                entrypoint="root",
+                route_in_subcommand=True,
+            )
             return
         if analyze_mode:
             args = ["--repo", str(root)]
@@ -124,4 +132,12 @@ def main(
         args = ["--root-dir", str(root)]
         if model:
             args += ["--model", model]
-        _invoke("chat", args)
+        _invoke_with_multi_agent_route(
+            ctx,
+            "chat",
+            args,
+            root=root,
+            request="open chat",
+            entrypoint="root",
+            route_in_subcommand=True,
+        )

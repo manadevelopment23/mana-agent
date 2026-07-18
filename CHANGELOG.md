@@ -5,8 +5,8 @@ All notable repository changes should be recorded here.
 ## 2026-07-18
 
 - Enforced one fresh persisted session per chat start and one additional fresh session per `/new`.
-  - Root chat startup now lets the chat frontend create its session before the mandatory route decision, avoiding a hidden pre-chat session. The legacy restoration API now abandons prior active sessions and opens a new identity instead of reusing or reopening one.
-  - Verification: `MANA_HOME=<isolated> PYTHONPATH=src venv/bin/python -m pytest -q tests/test_workspaces.py tests/gateway/test_entry_routing.py tests/gateway/test_chat_gateway.py tests/test_main_cli_session_lifecycle.py` passed (41 tests); Python compilation and `git diff --check` passed.
+  - Root chat startup now preserves the CLI dispatch boundary while deferring its mandatory route decision until the chat frontend has created the session, avoiding a hidden pre-chat session. The legacy restoration API now abandons prior active sessions and opens a new identity instead of reusing or reopening one.
+  - Verification: `MANA_HOME=<isolated> PYTHONPATH=src venv/bin/python -m pytest -q tests/test_chat_first_configuration.py tests/test_workspaces.py tests/gateway/test_entry_routing.py tests/gateway/test_chat_gateway.py tests/test_main_cli_session_lifecycle.py` passed (58 tests); the reported `test_root_dispatches_chat_without_mode_menu` regression passed; Python compilation and `git diff --check` passed.
 
 - Repaired implicit workspace and active-session repository references when a legacy repository identity no longer has a persisted record.
   - Valid repository attachments are preserved, missing secondary references are removed from both workspace and session state, and a missing session primary still stops safely instead of being hidden.
