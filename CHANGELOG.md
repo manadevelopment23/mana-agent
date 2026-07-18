@@ -4,15 +4,16 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-18
 
-- Fixed gateway lane-state persistence on Windows CI by using collision-safe temporary files and retrying transient atomic-replace sharing violations.
-  - Added regression coverage for `PermissionError(13, "Access is denied")` during state replacement and temporary-file cleanup.
-  - Verification: Pending targeted and broader checks.
+- Fixed transient Windows CI failures while replacing workspace, repository, and chat-session JSON state files.
+  - The shared workspace atomic writer now retries Windows sharing violations without changing validation or persistence behavior, and cleans up its collision-safe temporary file on failure.
+  - Added regression coverage for `PermissionError(13, "Access is denied")` during an existing session-state replacement.
+  - Verification: `venv/bin/python -m pytest -q tests/test_workspaces.py tests/test_main_cli_session_lifecycle.py tests/test_cli_smoke.py::test_chat_ping_returns_pong_without_faiss_index tests/test_cli_smoke.py::test_chat_renders_dynamic_plan_and_diagram_blocks_in_normal_path` passed (15 tests); Python compilation and `git diff --check` passed.
 
 - Added gateway-owned resource-aware specialist lanes for `coding`, `research`, `review`, `verify`, `release`, and `operations`.
   - Added typed serializable lane contracts, priorities, lock modes, execution states, budgets, handoffs, capability-based tool permissions, duplicate detection, concurrency/provider limits, parent-budget sharing, persistent lock leases, restart recovery, and structured `lane.*`, `lock.*`, and `resource.*` events.
   - `AgentChatGateway.process_turn` now reserves and releases lane resources around the existing entry-route/turn-engine path, preserving task, session, workspace, repository, Codex integration, and frontend identities across execution and handoffs.
   - Added existing-config overrides and architecture/configuration documentation for lane responsibilities, default handoffs, locking, budgets, recovery, and diagnostics.
-  - Verification: Pending final test, lint, type, and compilation checks.
+  - Verification: `MANA_HOME=<isolated> PYTHONPATH=src venv/bin/python -m pytest -q` completed with 1031 passed and 1 skipped before two verification tests failed because bare `python` was absent from the subprocess `PATH`; both failures passed when rerun with `PATH="$PWD/venv/bin:$PATH"`. Post-hardening gateway/lane tests passed (50 tests), the broader focused gateway/workspace/queue/tool set passed (181 tests), Python compilation, CLI help, and `git diff --check` passed. Ruff and a static type checker are not installed in the repository environment.
 
 - Enforced one fresh persisted session per chat start and one additional fresh session per `/new`.
   - Root chat startup now preserves the CLI dispatch boundary while deferring its mandatory route decision until the chat frontend has created the session, avoiding a hidden pre-chat session. The legacy restoration API now abandons prior active sessions and opens a new identity instead of reusing or reopening one.

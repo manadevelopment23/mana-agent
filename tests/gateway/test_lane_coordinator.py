@@ -20,6 +20,7 @@ from mana_agent.gateway.lanes import (
     LockMode,
     LaneId,
     LanePermissionError,
+    LanePriority,
     LaneTaskState,
     configured_lane_contracts,
     default_lane_contracts,
@@ -182,6 +183,61 @@ def test_provider_limit_waits_until_model_capacity_is_released(tmp_path: Path, m
     coordinator.finish(first.execution.task_id)
     worker.join(timeout=2)
     assert result and not worker.is_alive()
+
+
+def test_interactive_waiter_runs_before_background_without_dropping_background(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MANA_HOME", str(tmp_path / "home"))
+    root = tmp_path / "repo"
+    root.mkdir()
+    queued = threading.Condition()
+    queued_ids: set[str] = set()
+
+    def sink(event_type: str, title: str, **kwargs) -> None:
+        _ = title
+        if event_type == "lane.queued" and (kwargs.get("metadata") or {}).get("reason") == "capacity":
+            with queued:
+                queued_ids.add(str((kwargs.get("metadata") or {}).get("task_id")))
+                queued.notify_all()
+
+    coordinator = LaneCoordinator(
+        root,
+        contracts={"research": {"max_concurrent_jobs": 1, "timeout_seconds": 5}},
+        event_sink=sink,
+    )
+    first = _reserve(coordinator, LaneId.RESEARCH, intent="occupy lane")
+    coordinator.start(first)
+    order: list[tuple[str, LaneReservation]] = []
+
+    def worker(name: str, priority: LanePriority) -> None:
+        reservation = coordinator.reserve(
+            normalized_intent=name,
+            lane_id=LaneId.RESEARCH,
+            session_id=name,
+            workspace_id=coordinator.taskboard.store.workspace_id,
+            repository_id=coordinator.taskboard.store.repository_id,
+            priority=priority,
+            requested_input_tokens=10,
+        )
+        coordinator.start(reservation)
+        order.append((name, reservation))
+
+    background = threading.Thread(target=worker, args=("background", LanePriority.BACKGROUND))
+    interactive = threading.Thread(target=worker, args=("interactive", LanePriority.INTERACTIVE))
+    background.start()
+    interactive.start()
+    with queued:
+        assert queued.wait_for(lambda: len(queued_ids) >= 2, timeout=2)
+
+    coordinator.finish(first.execution.task_id)
+    interactive.join(timeout=2)
+    assert order and order[0][0] == "interactive"
+    coordinator.finish(order[0][1].execution.task_id)
+    background.join(timeout=2)
+    assert [name for name, _ in order] == ["interactive", "background"]
+    coordinator.finish(order[1][1].execution.task_id)
 
 
 def test_overlapping_file_mutations_are_serialized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

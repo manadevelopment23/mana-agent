@@ -22,6 +22,7 @@ from mana_agent.gateway.lanes import (
     LaneId,
     LanePriority,
     LaneTaskState,
+    PRIORITY_ORDER,
     configured_lane_contracts,
     select_lane,
     validate_tool_permission,
@@ -67,6 +68,18 @@ def _iso(value: datetime | None = None) -> str:
 def _stable_hash(value: Mapping[str, Any]) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _pid_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -321,6 +334,8 @@ class LaneCoordinator:
         self._condition = threading.Condition(threading.RLock())
         self._executions: dict[str, LaneExecution] = {}
         self._locks: dict[str, LockLease] = {}
+        self._waiters: list[dict[str, Any]] = []
+        self._wait_sequence = 0
         self.lock_manager = GatewayLockManager(self)
         self.state_path = workspace_dir(self.taskboard.store.workspace_id) / "gateway" / "lane_coordinator.json"
         self.locks_path = self.state_path.with_name("lane_locks.json")
@@ -392,28 +407,49 @@ class LaneCoordinator:
             "workspace_id": workspace_id, "session_id": session_id, "target_files": files,
             "lane": lane_id.value, "parent_task_id": parent_task_id,
         })
+        selected_priority = priority or contract.default_priority
         with self._condition:
+            self._wait_sequence += 1
+            waiter = {
+                "waiter_id": f"wait_{uuid.uuid4().hex}",
+                "lane_id": lane_id.value,
+                "priority": selected_priority.value,
+                "sequence": self._wait_sequence,
+                "created_at": _iso(),
+            }
+            self._waiters.append(waiter)
+            waiter_persisted = False
             deadline = time.monotonic() + contract.timeout_seconds
-            while True:
-                for active in self._executions.values():
-                    active_fingerprint = _stable_hash({
-                        "intent": " ".join(active.normalized_intent.lower().split()), "repository_id": active.repository_id,
-                        "workspace_id": active.workspace_id, "session_id": active.session_id,
-                        "target_files": active.target_files, "lane": active.owning_lane.value,
-                        "parent_task_id": active.parent_task_id,
-                    })
-                    if active.state in ACTIVE_LANE_STATES and active_fingerprint == fingerprint:
-                        self.emit("lane.duplicate_detected", task_id=active.task_id, lane_id=lane_id, duplicate_of=active.task_id)
-                        return LaneReservation(active, duplicate=True)
-                try:
-                    self._assert_capacity(contract, model)
-                    break
-                except LaneCapacityError:
+            try:
+                while True:
+                    for active in self._executions.values():
+                        active_fingerprint = _stable_hash({
+                            "intent": " ".join(active.normalized_intent.lower().split()), "repository_id": active.repository_id,
+                            "workspace_id": active.workspace_id, "session_id": active.session_id,
+                            "target_files": active.target_files, "lane": active.owning_lane.value,
+                            "parent_task_id": active.parent_task_id,
+                        })
+                        if active.state in ACTIVE_LANE_STATES and active_fingerprint == fingerprint:
+                            self.emit("lane.duplicate_detected", task_id=active.task_id, lane_id=lane_id, duplicate_of=active.task_id)
+                            return LaneReservation(active, duplicate=True)
+                    capacity_available = True
+                    try:
+                        self._assert_capacity(contract, model)
+                    except LaneCapacityError:
+                        capacity_available = False
+                    if capacity_available and self._next_waiter_id() == waiter["waiter_id"]:
+                        break
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        raise
-                    self.emit("lane.queued", task_id="pending", lane_id=lane_id, reason="capacity")
+                        raise LaneCapacityError(f"lane {lane_id.value} capacity wait timed out")
+                    self.emit("lane.queued", task_id=waiter["waiter_id"], lane_id=lane_id, reason="capacity")
+                    self._persist_locked()
+                    waiter_persisted = True
                     self._condition.wait(timeout=min(remaining, 0.25))
+            finally:
+                self._waiters = [item for item in self._waiters if item["waiter_id"] != waiter["waiter_id"]]
+                if waiter_persisted:
+                    self._persist_locked()
             budget = LaneBudget(
                 reserved_input_tokens=max(0, requested_input_tokens),
                 reserved_output_tokens=max(0, requested_output_tokens),
@@ -451,7 +487,7 @@ class LaneCoordinator:
                 parent_task_id=parent_task_id,
                 owning_lane=lane_id, state=LaneTaskState.QUEUED, normalized_intent=normalized_intent,
                 repository_id=repository_id, workspace_id=workspace_id, session_id=session_id,
-                target_files=files, priority=priority or contract.default_priority, budget=budget,
+                target_files=files, priority=selected_priority, budget=budget,
                 taskboard_task_id=task.task_id, model=model, capabilities=list(capabilities),
                 lane_history=[{"lane_id": lane_id.value, "state": "queued", "at": _iso()}],
             )
@@ -632,17 +668,48 @@ class LaneCoordinator:
 
     def recover(self) -> None:
         self.lock_manager.recover_stale()
+        interrupted_task_ids: list[str] = []
         with self._condition:
+            # Waiters have no live caller after process restart. Active read-only
+            # executions remain available for explicit gateway revalidation;
+            # abandoned queue positions must not block new work.
+            self._waiters = []
             for execution in self._executions.values():
                 if execution.state not in ACTIVE_LANE_STATES:
                     continue
                 heartbeat = datetime.fromisoformat(execution.last_heartbeat)
-                if heartbeat + timedelta(seconds=self.contracts[execution.owning_lane].timeout_seconds + 30) < _now():
-                    execution.state = LaneTaskState.INTERRUPTED
-                    execution.error = "worker heartbeat expired; repository mutations require revalidation"
+                worker_parts = execution.worker_id.split(":")
+                worker_missing = (
+                    len(worker_parts) >= 2
+                    and worker_parts[0] == "gateway"
+                    and worker_parts[1].isdigit()
+                    and not _pid_exists(int(worker_parts[1]))
+                )
+                expired = heartbeat + timedelta(seconds=self.contracts[execution.owning_lane].timeout_seconds + 30) < _now()
+                if worker_missing or expired:
+                    contract = self.contracts[execution.owning_lane]
+                    execution.state = (
+                        LaneTaskState.INTERRUPTED
+                        if contract.requires_write_access
+                        else LaneTaskState.QUEUED
+                    )
+                    execution.worker_id = ""
+                    execution.error = (
+                        "worker interrupted; repository mutations require revalidation"
+                        if contract.requires_write_access
+                        else "read-only work requeued after worker interruption"
+                    )
                     execution.updated_at = _iso()
-                    self.emit("lane.failed", task_id=execution.task_id, lane_id=execution.owning_lane, reason="worker_interrupted")
+                    interrupted_task_ids.append(execution.task_id)
+                    self.emit(
+                        "lane.failed" if contract.requires_write_access else "lane.queued",
+                        task_id=execution.task_id,
+                        lane_id=execution.owning_lane,
+                        reason="worker_interrupted",
+                    )
             self._persist_locked()
+        for task_id in interrupted_task_ids:
+            self.lock_manager.release_task(task_id)
 
     def _recover_stale_locked(self) -> None:
         now = _now()
@@ -659,6 +726,17 @@ class LaneCoordinator:
             raise LaneCapacityError(f"lane {contract.lane_id.value} concurrency limit reached")
         if model and model in self.provider_limits and sum(item.model == model for item in active) >= self.provider_limits[model]:
             raise LaneCapacityError(f"model/provider concurrency limit reached for {model}")
+
+    def _next_waiter_id(self) -> str:
+        now = _now()
+
+        def score(item: dict[str, Any]) -> tuple[int, int]:
+            priority = LanePriority(str(item["priority"]))
+            created = datetime.fromisoformat(str(item["created_at"]))
+            age_promotions = max(0, int((now - created).total_seconds() // 30))
+            return (max(0, PRIORITY_ORDER[priority] - age_promotions), int(item["sequence"]))
+
+        return str(min(self._waiters, key=score)["waiter_id"]) if self._waiters else ""
 
     def _assert_budget(self, contract: LaneContract, session_id: str, requested: LaneBudget) -> None:
         if requested.reserved_tokens > contract.token_budget or requested.estimated_cost > contract.cost_budget:
@@ -696,6 +774,8 @@ class LaneCoordinator:
                 self._executions[execution.task_id] = execution
             except (KeyError, TypeError, ValueError):
                 continue
+        self._waiters = [dict(item) for item in payload.get("waiters", []) if isinstance(item, dict)]
+        self._wait_sequence = max((int(item.get("sequence", 0)) for item in self._waiters), default=0)
         lock_rows = payload.get("locks", [])
         if self.locks_path.exists():
             try:
@@ -714,6 +794,7 @@ class LaneCoordinator:
         payload = {
             "schema_version": 1, "updated_at": _iso(),
             "executions": [asdict(item) for item in self._executions.values()],
+            "waiters": list(self._waiters),
             "locks": [],
         }
         _atomic_write_json(self.state_path, payload)

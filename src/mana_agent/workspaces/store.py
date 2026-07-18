@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -23,7 +24,16 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        # Windows may briefly hold the destination open for indexing or virus
+        # scanning. Retry only that sharing violation; other I/O errors fail.
+        for attempt in range(6):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.01 * (2**attempt))
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
