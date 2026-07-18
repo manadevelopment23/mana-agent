@@ -456,6 +456,7 @@ def process_chat_turn(
     index_dirs: list[str | Path] | None = None,
     event_sink: Callable[..., None] | None = None,
     callbacks: list[Any] | None = None,
+    agent_decision: AgentDecision | None = None,
 ) -> ChatTurnResult:
     """Run one model-driven chat turn (non-UI).
 
@@ -516,21 +517,22 @@ def process_chat_turn(
         session_state["analysis_context"] = analysis_context
 
     _emit("agent.decision", "Decision routing", status="running")
-    try:
-        agent_decision = decide_chat_route(
-            ask_service=ask_service,
-            question=question,
-            root=root,
-            memory_context="\n\n".join(
-                part for part in (flow_routing_context, _conversation_prompt(session_state, question)) if part
-            ),
-        )
-    except Exception as exc:
-        logger.exception("gateway process_turn decision failed")
-        return ChatTurnResult(
-            answer="",
-            error=f"Model decision failed: {exc}. No fallback action was executed.",
-        )
+    if agent_decision is None:
+        try:
+            agent_decision = decide_chat_route(
+                ask_service=ask_service,
+                question=question,
+                root=root,
+                memory_context="\n\n".join(
+                    part for part in (flow_routing_context, _conversation_prompt(session_state, question)) if part
+                ),
+            )
+        except Exception as exc:
+            logger.exception("gateway process_turn decision failed")
+            return ChatTurnResult(
+                answer="",
+                error=f"Model decision failed: {exc}. No fallback action was executed.",
+            )
 
     if (
         active_flow_id

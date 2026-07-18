@@ -1203,7 +1203,14 @@ class ManaChatApp(App):
             )
 
     def action_quit(self) -> None:
+        if self.gateway is not None and hasattr(self.gateway, "close_session"):
+            self.gateway.close_session(self._gateway_session_id)
         self.exit()
+
+    def on_unmount(self) -> None:
+        """Use the same idempotent finalization path for all TUI shutdowns."""
+        if self.gateway is not None and hasattr(self.gateway, "close_session"):
+            self.gateway.close_session(self._gateway_session_id)
 
     def watch_status_text(self, value: str) -> None:
         self.refresh_footer()

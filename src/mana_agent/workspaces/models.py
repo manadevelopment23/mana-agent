@@ -103,15 +103,18 @@ class WorkspaceRecord(BaseModel):
 
 
 class SessionRecord(BaseModel):
-    schema_version: int = 1
+    schema_version: int = 2
     session_id: str = Field(default_factory=lambda: _id("session"))
     workspace_id: str
     primary_repository_id: str
     attached_repository_ids: list[str] = Field(default_factory=list)
     cwd: str
-    status: Literal["active", "archived"] = "active"
+    status: Literal["active", "closed", "abandoned", "archived"] = "active"
     active_flow_id: str | None = None
     created_at: str = Field(default_factory=utc_iso)
+    opened_at: str = Field(default_factory=utc_iso)
+    closed_at: str | None = None
+    owner_pid: int | None = None
     updated_at: str = Field(default_factory=utc_iso)
 
     @model_validator(mode="after")

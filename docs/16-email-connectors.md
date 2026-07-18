@@ -20,6 +20,8 @@ The local OAuth callback opens a browser. Tokens and the OAuth client secret are
 
 Use `mana-agent connector email list`, `status ACCOUNT`, `permissions ACCOUNT`, and `remove ACCOUNT` to manage accounts. To replace an existing OAuth token without creating a duplicate account, run `mana-agent connector email reconnect ACCOUNT --client-secret-file ~/Downloads/google-client.json --permissions email.read`.
 
+Chat requests are evaluated by the gateway entry router before any conversational response is generated. A mailbox request such as “Check my latest Gmail” selects the registered `gmail` route. The route checks live account metadata, read permission, and keyring credential availability; only a genuine missing or unauthorized configuration produces setup/reconnect guidance. Configured requests execute through the email-only tool surface rather than ordinary conversation.
+
 ## Safety model
 
 All email content is untrusted external data. Sanitized HTML excludes scripts, forms, frames, event handlers, unsafe URLs, and remote images. Attachment names are normalized to prevent traversal. Email content cannot authorize sending, modifying a mailbox, exposing credentials, or running unrelated tools.

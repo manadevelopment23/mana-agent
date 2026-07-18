@@ -9,6 +9,15 @@ See chat_gateway.py for the main implementation.
 
 from .chat_gateway import AgentChatGateway, RichChatContext
 from .config import ChatGatewayConfig
+from .entry_routing import (
+    EntryRouteContext,
+    EntryRouteRegistry,
+    EntryRouter,
+    EntryRoutingDecision,
+    EntryRoutingError,
+    RouteAvailability,
+    RouteRegistration,
+)
 from .stack import ChatStack, build_chat_stack
 from .turn_engine import (
     ChatTurnResult,
@@ -21,6 +30,13 @@ __all__ = [
     "AgentChatGateway",
     "RichChatContext",
     "ChatGatewayConfig",
+    "EntryRouteContext",
+    "EntryRouteRegistry",
+    "EntryRouter",
+    "EntryRoutingDecision",
+    "EntryRoutingError",
+    "RouteAvailability",
+    "RouteRegistration",
     "ChatStack",
     "build_chat_stack",
     "ChatTurnResult",

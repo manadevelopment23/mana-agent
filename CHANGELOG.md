@@ -2,6 +2,18 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-18
+
+- Added one gateway-owned typed entry router that runs before every conversational response and selects `conversation`, `coding`, `gmail`, `calendar`, `search`, `repository`, `automation`, or `unsupported` from a dynamic route registry.
+  - Gmail routing now checks enabled account configuration, `email.read` permission, and keyring credential availability before execution; configured requests run through an email-only tool policy, while genuine setup/authorization failures retain actionable provider details.
+  - Invalid routing-model output stops safely as an unsupported route and never falls through to ordinary conversation or a false integration-unavailable response.
+  - Route execution preserves `session_id`, `conversation_id`, and `turn_id`; follow-ups receive the previous route and chronological conversation context.
+- Replaced chat-start session restoration with an explicit one-session-per-open-chat lifecycle, superseding the 2026-07-17 restoration behavior.
+  - Session records now include `active`, `closed`, and `abandoned` states, opening/closing timestamps, and process ownership; legacy `archived` records remain readable.
+  - CLI exit, TUI quit/unmount, dashboard shutdown, and `/new` share an idempotent gateway finalizer. `/new` closes the previous session and opens a new one, while persisted message history remains available.
+  - Removed gateway-initialization task recording that silently created an additional workspace session; connector/model/coding calls now reuse the frontend-opened identity, and dead-process sessions are finalized as abandoned.
+  - Verification: `MANA_HOME=/tmp/mana-agent-entry-routing-full-20260718 .venv/bin/python -m pytest -q` passed (1009 passed, 1 skipped); focused entry-routing, gateway, and workspace tests passed (37 tests); CLI, TUI, dashboard, and smoke regression tests passed (77 tests).
+
 ## 2026-07-17
 
 - Made automatic repository, workspace, and chat-session ownership idempotent across process restarts.

@@ -115,6 +115,8 @@ flowchart LR
 
 The model chooses capabilities from tool metadata and active policy. Fixed chat keywords should not silently replace model routing for repository, connector, search, or mutation work.
 
+Every chat turn first passes through the gateway's typed entry router. It selects a registered conversation, coding, connector, search, repository, or automation path from live runtime availability before any response is generated. One session is opened per chat, reused for all turns, and explicitly finalized on exit or `/new`; see [entry routing and chat sessions](docs/20-entry-routing-and-chat-sessions.md).
+
 ---
 
 ## Requirements
@@ -949,6 +951,7 @@ Optional packages are lazy-loaded. Install only the extras required by the activ
 | [`docs/03-quick-start.md`](docs/03-quick-start.md) | First commands and workflows. |
 | [`docs/04-commands.md`](docs/04-commands.md) | CLI command reference. |
 | [`docs/19-experience-to-skill-workshop.md`](docs/19-experience-to-skill-workshop.md) | Verified experience, proposal review, installation, and quarantine. |
+| [`docs/20-entry-routing-and-chat-sessions.md`](docs/20-entry-routing-and-chat-sessions.md) | Typed entry routing, connector availability, and chat-session lifecycle. |
 | [`docs/05-configuration.md`](docs/05-configuration.md) | Provider, model, search, and runtime settings. |
 | [`docs/06-workflows.md`](docs/06-workflows.md) | Common analysis and coding workflows. |
 | [`docs/07-diagram.md`](docs/07-diagram.md) | Standalone Mermaid architecture diagram. |
