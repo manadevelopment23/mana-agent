@@ -405,8 +405,69 @@ class WorkspaceService:
             primary_repository_id=repo.repository_id,
             attached_repository_ids=list(workspace.repository_ids),
             cwd=repo.canonical_path,
+            owner_pid=os.getpid(),
         )
         return self.store.save_session(record)
+
+    def open_chat_session(
+        self,
+        cwd: str | Path,
+        *,
+        workspace_id: str | None = None,
+    ) -> SessionRecord:
+        """Finalize prior active chats for this repository and open one new chat."""
+        repo = self.register_repository(cwd)
+        workspace = (
+            self.store.get_workspace(workspace_id)
+            if workspace_id
+            else self.workspace_for_repository(repo.repository_id)
+        )
+        now = _now()
+        for session in self.store.list_sessions():
+            if (
+                session.status == "active"
+                and session.workspace_id == workspace.workspace_id
+                and session.primary_repository_id == repo.repository_id
+            ):
+                session.status = "abandoned"
+                session.closed_at = now
+                session.updated_at = now
+                self.store.save_session(session)
+        return self.create_session(repo.canonical_path, workspace_id=workspace.workspace_id)
+
+    def close_session(self, session_id: str, *, status: str = "closed") -> SessionRecord:
+        """Idempotently finalize one chat session without deleting its history."""
+        if status not in {"closed", "abandoned"}:
+            raise ValueError("session close status must be closed or abandoned")
+        record = self.store.get_session(session_id)
+        if record.status in {"closed", "abandoned", "archived"}:
+            return record
+        now = _now()
+        record.status = status  # type: ignore[assignment]
+        record.closed_at = now
+        record.updated_at = now
+        return self.store.save_session(record)
+
+    def finalize_stale_sessions(self, cwd: str | Path) -> list[SessionRecord]:
+        """Mark active sessions owned by dead processes as abandoned."""
+        repo = self.register_repository(cwd)
+        finalized: list[SessionRecord] = []
+        for session in self.store.list_sessions():
+            if session.status != "active" or session.primary_repository_id != repo.repository_id:
+                continue
+            owner_pid = session.owner_pid
+            alive = False
+            if owner_pid and owner_pid > 0:
+                try:
+                    os.kill(owner_pid, 0)
+                except OSError:
+                    alive = False
+                else:
+                    alive = True
+            if alive:
+                continue
+            finalized.append(self.close_session(session.session_id, status="abandoned"))
+        return finalized
 
     def context_for_session(self, session_id: str) -> WorkspaceContext:
         session = self.store.get_session(session_id)
@@ -417,6 +478,7 @@ class WorkspaceService:
     def archive_session(self, session_id: str) -> SessionRecord:
         record = self.store.get_session(session_id)
         record.status = "archived"
+        record.closed_at = record.closed_at or _now()
         record.updated_at = _now()
         return self.store.save_session(record)
 

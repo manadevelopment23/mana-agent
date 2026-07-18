@@ -11,6 +11,7 @@ These verify:
 from __future__ import annotations
 
 from pathlib import Path
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -29,6 +30,30 @@ from mana_agent.services.chat_session_history import ChatSessionHistory
 class _DummyAskService:
     """Minimal stand-in so gateway construction tests do not require OPENAI_API_KEY."""
 
+    class _EntryModel:
+        def invoke(self, messages):
+            payload = json.loads(messages[-1].content)
+            prompt = str(payload.get("user_prompt") or "").lower()
+            if "gmail" in prompt:
+                route = "gmail"
+            elif any(word in prompt for word in ("update", "change", "edit")):
+                route = "coding"
+            elif any(word in prompt for word in ("project", "read the value")):
+                route = "repository"
+            else:
+                route = "conversation"
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "route": route,
+                        "confidence": 0.95,
+                        "reason": "test route",
+                        "reuse_active_route": False,
+                    }
+                )
+            )
+
+    entry_router = SimpleNamespace(llm=_EntryModel())
     ask_agent = SimpleNamespace(llm=None, update_model=lambda m: None, model="dummy")
     qna_chain = SimpleNamespace(
         llm=None,
@@ -391,15 +416,10 @@ def test_gateway_process_turn_coding_path(tmp_path: Path, monkeypatch) -> None:
     assert result.flow_id in {"flow-auto", "flow-test", None} or result.flow_id
 
 
-def test_gateway_gmail_uses_auto_chat_not_coding_agent(tmp_path: Path, monkeypatch) -> None:
-    """'check my latest gmail' must route to ChatService.ask (auto-chat), not CodingAgent."""
-    ask_calls: list[str] = []
+def test_gateway_gmail_uses_dedicated_connector_not_coding_or_conversation(tmp_path: Path, monkeypatch) -> None:
+    """A Gmail turn executes the email-only route before any conversation response."""
+    gmail_calls: list[dict[str, Any]] = []
     coding_calls: list[str] = []
-
-    class _AskTrackingService(_DummyAskService):
-        def ask(self, *args, **kwargs):
-            ask_calls.append(str(args[0] if args else kwargs.get("question", "")))
-            return type("Resp", (), {"answer": "Here are your latest Gmail messages (dummy).", "sources": [], "warnings": [], "mode": "agent-tools"})()
 
     class _CodingTracker(_DummyCodingAgent):
         def generate(self, request, **kwargs):
@@ -412,7 +432,7 @@ def test_gateway_gmail_uses_auto_chat_not_coding_agent(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(
         "mana_agent.commands.cli_internal.build_ask_service",
-        lambda *a, **k: _AskTrackingService(),
+        lambda *a, **k: _DummyAskService(),
     )
     monkeypatch.setattr("mana_agent.gateway.stack.CodingAgent", _CodingTracker)
     monkeypatch.setattr(
@@ -432,96 +452,47 @@ def test_gateway_gmail_uses_auto_chat_not_coding_agent(tmp_path: Path, monkeypat
         lambda **kw: SimpleNamespace(),
     )
 
-    # Model decision: answer intent with email tools (as Gmail check would produce)
-    fixed = AgentDecision(
-        intent="answer",
-        code_editing_needed=False,
-        selected_tools=["email_search", "email_read"],
-        tool_inputs={"email_search": {"query": "latest"}},
-        flow_action="none",
-        reasoning_summary="User wants latest Gmail; use email connector tools.",
-        confidence=0.92,
-        verifier_passed=True,
-    )
-    monkeypatch.setattr(
-        "mana_agent.gateway.turn_engine.decide_chat_route",
-        lambda **kw: fixed,
-    )
-    monkeypatch.setattr(
-        "mana_agent.gateway.turn_engine.handle_small_direct_edit",
-        lambda root, q: SimpleNamespace(handled=False),
-    )
-    monkeypatch.setattr(
-        "mana_agent.gateway.turn_engine.load_auto_chat_state",
-        lambda root: SimpleNamespace(
-            last_mode="answer_only", last_task="", relevant_files=[], changed_files=[], verification="", summary=""
-        ),
-    )
-    monkeypatch.setattr("mana_agent.gateway.turn_engine.save_auto_chat_state", lambda root, state: None)
-    monkeypatch.setattr("mana_agent.gateway.turn_engine.resolve_auto_followup", lambda q, state: q)
-    monkeypatch.setattr(
-        "mana_agent.gateway.turn_engine.classify_auto_chat_intent",
-        lambda q: __import__(
-            "mana_agent.multi_agent.runtime.auto_chat", fromlist=["AutoChatMode"]
-        ).AutoChatMode.ANSWER_ONLY,
-    )
+    from mana_agent.gateway import RouteAvailability, RouteRegistration
 
-    # Wire ChatService.ask to track via gateway's chat_service after construction
+    monkeypatch.setattr(
+        "mana_agent.gateway.chat_gateway.gmail_route_availability",
+        lambda: RouteAvailability(available=True),
+    )
     gw = AgentChatGateway(tmp_path, coding_agent=True, agent_tools=True)
     assert gw.owns_coding_stack()
+    gw._entry_route_registry.register(
+        RouteRegistration("gmail", "Gmail", lambda: RouteAvailability(available=True))
+    )
 
-    # Patch chat service ask on the live instance
-    original_cs = gw._chat_service
+    def _gmail_run(**kwargs: Any):
+        gmail_calls.append(kwargs)
+        return SimpleNamespace(
+            answer="Here are your latest Gmail messages (dummy).",
+            sources=[],
+            warnings=[],
+            trace=[
+                {"tool_name": "email_search", "status": "ok", "output_preview": "1 message"},
+                {"tool_name": "email_read", "status": "ok", "output_preview": "Subject: Hello"},
+            ],
+        )
 
-    def _tracking_ask(question, **kwargs):
-        ask_calls.append(str(question))
-        # Capture callbacks so TUI live tool emission can be verified.
-        ask_calls.append({"callbacks": kwargs.get("callbacks")})
-        return type(
-            "Resp",
-            (),
-            {
-                "answer": "Here are your latest Gmail messages (dummy).",
-                "sources": [],
-                "warnings": [],
-                "mode": "agent-tools",
-                "trace": [
-                    {
-                        "tool_name": "email_search",
-                        "args_summary": '{"query":"latest"}',
-                        "duration_ms": 12.0,
-                        "status": "ok",
-                        "output_preview": "1 message",
-                    },
-                    {
-                        "tool_name": "email_read",
-                        "args_summary": '{"message_ref":"x"}',
-                        "duration_ms": 8.0,
-                        "status": "ok",
-                        "output_preview": "Subject: Hello",
-                    },
-                ],
-            },
-        )()
-
-    original_cs.ask = _tracking_ask  # type: ignore[method-assign]
+    gw.get_ask_service().ask_agent = SimpleNamespace(run=_gmail_run)
 
     sid = gw.create_session(frontend="tui")
-    result = gw.process_turn(sid, "check my latest gmail", callbacks=[object()])
+    result = gw.process_turn(sid, "Check my latest Gmail", callbacks=[object()])
     assert result.error is None
     assert result.used_coding_agent is False
-    assert result.auto_chat_mode == "answer_only"
+    assert result.mode == "route-gmail"
     assert "gmail" in result.answer.lower() or "Gmail" in result.answer
-    assert any(isinstance(item, str) and "gmail" in item.lower() for item in ask_calls), (
-        "expected ChatService.ask (auto-chat path) to be used for Gmail"
-    )
+    assert gmail_calls
+    assert gmail_calls[0]["flow_id"] == sid
+    assert gmail_calls[0]["run_id"] == result.payload["turn_id"]
     assert not coding_calls, "CodingAgent must not run for Gmail auto-chat turns"
-    assert (result.payload or {}).get("route") == "auto_chat"
+    assert (result.payload or {}).get("route") == "gmail"
     # Tool traces must reach TUI consumers for ToolCard rendering.
     trace_names = [row.get("tool_name") for row in (result.trace or []) if isinstance(row, dict)]
     assert "email_search" in trace_names
     assert "email_read" in trace_names
-    assert (result.payload or {}).get("trace")
 
 
 def test_should_use_coding_agent_turn_gmail_is_false() -> None:
@@ -567,32 +538,16 @@ def test_gateway_decision_failure_no_fallback(tmp_path: Path, monkeypatch) -> No
         lambda *a, **k: _DummyAskService(),
     )
 
-    def _boom(**kw):
-        raise RuntimeError("decision unavailable")
-
-    monkeypatch.setattr("mana_agent.gateway.turn_engine.decide_chat_route", _boom)
-    monkeypatch.setattr(
-        "mana_agent.gateway.turn_engine.load_auto_chat_state",
-        lambda root: SimpleNamespace(
-            last_mode="answer_only",
-            last_task="",
-            relevant_files=[],
-            changed_files=[],
-            verification="",
-            summary="",
-        ),
-    )
-    monkeypatch.setattr(
-        "mana_agent.gateway.turn_engine.resolve_auto_followup",
-        lambda q, state: q,
-    )
-
     gw = AgentChatGateway(tmp_path, coding_agent=False, agent_tools=True)
+    gw._entry_router.llm = SimpleNamespace(
+        invoke=lambda messages: SimpleNamespace(content='{"route":"invented"}')
+    )
     sid = gw.create_session(frontend="test")
     result = gw.process_turn(sid, "do something")
     assert result.error is not None
-    assert "No fallback" in result.error or "decision" in result.error.lower()
-    assert result.answer == ""
+    assert "decision" in result.error.lower()
+    assert "integration" not in result.answer.lower()
+    assert result.payload["route"] == "unsupported"
 
 
 def _answer_decision(*, selected_tools: list[str] | None = None) -> AgentDecision:
@@ -783,13 +738,13 @@ def test_gateway_does_not_create_sessions_per_message(tmp_path: Path, monkeypatc
     for message in ("one", "two", "three"):
         gateway.process_turn(session_id, message)
 
-    # Gateway construction/MainAgent startup already restored or created the one
-    # active session. Opening it and sending turns must not create another.
-    assert create_calls == 0
+    # Opening the chat creates exactly one session. Turns and model/tool calls
+    # must not create additional sessions.
+    assert create_calls == 1
     assert {row["session_id"] for row in gateway.session_messages(session_id)} == {session_id}
 
 
-def test_gateway_startup_restores_session_and_only_new_creates_another(
+def test_gateway_startup_creates_fresh_session_and_new_creates_another(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(
@@ -800,19 +755,20 @@ def test_gateway_startup_restores_session_and_only_new_creates_another(
     first_session = first_gateway.create_session(frontend="cli")
 
     second_gateway = AgentChatGateway(tmp_path, coding_agent=False, agent_tools=False)
-    restored_session = second_gateway.create_session(frontend="cli")
-    new_session = second_gateway.start_new_conversation(restored_session, frontend="cli")
+    second_session = second_gateway.create_session(frontend="cli")
+    new_session = second_gateway.start_new_conversation(second_session, frontend="cli")
 
-    assert restored_session == first_session
-    assert new_session != restored_session
+    assert second_session != first_session
+    assert new_session != second_session
     repository_id = second_gateway._workspaces.register_repository(tmp_path).repository_id
     sessions = [
         item
         for item in second_gateway._workspaces.store.list_sessions()
         if item.primary_repository_id == repository_id
     ]
-    assert len(sessions) == 2
-    assert second_gateway._workspaces.store.get_session(restored_session).status == "archived"
+    assert len(sessions) == 3
+    assert second_gateway._workspaces.store.get_session(first_session).status == "abandoned"
+    assert second_gateway._workspaces.store.get_session(second_session).status == "closed"
     assert second_gateway._workspaces.store.get_session(new_session).status == "active"
 
 

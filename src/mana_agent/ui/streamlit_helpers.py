@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os  # used for MANA_DASHBOARD_ROOT env and safe paths
 import uuid
+import atexit
 from pathlib import Path
 from typing import Any
 from mana_agent.workspaces.paths import (
@@ -53,6 +54,7 @@ __all__ = [
     "append_automation_run",
     "trigger_automation",
     "run_dashboard_chat",
+    "close_dashboard_chat_session",
     "list_schedules",
     "create_schedule",
     "schedule_status",
@@ -63,6 +65,30 @@ __all__ = [
 
 
 DEFAULT_ROOT = Path.cwd().resolve()
+_DASHBOARD_GATEWAYS: dict[tuple[str, str], Any] = {}
+
+
+def _dashboard_gateway_cache() -> dict[tuple[str, str], Any]:
+    return _DASHBOARD_GATEWAYS
+
+
+def close_dashboard_chat_session(conversation_id: str, root: Path | None = None) -> None:
+    """Finalize and evict one cached dashboard gateway session."""
+    resolved = find_mana_root(root)
+    key = (str(resolved.resolve()), str(conversation_id or "dashboard-default"))
+    gateway = _DASHBOARD_GATEWAYS.pop(key, None)
+    if gateway is not None and hasattr(gateway, "close_session"):
+        gateway.close_session()
+
+
+def _close_all_dashboard_chat_sessions() -> None:
+    for gateway in list(_DASHBOARD_GATEWAYS.values()):
+        if hasattr(gateway, "close_session"):
+            gateway.close_session()
+    _DASHBOARD_GATEWAYS.clear()
+
+
+atexit.register(_close_all_dashboard_chat_sessions)
 
 
 def find_mana_root(start: Path | None = None) -> Path:
@@ -492,7 +518,11 @@ def run_dashboard_chat(
         gw = None
         ask_service = None
         try:
-            gw = AgentChatGateway(root, coding_agent=True, agent_tools=True)
+            cache_key = (str(root.resolve()), str(conversation_id or "dashboard-default"))
+            gw = _dashboard_gateway_cache().get(cache_key)
+            if gw is None:
+                gw = AgentChatGateway(root, coding_agent=True, agent_tools=True)
+                _dashboard_gateway_cache()[cache_key] = gw
             ask_service = getattr(gw, "get_ask_service", lambda: None)()
         except Exception:
             ask_service = None

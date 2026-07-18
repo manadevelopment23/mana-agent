@@ -803,7 +803,8 @@ def chat(
             )
         gateway_session_id = restored_context.session.session_id
     else:
-        gateway_session_id = workspace_service.restore_or_create_session(root).session_id
+        workspace_service.finalize_stale_sessions(root)
+        gateway_session_id = workspace_service.open_chat_session(root).session_id
     _record_multi_agent_request(
         root,
         "chat command",
@@ -821,6 +822,7 @@ def chat(
             console.print(f"[bold cyan]mana ❯[/bold cyan] {prompt}")
             _render_answer_header(console)
             console.print(Markdown(direct_edit_result.answer))
+            workspace_service.close_session(gateway_session_id)
             return
 
     logger.debug("Resolved chat root", extra={"root": str(root)})
@@ -3710,6 +3712,7 @@ def chat(
                 continue
     finally:
         set_active_chat_ui_state(None)
+        gateway.close_session(chat_ui_state.session_id)
         if tool_worker_client is not None:
             stop = getattr(tool_worker_client, "stop", None)
             if callable(stop):
