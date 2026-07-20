@@ -4,6 +4,10 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-20
 
+- Added the deterministic `mana-agent doctor` command with a typed check registry, isolated check modules, stable check IDs, grouped terminal output, redacted JSON output, targeted `--only`/`--skip`, and stable 0/1/2 exit codes.
+  - The initial fast offline checks cover Python/package and executable availability, Git, managed configuration parsing/schema/permissions, Mana state-path availability, and configured Codex binary resolution. Safe state-directory and owner-only configuration-permission repairs are opt-in, backed up where files change, and rechecked after repair.
+  - Verification: `PYTHONPATH=src venv/bin/python -m pytest -q tests/test_doctor.py` passed; CLI help and redacted JSON output were checked with the repository virtual environment.
+
 - Fixed one-character-per-line wrapping in TUI chat-history messages.
   - Dynamically mounted selectable message `TextArea` widgets now re-wrap when rendering first observes a valid card content width, preserving normal wrapping through history replay, live appends, and terminal resizes without changing input layout or scrolling/selection behavior.
   - Added regression coverage for user and assistant cards, borders/padding box sizing, narrow/wide resize, Persian/Unicode/emoji text, Markdown, and code blocks.
