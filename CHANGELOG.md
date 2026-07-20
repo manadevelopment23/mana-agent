@@ -4,6 +4,10 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-20
 
+- Fixed Textual chat-message wrapping to measure read-only message cards against their full available content width instead of reserving an invisible editing-cursor cell.
+  - Existing and newly mounted messages now reflow correctly for terminal resizes and surrounding-panel width changes without stale per-widget wrap widths.
+  - Verification: `PYTHONPATH=src venv/bin/python -m pytest -q tests/test_tui_message_layout.py tests/test_tui_tool_card_layout.py tests/test_tui_multiline_input.py tests/test_tui_live_tools_scroll.py tests/test_tui_auto_chat_tool_events.py` passed (19 tests); `PYTHONPATH=src venv/bin/python -m pytest -q tests/test_tui*.py` passed (34 tests); Python compilation and `git diff --check` passed. Ruff and mypy are not installed in the repository environment.
+
 - Added strict shared-gateway source routing for repository, browser, web search, Gmail, calendar, GitHub, memory, internal knowledge, and tool-free turns.
   - The typed routing decision now carries mandatory sources, live-data requirements, target URLs, reason/error codes, and a capability manifest. Browser, search, and repository evidence plans execute only the model-selected sources; a required-source failure aborts the turn with its exact source error and recorded execution status.
   - Browser availability is now based on the live Playwright/Chromium runtime status as well as its enablement setting, so an available browser is represented accurately in the routing manifest.
