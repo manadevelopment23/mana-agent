@@ -175,7 +175,7 @@ def test_missing_faiss_index_does_not_automatically_project_search(tmp_path: Pat
     assert "fallback" not in response.answer.lower()
 
 
-def test_missing_faiss_index_can_re_route_once_to_repo_search(tmp_path: Path) -> None:
+def test_missing_faiss_index_does_not_re_route_to_repo_search(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     router = _StaticRouter(
         RouteDecision(kind="semantic_qa", confidence=0.9, reason="model selected index"),
@@ -191,11 +191,11 @@ def test_missing_faiss_index_can_re_route_once_to_repo_search(tmp_path: Path) ->
 
     response = service.ask(index_dir=project / ".mana" / "index", question="add", k=5)
 
-    assert response.sources
-    assert any("mod.py" in src.file_path for src in response.sources)
-    assert qna.last_context is not None and "mod.py" in qna.last_context
-    assert response.route_trace["route_kind"] == "repo_search"
-    assert response.route_trace["validation"].startswith("re-routed")
+    assert response.sources == []
+    assert qna.last_context is None
+    assert response.route_trace["route_kind"] == "semantic_qa"
+    assert response.route_trace["validation"] == "semantic index unavailable"
+    assert len(router.calls) == 1
 
 
 def test_command_inventory_routes_through_tool_execution(tmp_path: Path) -> None:
@@ -271,7 +271,7 @@ def test_router_can_select_gitops_for_commit_push_request() -> None:
     assert decision.requires_repo_context is True
 
 
-def test_unknown_command_re_routes_to_clarification(tmp_path: Path) -> None:
+def test_unknown_command_stops_without_re_routing_to_clarification(tmp_path: Path) -> None:
     router = _StaticRouter(
         RouteDecision(kind="command", confidence=0.8, reason="model selected command", command_name="missing"),
         RouteDecision(
@@ -285,9 +285,9 @@ def test_unknown_command_re_routes_to_clarification(tmp_path: Path) -> None:
 
     response = service.ask(index_dir=tmp_path / ".mana" / "index", question="run missing", k=3)
 
-    assert "could not find that command" in response.answer
-    assert response.route_trace["route_kind"] == "clarification"
-    assert len(router.calls) == 2
+    assert response.answer == "Selected route cannot run: unknown command: missing."
+    assert response.route_trace["route_kind"] == "command"
+    assert len(router.calls) == 1
 
 
 def test_agent_failure_does_not_run_classic_route(tmp_path: Path) -> None:

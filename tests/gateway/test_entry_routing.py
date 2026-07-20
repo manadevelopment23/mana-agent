@@ -12,6 +12,7 @@ from mana_agent.gateway import (
     RouteAvailability,
     RouteRegistration,
 )
+from mana_agent.gateway.entry_routing import EntryRoutingDecision, EntryRoutingError
 from mana_agent.gateway.entry_routing import gmail_route_availability
 from mana_agent.workspaces.service import WorkspaceService
 
@@ -24,12 +25,24 @@ class _RouteModel:
     def invoke(self, messages: list[Any]) -> Any:
         self.payloads.append(json.loads(messages[-1].content))
         route = self.routes.pop(0) if self.routes else "conversation"
+        source_by_route = {
+            "conversation": ["none"], "unsupported": ["none"], "coding": ["repository"],
+            "gmail": ["gmail"], "calendar": ["calendar"], "browser": ["browser"],
+            "search": ["search"], "github": ["github"], "repository": ["repository"],
+            "memory": ["memory"], "automation": ["repository"],
+            "capability_error": ["gmail"],
+        }
         return SimpleNamespace(
             content=json.dumps(
                 {
                     "route": route,
                     "confidence": 0.98,
                     "reason": f"selected {route}",
+                    "required_sources": source_by_route.get(route, ["none"]),
+                    "target_urls": ["https://example.com"] if route == "browser" else [],
+                    "requires_live_data": route in {"browser", "search", "github"},
+                    "reason_code": "TEST_ROUTE",
+                    "error_code": "GMAIL_NOT_AVAILABLE" if route == "capability_error" else "",
                     "reuse_active_route": len(self.payloads) > 1,
                 }
             )
@@ -103,10 +116,14 @@ def _registry(gmail: RouteAvailability | None = None) -> EntryRouteRegistry:
         ("coding", "Codex coding"),
         ("gmail", "Gmail inbox"),
         ("calendar", "calendar"),
+        ("browser", "browser inspection"),
         ("search", "public search"),
+        ("github", "GitHub inspection"),
         ("repository", "repository inspection"),
+        ("memory", "memory retrieval"),
         ("automation", "automation"),
         ("unsupported", "safe stop"),
+        ("capability_error", "missing capability"),
     ):
         availability = gmail if name == "gmail" and gmail is not None else RouteAvailability(True)
         registry.register(
@@ -167,11 +184,11 @@ def test_missing_gmail_configuration_returns_truthful_setup_error(tmp_path: Path
         reason="No enabled Gmail account is configured.",
         setup_action="Run `mana-agent connector email add --provider gmail ...`.",
     )
-    gateway, chat, ask_agent = _gateway(tmp_path, _RouteModel("gmail"), gmail=unavailable)
+    gateway, chat, ask_agent = _gateway(tmp_path, _RouteModel("capability_error"), gmail=unavailable)
     result = gateway.process_turn(gateway.create_session(frontend="test"), "Check Gmail")
 
-    assert result.mode == "route-gmail-unavailable"
-    assert "connector email add" in result.answer
+    assert result.mode == "route-capability-error"
+    assert "gmail" in result.answer.lower()
     assert not chat.conversation_calls
     assert not ask_agent.calls
 
@@ -276,6 +293,82 @@ def test_invalid_entry_decision_stops_without_connector_refusal(tmp_path: Path, 
     assert "integration" not in result.answer.lower()
     assert not chat.conversation_calls
     assert not ask_agent.calls
+
+
+def test_direct_url_is_a_browser_signal_and_executes_only_browser(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MANA_HOME", str(tmp_path / "home"))
+    model = _RouteModel("browser")
+    gateway, chat, ask_agent = _gateway(tmp_path, model)
+    result = gateway.process_turn(gateway.create_session(frontend="test"), "Review https://example.com/about")
+
+    assert result.mode == "route-browser"
+    assert model.payloads[0]["direct_url_signals"] == ["https://example.com/about"]
+    assert "browser_open" in ask_agent.calls[0]["tool_policy"]["allowed_tools"]
+    assert ask_agent.calls[0]["tool_policy"]["disable_external_search"] is True
+    assert not chat.conversation_calls
+
+
+def test_browser_capability_manifest_uses_live_runtime_status(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("mana_agent.config.user_config.get_setting", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        "mana_agent.connectors.browser.session.BrowserSessionManager.status",
+        lambda: {"ok": True, "package_installed": True, "chromium_installed": True},
+    )
+    gateway, _, _ = _gateway(tmp_path, _RouteModel("conversation"))
+
+    availability = gateway._browser_route_availability()
+
+    assert availability.available is True
+    assert availability.details["chromium_installed"] is True
+
+
+def test_router_rejects_missing_required_sources_instead_of_guessing(tmp_path: Path) -> None:
+    registry = _registry()
+    model = SimpleNamespace(
+        invoke=lambda _messages: SimpleNamespace(
+            content='{"route":"search","confidence":0.9,"reason":"needs current information"}'
+        )
+    )
+    router = EntryRouter(llm=model, registry=registry)
+
+    try:
+        router.route(
+            user_prompt="Find current competitors",
+            context=SimpleNamespace(to_dict=lambda: {"session_id": "s"}),
+        )
+    except EntryRoutingError as exc:
+        assert "required_sources" in str(exc)
+    else:
+        raise AssertionError("invalid routing output must stop without selecting a source")
+
+
+def test_failed_required_browser_source_stops_multi_source_plan(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MANA_HOME", str(tmp_path / "home"))
+    failing_browser = _AskAgent(SimpleNamespace(answer="", sources=[], warnings=[], trace=[]))
+    gateway, _, _ = _gateway(tmp_path, _RouteModel("conversation"), ask_agent=failing_browser)
+    decision = EntryRoutingDecision(
+        route="browser",
+        confidence=0.9,
+        reason="page and search evidence are both required",
+        required_sources=("browser", "search"),
+        target_urls=("https://example.com",),
+        requires_live_data=True,
+        reason_code="SEO_AUDIT",
+    )
+
+    result = gateway._execute_required_sources(
+        decision=decision,
+        text="Inspect example.com",
+        ask_service=gateway.get_ask_service(),
+        callbacks=None,
+    )
+
+    assert result.error == "browser_execution_failed"
+    assert result.payload["route_status"] == "failed"
+    assert result.payload["executions"] == {
+        "browser": {"status": "failed", "error": "browser returned no evidence"}
+    }
+    assert len(failing_browser.calls) == 1
 
 
 def test_session_close_new_history_and_stale_finalization(tmp_path: Path, monkeypatch) -> None:

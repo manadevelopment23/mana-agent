@@ -6,7 +6,7 @@ from typing import Any, Callable, Sequence
 
 from mana_agent.analysis.models import AskResponse, AskResponseWithTrace, SearchHit, ToolInvocationTrace
 from mana_agent.mcp.tools import discovered_mcp_tool_names
-from mana_agent.multi_agent.runtime.entry_router import EntryRouter, RouteDecision, RouteRuntimeState
+from mana_agent.multi_agent.runtime.entry_router import EntryRouter, RouteDecision
 from mana_agent.search.config import SearchConfig
 from mana_agent.search.models import SearchDecision, SearchQuery
 from mana_agent.search.router import SearchRouter
@@ -61,16 +61,6 @@ class RouteExecutor:
     def execute(self, decision: RouteDecision, context: RouteExecutionContext) -> AskResponseWithTrace:
         validation = self._validate(decision, context)
         if validation:
-            rerouted = self._reroute_once(decision, context, validation)
-            if rerouted is not None:
-                second_validation = self._validate(rerouted, context)
-                if not second_validation:
-                    return self._attach_route_trace(
-                        self._execute_validated(rerouted, context),
-                        rerouted,
-                        validation=f"re-routed after validation error: {validation}",
-                    )
-                return self._route_error(rerouted, context, validation=second_validation)
             return self._route_error(decision, context, validation=validation)
         return self._attach_route_trace(
             self._execute_validated(decision, context),
@@ -342,26 +332,6 @@ class RouteExecutor:
         if decision.kind == "github_search" and not search_config.enable_github:
             return "github search disabled"
         return None
-
-    def _reroute_once(self, decision: RouteDecision, context: RouteExecutionContext, validation_error: str) -> RouteDecision | None:
-        try:
-            return self.router.route(
-                question=context.question,
-                index_dir=context.index_dir,
-                project_root=context.project_root,
-                available_commands=available_command_names(context.project_root),
-                available_tools=available_tool_names(
-                    required_mcp_server=str(getattr(context, "required_mcp_server", "") or "") or None,
-                ),
-                runtime_state=RouteRuntimeState(
-                    index_available=_index_available(context),
-                    dir_mode=context.dir_mode,
-                    validation_error=validation_error,
-                    required_mcp_server=str(getattr(context, "required_mcp_server", "") or "") or None,
-                ),
-            )
-        except Exception:
-            return None
 
     def _route_error(self, decision: RouteDecision, context: RouteExecutionContext, *, validation: str) -> AskResponseWithTrace:
         message = NO_INDEX_MESSAGE if validation == "semantic index unavailable" else f"Selected route cannot run: {validation}."

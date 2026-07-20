@@ -42,6 +42,7 @@ from mana_agent.gateway.turn_engine import (
     agent_decision_llm,
     load_analysis_context,
     process_chat_turn,
+    run_web_research_answer,
 )
 from mana_agent.multi_agent.routing.agent_decision import AgentDecision
 from mana_agent.memory import (
@@ -307,14 +308,51 @@ class AgentChatGateway:
                 ("email_accounts_list", "email_search", "email_read", "email_thread_read"),
             ),
             RouteRegistration("calendar", "Connected calendar operations.", lambda: self._available(False, "No calendar connector is registered.")),
-            RouteRegistration("search", "Public web and GitHub research.", lambda: self._available(), ("web_search", "github_search")),
+            RouteRegistration(
+                "browser",
+                "Direct public-page inspection using the browser connector.",
+                self._browser_route_availability,
+                ("browser_open", "browser_inspect", "browser_check_links"),
+            ),
+            RouteRegistration("search", "Public web search and discovery.", self._search_route_availability, ("web_search",)),
+            RouteRegistration("github", "Public GitHub search and inspection.", self._github_route_availability, ("github_search",)),
             RouteRegistration("repository", "Read-only local repository inspection.", lambda: self._available(), ("repo_search", "read_file")),
+            RouteRegistration("memory", "Persisted conversation memory retrieval.", lambda: self._available(), ("memory_search",)),
             RouteRegistration("automation", "Automation creation and management.", lambda: self._available()),
             RouteRegistration("unsupported", "Safe stop when no registered route applies.", lambda: self._available()),
+            RouteRegistration("capability_error", "Explicit stop for an unavailable required capability.", lambda: self._available()),
         )
         for registration in registrations:
             registry.register(registration)
         return registry
+
+    def _browser_route_availability(self) -> RouteAvailability:
+        from mana_agent.config.user_config import get_setting
+        from mana_agent.connectors.browser.session import BrowserSessionManager
+
+        enabled = bool(get_setting("MANA_BROWSER_ENABLED", True))
+        if not enabled:
+            return self._available(False, "Browser tool is disabled for this session.")
+        status = BrowserSessionManager.status()
+        if not status.get("ok"):
+            return RouteAvailability(
+                available=False,
+                reason=str(status.get("error") or "Browser runtime is unavailable."),
+                details=dict(status),
+            )
+        return RouteAvailability(available=True, details=dict(status))
+
+    def _search_route_availability(self) -> RouteAvailability:
+        from mana_agent.search.config import SearchConfig
+
+        enabled = SearchConfig.from_env().enable_web
+        return self._available(enabled, "Public web search is disabled for this session.")
+
+    def _github_route_availability(self) -> RouteAvailability:
+        from mana_agent.search.config import SearchConfig
+
+        enabled = SearchConfig.from_env().enable_github
+        return self._available(enabled, "GitHub search is disabled for this session.")
 
     def create_session(self, *, frontend: str = "cli", session_id: str | None = None) -> str:
         """Open one chat session, or bind the active id created by the frontend."""
@@ -738,7 +776,10 @@ class AgentChatGateway:
                     route_capabilities = {
                         "coding": ("repository_read", "repository_write", "shell_read", "shell_write", "git_read", "test_execution"),
                         "repository": ("repository_read",),
+                        "browser": ("browser",),
                         "search": ("web_search",),
+                        "github": ("web_search",),
+                        "memory": ("memory",),
                         "gmail": ("email",),
                         "calendar": ("calendar",),
                         "automation": ("deployment", "shell_read", "shell_write"),
@@ -892,6 +933,18 @@ class AgentChatGateway:
         lane_task_id = str(options.get("_lane_task_id") or "")
         registration = self._entry_route_registry.get(decision.route)
         availability = registration.availability()
+        if decision.route == "capability_error":
+            missing = ", ".join(decision.required_sources)
+            return ChatTurnResult(
+                answer=(
+                    f"This request requires {missing}, but that capability is not available in this session. "
+                    f"Error code: {decision.error_code}."
+                ),
+                error=decision.error_code or "capability_unavailable",
+                mode="route-capability-error",
+                decision=decision,
+                payload={"route": decision.route, "required_sources": list(decision.required_sources)},
+            )
         if not availability.available:
             message = availability.reason
             if availability.setup_action:
@@ -913,6 +966,13 @@ class AgentChatGateway:
                 mode="route-unsupported",
                 decision=decision,
                 payload={"route": decision.route},
+            )
+        if len(decision.required_sources) > 1 or decision.required_sources[0] in {"browser", "search", "github"}:
+            return self._execute_required_sources(
+                decision=decision,
+                text=_conversation_prompt(state, text),
+                ask_service=ask_service,
+                callbacks=options.get("callbacks"),
             )
         if decision.route == "conversation":
             try:
@@ -967,6 +1027,14 @@ class AgentChatGateway:
                 reasoning_summary=decision.reason,
                 verifier_passed=True,
             ),
+            "github": AgentDecision(
+                intent="web_research",
+                confidence=decision.confidence,
+                selected_tools=["github_search"],
+                web_search_needed=True,
+                reasoning_summary=decision.reason,
+                verifier_passed=True,
+            ),
         }.get(decision.route)
         if mapped is None:
             return ChatTurnResult(
@@ -998,6 +1066,138 @@ class AgentChatGateway:
         )
         result.payload.setdefault("route", decision.route)
         return result
+
+    def _execute_required_sources(
+        self,
+        *,
+        decision: EntryRoutingDecision,
+        text: str,
+        ask_service: Any,
+        callbacks: Any,
+    ) -> ChatTurnResult:
+        """Execute the routing model's evidence plan without source substitution.
+
+        A failure aborts immediately: callers never receive an answer synthesized from
+        the subset that happened to succeed.
+        """
+        evidence: list[str] = []
+        trace: list[dict[str, Any]] = []
+        executions: dict[str, dict[str, str]] = {}
+        for source in decision.required_sources:
+            try:
+                if source == "browser":
+                    result = self._execute_browser_source(
+                        text=text, target_urls=decision.target_urls, ask_service=ask_service, callbacks=callbacks
+                    )
+                    evidence.append(result.answer)
+                    trace.extend(result.trace)
+                elif source in {"search", "github"}:
+                    source_decision = AgentDecision(
+                        intent="web_research",
+                        confidence=decision.confidence,
+                        selected_tools=["github_search" if source == "github" else "web_search"],
+                        web_search_needed=True,
+                        reasoning_summary=decision.reason,
+                        verifier_passed=True,
+                    )
+                    answer, _sources, source_trace = run_web_research_answer(
+                        ask_service=ask_service, question=text, root=self.root, decision=source_decision
+                    )
+                    if not answer or answer.startswith("No external search results were available"):
+                        raise RuntimeError(answer or "search returned no evidence")
+                    evidence.append(answer)
+                    trace.extend(source_trace)
+                elif source == "repository":
+                    result = self._execute_repository_source(
+                        text=text, ask_service=ask_service, callbacks=callbacks
+                    )
+                    evidence.append(result.answer)
+                    trace.extend(result.trace)
+                else:
+                    raise RuntimeError(f"No exact executor is registered for required source '{source}'")
+                executions[source] = {"status": "success"}
+            except Exception as exc:
+                trace.append({"tool_name": source, "status": "failed", "result_summary": str(exc)})
+                executions[source] = {"status": "failed", "error": str(exc)}
+                return ChatTurnResult(
+                    answer=(
+                        f"The routing model selected {source} for this request, but its required operation failed: {exc}. "
+                        "No alternative source was used."
+                    ),
+                    error=f"{source}_execution_failed",
+                    mode="route-tool-error",
+                    decision=decision,
+                    trace=trace,
+                    payload={
+                        "route": decision.route,
+                        "required_sources": list(decision.required_sources),
+                        "route_status": "failed",
+                        "executions": executions,
+                    },
+                )
+        return ChatTurnResult(
+            answer="\n\n".join(evidence),
+            mode=f"route-{decision.route}",
+            decision=decision,
+            trace=trace,
+            payload={
+                "route": decision.route,
+                "required_sources": list(decision.required_sources),
+                "target_urls": list(decision.target_urls),
+                "route_status": "success",
+                "executions": executions,
+            },
+        )
+
+    def _execute_browser_source(
+        self, *, text: str, target_urls: tuple[str, ...], ask_service: Any, callbacks: Any
+    ) -> ChatTurnResult:
+        ask_agent = getattr(ask_service, "ask_agent", None)
+        if ask_agent is None or not callable(getattr(ask_agent, "run", None)):
+            raise RuntimeError("browser execution agent is unavailable")
+        from mana_agent.connectors.browser.contracts import browser_tool_contracts
+        from mana_agent.multi_agent.runtime.prompts import BROWSER_AGENT_SYSTEM_PROMPT
+
+        response = ask_agent.run(
+            question=f"{text}\n\nDirect URLs selected by the routing model: {', '.join(target_urls)}",
+            index_dir=self._index_dir,
+            k=self._resolved_k,
+            max_steps=max(12, int(self.config.agent_max_steps or 6)),
+            callbacks=callbacks,
+            system_prompt=BROWSER_AGENT_SYSTEM_PROMPT,
+            tool_policy={
+                "allowed_tools": [contract.name for contract in browser_tool_contracts()],
+                "disable_external_search": True,
+                "require_initial_tool_call": True,
+            },
+        )
+        answer = str(getattr(response, "answer", response) or "").strip()
+        if not answer:
+            raise RuntimeError("browser returned no evidence")
+        return ChatTurnResult(answer=answer, trace=_serialize_tool_traces(response))
+
+    def _execute_repository_source(
+        self, *, text: str, ask_service: Any, callbacks: Any
+    ) -> ChatTurnResult:
+        ask_agent = getattr(ask_service, "ask_agent", None)
+        if ask_agent is None or not callable(getattr(ask_agent, "run", None)):
+            raise RuntimeError("repository execution agent is unavailable")
+        response = ask_agent.run(
+            question=text,
+            index_dir=self._index_dir,
+            k=self._resolved_k,
+            max_steps=max(6, int(self.config.agent_max_steps or 6)),
+            callbacks=callbacks,
+            system_prompt=(
+                "You are Mana-Agent's repository evidence executor. Use only repository read/search "
+                "tools and return grounded repository evidence. Do not use web, browser, memory, or connectors."
+            ),
+            tool_policy={"allowed_tools": ["repo_search", "read_file"], "require_initial_tool_call": True},
+        )
+        answer = str(getattr(response, "answer", response) or "").strip()
+        if not answer:
+            raise RuntimeError("repository tools returned no evidence")
+        return ChatTurnResult(answer=answer, trace=_serialize_tool_traces(response))
 
     def _execute_gmail_route(
         self,

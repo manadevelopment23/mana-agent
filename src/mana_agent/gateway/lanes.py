@@ -249,13 +249,17 @@ INTENT_LANES: dict[str, LaneId] = {
 
 ENTRY_ROUTE_LANES: dict[str, LaneId] = {
     "coding": LaneId.CODING,
+    "browser": LaneId.RESEARCH,
     "search": LaneId.RESEARCH,
+    "github": LaneId.RESEARCH,
     "repository": LaneId.RESEARCH,
+    "memory": LaneId.RESEARCH,
     "gmail": LaneId.RESEARCH,
     "calendar": LaneId.RESEARCH,
     "automation": LaneId.OPERATIONS,
     "conversation": LaneId.RESEARCH,
     "unsupported": LaneId.RESEARCH,
+    "capability_error": LaneId.RESEARCH,
 }
 
 
