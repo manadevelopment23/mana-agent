@@ -4,6 +4,13 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-20
 
+- Added strict shared-gateway source routing for repository, browser, web search, Gmail, calendar, GitHub, memory, internal knowledge, and tool-free turns.
+  - The typed routing decision now carries mandatory sources, live-data requirements, target URLs, reason/error codes, and a capability manifest. Browser, search, and repository evidence plans execute only the model-selected sources; a required-source failure aborts the turn with its exact source error and recorded execution status.
+  - Browser availability is now based on the live Playwright/Chromium runtime status as well as its enablement setting, so an available browser is represented accurately in the routing manifest.
+  - Direct public URLs are passed to the routing model as browser signals. Invalid, incomplete, unavailable, and capability-error decisions stop explicitly; browser/search/repository substitutions are not permitted.
+  - Removed legacy AskService validation re-routing so an invalid selected command or unavailable semantic index cannot silently choose a new route.
+  - Verification: `PYTHONPATH=src venv/bin/python -m pytest -q tests/gateway/test_entry_routing.py tests/test_ask_entry_router.py`; `PYTHONPATH=src venv/bin/python -m py_compile src/mana_agent/gateway/entry_routing.py src/mana_agent/gateway/chat_gateway.py src/mana_agent/gateway/lanes.py src/mana_agent/multi_agent/runtime/route_executor.py`.
+
 - Fixed connector-only chat turns such as “Check my latest Gmail” so they do not initialize repository run-evidence memory when external memory is selected.
   - Verification: `python -m pytest tests/test_ask_agent.py -q`.
 

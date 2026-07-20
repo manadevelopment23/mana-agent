@@ -14,11 +14,26 @@ EntryRouteName = Literal[
     "coding",
     "gmail",
     "calendar",
+    "browser",
     "search",
+    "github",
     "repository",
+    "memory",
     "automation",
     "unsupported",
+    "capability_error",
 ]
+
+RequiredSource = Literal[
+    "repository", "browser", "search", "gmail", "calendar", "github",
+    "memory", "internal_knowledge", "none",
+]
+
+REQUIRED_SOURCES: set[str] = {
+    "repository", "browser", "search", "gmail", "calendar", "github",
+    "memory", "internal_knowledge", "none",
+}
+TOOL_SOURCES = REQUIRED_SOURCES - {"internal_knowledge", "none"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +74,11 @@ class EntryRoutingDecision:
     route: EntryRouteName
     confidence: float
     reason: str
+    required_sources: tuple[RequiredSource, ...]
+    target_urls: tuple[str, ...] = ()
+    requires_live_data: bool = False
+    reason_code: str = ""
+    error_code: str = ""
     reuse_active_route: bool = False
     source: str = "model"
 
@@ -109,7 +129,8 @@ class EntryRouteRegistry:
 
 
 ENTRY_ROUTER_PROMPT = """You are Mana-Agent's first-turn entry router.
-Select exactly one registered execution route before any conversational response is generated.
+Select exactly one registered execution route and its exact required information sources before any
+conversational response is generated.
 Routing is independent from response generation: return a decision only and never answer the user.
 
 Use the supplied live route registry. A route may be selected when unavailable so its executor can
@@ -121,25 +142,51 @@ Route semantics:
 - coding: repository code/file changes handled by the Codex coding workflow.
 - gmail: inspect or act on the user's Gmail/email account through registered email tools.
 - calendar: calendar account operations through a registered calendar connector.
-- search: current or external public information retrieval.
+- browser: direct public-page inspection using browser tools. A supplied public HTTP(S) URL is a
+  strong signal for this route; page content, HTML, metadata, links, robots, and sitemap content
+  require browser rather than search snippets.
+- search: current public-web discovery, mentions, competitors, indexing, or other search-visible
+  information. Search snippets never substitute for browser page inspection.
+- github: connected/public GitHub information.
 - repository: read-only local repository questions or inspection.
+- memory: explicitly requested persisted memory retrieval.
 - automation: create, inspect, or manage an automation.
 - unsupported: no registered route can represent the request safely.
 
-Current mailbox/account data is never ordinary conversation. Requests to check an inbox, latest
+Repository context is only one possible evidence source. Current mailbox/account data is never ordinary conversation. Requests to check an inbox, latest
 email, Gmail message, email thread, or mailbox must select gmail when that registered route
 represents the request. The conversation route must never speculate about connector availability.
 
 Use previous_route and conversation_summary only for continuity. Reuse the active route for a true
 follow-up; reroute when the user's intent changes. Do not route by isolated keywords alone.
 
+The required_sources array is an execution contract: every listed tool source is mandatory and
+must complete successfully before response generation. Never substitute a source or provider.
+When no supported available capability can satisfy a required source, return route capability_error
+with that source and an exact error_code. unsupported is a distinct model decision, never a
+fallback. Direct URL signals are supplied separately; do not treat them as repository evidence.
+
 Return JSON only:
 {
-  "route": "conversation|coding|gmail|calendar|search|repository|automation|unsupported",
+  "route": "conversation|coding|gmail|calendar|browser|search|github|repository|memory|automation|unsupported|capability_error",
   "confidence": 0.0,
   "reason": "short routing reason",
+  "required_sources": ["browser"],
+  "target_urls": ["https://example.com"],
+  "requires_live_data": true,
+  "reason_code": "DIRECT_PAGE_INSPECTION",
+  "error_code": "",
   "reuse_active_route": false
 }
+
+Examples:
+- “Review https://example.com/about” -> browser, ["browser"], that URL.
+- “Check https://example.com and prepare a complete SEO report” -> browser with search only when
+  public indexing/discovery is independently required; both sources are mandatory if selected.
+- “Find competitors for example.com” -> search, ["search"].
+- “Improve metadata in this repository” -> coding, ["repository"].
+- “Check my latest Gmail” -> gmail, ["gmail"], even when Gmail is unavailable; use
+  capability_error with GMAIL_NOT_AVAILABLE rather than repository, memory, or conversation.
 """
 
 
@@ -165,6 +212,7 @@ class EntryRouter:
             "user_prompt": str(user_prompt or "").strip(),
             "context": context.to_dict(),
             "routes": self.registry.snapshot(),
+            "direct_url_signals": _public_urls(user_prompt),
         }
         try:
             response = self.llm.invoke(
@@ -213,10 +261,55 @@ class EntryRouter:
                 "Model decision failed: entry_route. No response was generated. "
                 "Reason: routing reason is required."
             )
+        raw_sources = payload.get("required_sources")
+        if not isinstance(raw_sources, list) or not raw_sources:
+            raise EntryRoutingError(
+                "Model decision failed: entry_route. No response was generated. "
+                "Reason: required_sources must be a non-empty list."
+            )
+        sources = tuple(str(item).strip() for item in raw_sources)
+        if any(source not in REQUIRED_SOURCES for source in sources):
+            raise EntryRoutingError(
+                "Model decision failed: entry_route. No response was generated. "
+                "Reason: required_sources contains an unknown source."
+            )
+        if len(set(sources)) != len(sources) or ("none" in sources and len(sources) != 1):
+            raise EntryRoutingError("Model decision failed: entry_route. No response was generated. Reason: invalid required_sources combination.")
+        if route in {"conversation", "unsupported"} and sources != ("none",):
+            raise EntryRoutingError("Model decision failed: entry_route. No response was generated. Reason: tool-free routes require required_sources=[\"none\"].")
+        if route == "capability_error" and not any(source in TOOL_SOURCES for source in sources):
+            raise EntryRoutingError("Model decision failed: entry_route. No response was generated. Reason: capability_error requires an unavailable tool source.")
+        if route not in {"conversation", "unsupported", "capability_error"} and not any(source in TOOL_SOURCES for source in sources):
+            raise EntryRoutingError("Model decision failed: entry_route. No response was generated. Reason: executable route requires a tool source.")
+        target_urls = tuple(str(item).strip() for item in (payload.get("target_urls") or []) if str(item).strip())
+        if not isinstance(payload.get("target_urls") or [], list) or any(not url.startswith(("http://", "https://")) for url in target_urls):
+            raise EntryRoutingError("Model decision failed: entry_route. No response was generated. Reason: target_urls must contain valid HTTP(S) URLs.")
+        if "browser" in sources and _public_urls(payload.get("user_prompt", "")):
+            # User prompt is not returned by the model; direct-url validation is performed below
+            # against target_urls when the model declares browser inspection.
+            pass
+        if "browser" in sources and not target_urls:
+            raise EntryRoutingError("Model decision failed: entry_route. No response was generated. Reason: browser source requires target_urls.")
+        error_code = str(payload.get("error_code") or "").strip()
+        if route == "capability_error" and not error_code:
+            raise EntryRoutingError("Model decision failed: entry_route. No response was generated. Reason: capability_error requires error_code.")
+        availability = {row["name"]: bool(row["availability"]["available"]) for row in self.registry.snapshot()}
+        source_routes = {"browser": "browser", "search": "search", "github": "github", "repository": "repository", "gmail": "gmail", "calendar": "calendar", "memory": "memory"}
+        unavailable = [source for source in sources if source in source_routes and not availability.get(source_routes[source], False)]
+        if unavailable and route != "capability_error":
+            raise EntryRoutingError(
+                "Model decision failed: entry_route. No response was generated. "
+                f"Reason: selected unavailable source(s): {', '.join(unavailable)}."
+            )
         return EntryRoutingDecision(
             route=route,  # type: ignore[arg-type]
             confidence=confidence,
             reason=reason,
+            required_sources=sources,  # type: ignore[arg-type]
+            target_urls=target_urls,
+            requires_live_data=bool(payload.get("requires_live_data", False)),
+            reason_code=str(payload.get("reason_code") or "").strip(),
+            error_code=error_code,
             reuse_active_route=bool(payload.get("reuse_active_route", False)),
         )
 
@@ -233,6 +326,13 @@ def _extract_json(text: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("router output must be a JSON object")
     return payload
+
+
+def _public_urls(text: object) -> list[str]:
+    """Provide URL signals to the model; this never chooses a route."""
+    import re
+
+    return re.findall(r"https?://[^\s<>()\[\]{}\"']+", str(text or ""))
 
 
 def gmail_route_availability() -> RouteAvailability:

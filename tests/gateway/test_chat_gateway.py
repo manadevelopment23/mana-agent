@@ -43,12 +43,21 @@ class _DummyAskService:
                 route = "repository"
             else:
                 route = "conversation"
+            sources = {
+                "gmail": ["gmail"], "coding": ["repository"],
+                "repository": ["repository"], "conversation": ["none"],
+            }[route]
             return SimpleNamespace(
                 content=json.dumps(
                     {
                         "route": route,
                         "confidence": 0.95,
                         "reason": "test route",
+                        "required_sources": sources,
+                        "target_urls": [],
+                        "requires_live_data": False,
+                        "reason_code": "TEST_ROUTE",
+                        "error_code": "",
                         "reuse_active_route": False,
                     }
                 )
