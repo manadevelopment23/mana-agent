@@ -166,6 +166,13 @@ When no supported available capability can satisfy a required source, return rou
 with that source and an exact error_code. unsupported is a distinct model decision, never a
 fallback. Direct URL signals are supplied separately; do not treat them as repository evidence.
 
+required_sources is required for every decision and must never be omitted or empty. Use exactly
+["none"] for conversation and unsupported. Use the route's corresponding source for ordinary
+single-source decisions: coding/repository/automation -> ["repository"], gmail -> ["gmail"],
+calendar -> ["calendar"], browser -> ["browser"], search -> ["search"], github -> ["github"],
+and memory -> ["memory"]. capability_error must name the unavailable tool source. Do not use an
+empty array for a request that needs no external information.
+
 Return JSON only:
 {
   "route": "conversation|coding|gmail|calendar|browser|search|github|repository|memory|automation|unsupported|capability_error",
@@ -180,6 +187,8 @@ Return JSON only:
 }
 
 Examples:
+- “ping” -> conversation, ["none"].
+- “What can you do?” -> conversation, ["none"].
 - “Review https://example.com/about” -> browser, ["browser"], that URL.
 - “Check https://example.com and prepare a complete SEO report” -> browser with search only when
   public indexing/discovery is independently required; both sources are mandatory if selected.

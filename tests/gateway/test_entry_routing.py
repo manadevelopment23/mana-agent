@@ -12,7 +12,7 @@ from mana_agent.gateway import (
     RouteAvailability,
     RouteRegistration,
 )
-from mana_agent.gateway.entry_routing import EntryRoutingDecision, EntryRoutingError
+from mana_agent.gateway.entry_routing import ENTRY_ROUTER_PROMPT, EntryRoutingDecision, EntryRoutingError
 from mana_agent.gateway.entry_routing import gmail_route_availability
 from mana_agent.workspaces.service import WorkspaceService
 
@@ -340,6 +340,23 @@ def test_router_rejects_missing_required_sources_instead_of_guessing(tmp_path: P
         assert "required_sources" in str(exc)
     else:
         raise AssertionError("invalid routing output must stop without selecting a source")
+
+
+def test_router_prompt_requires_a_none_source_for_ping() -> None:
+    """Tool-free model decisions must still satisfy the explicit source contract."""
+    assert 'required_sources is required for every decision and must never be omitted or empty' in ENTRY_ROUTER_PROMPT
+    assert '“ping” -> conversation, ["none"].' in ENTRY_ROUTER_PROMPT
+
+
+def test_ping_uses_a_valid_tool_free_model_decision(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MANA_HOME", str(tmp_path / "home"))
+    gateway, chat, _ = _gateway(tmp_path, _RouteModel("conversation"))
+
+    result = gateway.process_turn(gateway.create_session(frontend="test"), "ping")
+
+    assert result.mode == "route-conversation"
+    assert result.answer == "ordinary conversation"
+    assert len(chat.conversation_calls) == 1
 
 
 def test_failed_required_browser_source_stops_multi_source_plan(tmp_path: Path, monkeypatch) -> None:
