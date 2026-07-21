@@ -4,6 +4,9 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-21
 
+- Fixed local-process execution output to normalize Windows CRLF line endings to the provider's cross-platform LF text contract.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest -q tests/execution/test_execution_fabric.py` passed.
+
 - Bumped the package and documented release version to `v0.0.18`.
   - Verification: Project metadata and source runtime version checks passed; `tests/test_package_version.py` (2 passed) and `git diff --check` passed.
 
