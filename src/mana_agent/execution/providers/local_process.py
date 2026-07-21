@@ -39,6 +39,11 @@ from mana_agent.execution.secrets import EnvironmentSecretResolver, SecretResolv
 from mana_agent.execution.snapshots import create_archive_snapshot, restore_archive_snapshot
 
 
+def _decode_captured_output(value: bytes) -> str:
+    """Decode subprocess output using the provider's platform-independent text contract."""
+    return value.decode(errors="replace").replace("\r\n", "\n")
+
+
 class LocalProcessProvider(ProviderBase):
     name = "local-process"
 
@@ -122,8 +127,8 @@ class LocalProcessProvider(ProviderBase):
         finally:
             self._processes.pop(handle.sandbox_id, None)
         limit = request.capture_limit_bytes
-        stdout = redact_values(stdout_b[:limit].decode(errors="replace"), secret_values)
-        stderr = redact_values(stderr_b[:limit].decode(errors="replace"), secret_values)
+        stdout = redact_values(_decode_captured_output(stdout_b[:limit]), secret_values)
+        stderr = redact_values(_decode_captured_output(stderr_b[:limit]), secret_values)
         return ExecutionResult(
             exit_code=int(process.returncode or 0), stdout=stdout, stderr=stderr,
             started_at=started, completed_at=utc_now(), provider=self.name, sandbox_id=handle.sandbox_id,

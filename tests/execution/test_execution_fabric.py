@@ -24,7 +24,7 @@ from mana_agent.execution.models import (
     SecretInjection,
     SnapshotRequest,
 )
-from mana_agent.execution.providers.local_process import LocalProcessProvider
+from mana_agent.execution.providers.local_process import LocalProcessProvider, _decode_captured_output
 from mana_agent.execution.registry import ProviderRegistry
 from mana_agent.execution.router import ExecutionRouter
 from mana_agent.execution.snapshots import restore_archive_snapshot
@@ -66,6 +66,11 @@ def test_registry_rejects_duplicates() -> None:
     registry.register(LocalProcessProvider())
     with pytest.raises(Exception, match="already registered"):
         registry.register(LocalProcessProvider())
+
+
+def test_local_provider_normalizes_windows_subprocess_newlines() -> None:
+    assert _decode_captured_output(b"stdout\r\nnext\r\n") == "stdout\nnext\n"
+    assert _decode_captured_output(b"progress\rupdate") == "progress\rupdate"
 
 
 def test_router_never_weakens_security_boundary() -> None:
