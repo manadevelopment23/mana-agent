@@ -20,6 +20,7 @@ def create_app(
     telegram_config: Any | None = None,
     telegram_gateway: Any | None = None,
     chat_gateway: Any | None = None,
+    github_autopilot: Any | None = None,
 ) -> FastAPI:
     telegram_connector = None
     if telegram_config is None:
@@ -38,11 +39,16 @@ def create_app(
             await telegram_connector.task_queue.start()
             await telegram_connector.register_webhook()
             application.state.telegram_connector = telegram_connector
+        if github_autopilot is not None:
+            await github_autopilot.start()
+            application.state.github_autopilot = github_autopilot
         try:
             yield
         finally:
             if telegram_connector is not None:
                 await telegram_connector.stop(remove_webhook=False)
+            if github_autopilot is not None:
+                await github_autopilot.stop()
 
     app = FastAPI(
         title="Mana-Agent API",
@@ -63,6 +69,9 @@ def create_app(
     app.include_router(conversations_router)
     app.include_router(events_ws_router)
     app.include_router(workspaces_router)
+    if github_autopilot is not None:
+        from mana_agent.github_autopilot.webhook import router as github_autopilot_router
+        app.include_router(github_autopilot_router)
 
     # Make the central chat gateway (if provided) available to routes / services
     if chat_gateway is not None:
@@ -83,4 +92,12 @@ def create_app(
     return app
 
 
-app = create_app()
+def _configured_github_autopilot() -> Any | None:
+    from mana_agent.config.settings import Settings
+    from mana_agent.github_autopilot import GitHubAutopilotService, GitHubAutopilotSettings
+
+    settings = GitHubAutopilotSettings.from_mana_settings(Settings())
+    return GitHubAutopilotService(settings) if settings.enabled else None
+
+
+app = create_app(github_autopilot=_configured_github_autopilot())

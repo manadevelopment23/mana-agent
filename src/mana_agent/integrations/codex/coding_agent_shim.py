@@ -36,6 +36,8 @@ class CodexCodingAgentShim:
         event_sink: Callable[..., Any] | None = None,
         backend_factory: BackendFactory | None = None,
         workspace_manager_factory: WorkspaceManagerFactory | None = None,
+        workspace_task_id: str = "",
+        resume_thread_id: str = "",
         **_legacy_kwargs: Any,
     ) -> None:
         self.repo_root = Path(repo_root).expanduser().resolve()
@@ -43,8 +45,10 @@ class CodexCodingAgentShim:
         self.repository_id = str(repository_id or "").strip() or None
         self.session_id = str(session_id or "").strip()
         self.event_sink = event_sink
+        self.workspace_task_id = str(workspace_task_id or "").strip()
+        self.resume_thread_id = str(resume_thread_id or "").strip()
         self._backend_factory = backend_factory or (
-            lambda: CodexCodingBackend(self.codex_settings)
+            lambda: CodexCodingBackend(self.codex_settings, resume_thread_id=self.resume_thread_id)
         )
         self._workspace_manager_factory = workspace_manager_factory or (
             lambda: WorkspaceManager(
@@ -184,14 +188,20 @@ class CodexCodingAgentShim:
         managed_workspace: Any = None
         if requires_repository_write:
             manager = self._workspace_manager_factory()
+            workspace_task_id = self.workspace_task_id or task_id
             managed_workspace = manager.create_for_task(
-                task_id,
+                workspace_task_id,
                 title=goal,
                 assigned_agent_id="codex",
                 session_id=self.session_id,
-                reuse_existing=False,
+                reuse_existing=bool(self.workspace_task_id),
             )
-            manager.transition(task_id, WorkspaceStatus.RUNNING, agent_id="codex")
+            manager.transition(
+                workspace_task_id,
+                WorkspaceStatus.RUNNING,
+                agent_id="codex",
+                force=bool(self.workspace_task_id),
+            )
             workspace = WorkspaceContext(
                 repository_path=self.repo_root,
                 worktree_path=Path(managed_workspace.worktree_path),
@@ -225,7 +235,7 @@ class CodexCodingAgentShim:
             record_current("codex.turn.failed", {"task_id": task_id, "error_type": type(exc).__name__, "error": str(exc)})
             if manager is not None:
                 manager.transition(
-                    task_id,
+                    self.workspace_task_id or task_id,
                     WorkspaceStatus.FAILED,
                     agent_id="codex",
                     error=str(exc),
@@ -235,16 +245,16 @@ class CodexCodingAgentShim:
         if manager is not None:
             if result.status == "completed":
                 manager.transition(
-                    task_id,
+                    self.workspace_task_id or task_id,
                     WorkspaceStatus.MERGE_CANDIDATE,
                     agent_id="codex",
                     notes=["Codex completed planning, implementation, and verification."],
                 )
             elif result.status == "cancelled":
-                manager.transition(task_id, WorkspaceStatus.INTERRUPTED, agent_id="codex")
+                manager.transition(self.workspace_task_id or task_id, WorkspaceStatus.INTERRUPTED, agent_id="codex")
             else:
                 manager.transition(
-                    task_id,
+                    self.workspace_task_id or task_id,
                     WorkspaceStatus.FAILED,
                     agent_id="codex",
                     error="; ".join(result.errors),

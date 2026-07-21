@@ -4,6 +4,10 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-20
 
+- Added webhook-driven GitHub App Autopilot with signed raw-body ingress, durable delivery/job persistence, deterministic validated event routing, actor authorization, installation-scoped authentication, persistent task sessions, isolated worktrees, Codex-only execution, verification gates, deterministic branches, and draft pull-request lifecycle support.
+  - Added `mana-agent github-app` operational commands, health/readiness endpoints, least-privilege manifest/setup documentation, security-alert redaction, idempotency/coalescing, subject locks, bounded retry/cancellation controls, and structured lifecycle metrics.
+  - Verification: `.venv/bin/ruff check src/mana_agent/github_autopilot src/mana_agent/commands/github_app_cli.py tests/test_github_autopilot.py src/mana_agent/integrations/codex/backend.py src/mana_agent/integrations/codex/coding_agent_shim.py tests/test_codex_integration.py` passed; `.venv/bin/python -m pytest tests/test_github_autopilot.py tests/test_codex_integration.py tests/test_api_analyze.py tests/test_api_conversations.py tests/test_package_version.py -q` passed (40 tests). Full-suite verification was not completed because the existing external-memory test configuration causes unrelated `MemoryConfigurationError` failures in `tests/test_ask_agent.py`.
+
 - Fixed the Windows release test synchronization for dynamically appended TUI chat messages.
   - The regression test now waits for Textual's layout cycle and the subsequently posted resize cycle before asserting the new message's wrapped document, matching both Windows Proactor and POSIX event-loop scheduling without changing chat behavior.
   - Verification: `PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_tui_tool_card_layout.py tests/test_tui_multiline_input.py` passed (6 tests); focused Ruff, Python compilation, and `git diff --check` passed.
