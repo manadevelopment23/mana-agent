@@ -35,9 +35,11 @@ class CodexCodingBackend:
         *,
         client_factory: ClientFactory | None = None,
         worker_id: str | None = None,
+        resume_thread_id: str = "",
     ) -> None:
         self.settings = settings
         self.worker_id = worker_id or f"codex-{uuid.uuid4().hex[:8]}"
+        self.resume_thread_id = str(resume_thread_id or "").strip()
         self._uses_default_client = client_factory is None
         self._client_factory = client_factory or (lambda command: AsyncCodexAppServer(command))
         self._client: AsyncCodexAppServer | None = None
@@ -98,8 +100,16 @@ class CodexCodingBackend:
                 summary=self.worker_id,
             )
             try:
-                thread_response = await self._client.request("thread/start", self._thread_params(workspace))
+                if self.resume_thread_id:
+                    thread_response = await self._client.request(
+                        "thread/resume",
+                        {"threadId": self.resume_thread_id, **self._thread_params(workspace)},
+                    )
+                else:
+                    thread_response = await self._client.request("thread/start", self._thread_params(workspace))
                 thread_id = _response_id(thread_response, "thread")
+                if not thread_id and self.resume_thread_id:
+                    thread_id = self.resume_thread_id
                 if not thread_id:
                     raise CodexExecutionError("Codex thread/start returned no thread id")
                 yield AgentEvent(

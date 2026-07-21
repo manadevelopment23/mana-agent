@@ -54,6 +54,8 @@ class _FakeClient:
         self.requests.append((method, params))
         if method == "thread/start":
             return {"thread": {"id": "thread-1"}}
+        if method == "thread/resume":
+            return {"thread": {"id": params["threadId"]}}
         if method == "turn/start":
             return {"turn": {"id": "turn-1"}}
         return {}
@@ -210,6 +212,23 @@ def test_codex_backend_translates_read_only_sandbox_for_protocol(tmp_path: Path)
     assert fake is not None
     assert fake.requests[0][1]["sandbox"] == "read-only"
     assert fake.requests[1][1]["sandbox"] == "read-only"
+
+
+def test_codex_backend_resumes_persisted_thread(tmp_path: Path) -> None:
+    fake: _FakeClient | None = None
+
+    def factory(command: tuple[str, ...]) -> _FakeClient:
+        nonlocal fake
+        fake = _FakeClient(command)
+        return fake
+
+    backend = CodexCodingBackend(CodexSettings(enabled=True), client_factory=factory, resume_thread_id="thread-1")
+    result = asyncio.run(backend.execute(_task(), _workspace(tmp_path)))
+
+    assert result.status == "completed"
+    assert fake is not None
+    assert [method for method, _params in fake.requests] == ["thread/resume", "turn/start"]
+    assert fake.requests[0][1]["threadId"] == "thread-1"
 
 
 def test_codex_shim_failed_payload_retains_backend_error() -> None:
