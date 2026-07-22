@@ -27,6 +27,14 @@ class LatencyClass(str, Enum):
     BATCH = "batch"
 
 
+class RoutingMode(str, Enum):
+    SINGLE = "single"
+    SINGLE_WITH_VERIFICATION = "single_with_verification"
+    MULTI_AGENT = "multi_agent"
+    PARALLEL_CANDIDATES = "parallel_candidates"
+    MULTI_AGENT_WITH_PARALLEL_CANDIDATES = "multi_agent_with_parallel_candidates"
+
+
 _LEVEL_VALUE = {"low": 0.2, "medium": 0.5, "high": 0.8, "critical": 1.0}
 
 
@@ -145,6 +153,29 @@ class RoutingRequest:
     multi_candidate_permitted: bool = False
     previous_verification_failed: bool = False
     explicit_competition: bool = False
+    request_id: str = ""
+    task_id: str = ""
+    parent_task_id: str | None = None
+    session_id: str = ""
+    workspace_id: str = ""
+    repository_id: str = ""
+    execution_lane: str = ""
+    context_requirements: tuple[str, ...] = ()
+    expected_output_type: str = "text"
+    subagents_allowed: bool = False
+    parallel_execution_allowed: bool = False
+    main_model_requested_multi_agent: bool = False
+    main_model_requested_parallel: bool = False
+    isolation_available: bool = False
+    independent_verifier_available: bool = False
+    active_task_conflict: bool = False
+    historical_parallel_benefit: float = 0.0
+    historical_result_variance: float = 0.0
+    similar_task_failures: int = 0
+    plausible_strategy_count: int = 1
+    maximum_concurrency: int = 1
+    task_tree_depth: int = 0
+    provider_health: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.role.strip() or not self.task_description.strip() or not self.task_type.strip():
@@ -155,6 +186,10 @@ class RoutingRequest:
             raise ValueError("latency_requirement must use LatencyClass")
         if min(self.expected_prompt_tokens, self.retrieved_context_tokens, self.expected_response_tokens, self.expected_tool_calls) < 0:
             raise ValueError("routing token and tool-call estimates cannot be negative")
+        if not 0.0 <= self.historical_parallel_benefit <= 1.0 or not 0.0 <= self.historical_result_variance <= 1.0:
+            raise ValueError("parallel evidence scores must be between 0 and 1")
+        if min(self.similar_task_failures, self.plausible_strategy_count, self.maximum_concurrency, self.task_tree_depth) < 0:
+            raise ValueError("routing orchestration counters cannot be negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +217,16 @@ class RoutingDecision:
     verifier_model: str | None
     verifier_independent: bool
     applicable_budgets: RoutingBudgets
+    decision_id: str = ""
+    request_id: str = ""
+    task_id: str = ""
+    routing_mode: RoutingMode = RoutingMode.SINGLE
+    required_verification_level: str = "standard"
+    parallel_execution_permitted: bool = False
+    multi_agent_execution_permitted: bool = False
+    applicable_limits: dict[str, Any] = field(default_factory=dict)
+    deadline_seconds: int | None = None
+    orchestration_reasons: tuple[str, ...] = ()
 
     def concise(self) -> dict[str, Any]:
         return {
@@ -192,6 +237,11 @@ class RoutingDecision:
             "confidence": self.confidence,
             "estimated_cost": self.estimated_cost,
             "competition": self.candidate_competition,
+            "routing_mode": self.routing_mode.value,
+            "decision_id": self.decision_id,
+            "task_id": self.task_id,
+            "parallel_execution_permitted": self.parallel_execution_permitted,
+            "multi_agent_execution_permitted": self.multi_agent_execution_permitted,
             "verifier_model": self.verifier_model,
             "reasons": list(self.selection_reasons),
         }
@@ -255,6 +305,13 @@ class RoutingPolicy:
     model_failure_penalty_weight: float = 0.08
     provider_failure_penalty_weight: float = 0.04
     evidence_retention_days: int = 90
+    simple_routing_default: bool = True
+    multi_agent_enabled: bool = False
+    parallel_execution_enabled: bool = False
+    minimum_parallel_evidence: float = 0.65
+    maximum_task_tree_depth: int = 3
+    maximum_concurrency: int = 4
+    task_timeout_seconds: int = 1800
     weights: dict[str, float] = field(default_factory=lambda: {
         "capability": 0.22,
         "quality": 0.25,
@@ -271,5 +328,9 @@ class RoutingPolicy:
             raise ValueError("maximum_candidate_count must be positive")
         if min(self.circuit_breaker_failures, self.circuit_breaker_window_seconds, self.reliability_decay_seconds, self.evidence_retention_days) < 1:
             raise ValueError("routing windows, retention, and circuit threshold must be positive")
+        if not 0.0 <= self.minimum_parallel_evidence <= 1.0:
+            raise ValueError("minimum_parallel_evidence must be between 0 and 1")
+        if min(self.maximum_task_tree_depth, self.maximum_concurrency, self.task_timeout_seconds) < 1:
+            raise ValueError("routing orchestration limits must be positive")
         if min(self.model_failure_penalty_weight, self.provider_failure_penalty_weight, *self.weights.values()) < 0:
             raise ValueError("routing weights cannot be negative")

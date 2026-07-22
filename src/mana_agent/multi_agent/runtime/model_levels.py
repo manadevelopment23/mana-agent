@@ -114,13 +114,13 @@ def route_model(request: RoutingRequest, *, global_model: str, profiles=None) ->
 
 def routing_budgets_from_settings(settings) -> RoutingBudgets:
     return RoutingBudgets(
-        task_token_limit=settings.mana_routing_task_token_budget,
-        task_cost_limit=settings.mana_routing_task_cost_budget,
-        session_cost_remaining=settings.mana_routing_session_cost_budget,
-        competition_cost_limit=settings.mana_routing_competition_cost_budget,
-        verification_cost_limit=settings.mana_routing_verification_cost_budget,
-        retry_cost_limit=settings.mana_routing_retry_cost_budget,
-        verification_reserve_ratio=settings.mana_routing_verification_reserve_ratio,
+        task_token_limit=getattr(settings, "mana_routing_task_token_budget", 32_000),
+        task_cost_limit=getattr(settings, "mana_routing_task_cost_budget", None),
+        session_cost_remaining=getattr(settings, "mana_routing_session_cost_budget", None),
+        competition_cost_limit=getattr(settings, "mana_routing_competition_cost_budget", None),
+        verification_cost_limit=getattr(settings, "mana_routing_verification_cost_budget", None),
+        retry_cost_limit=getattr(settings, "mana_routing_retry_cost_budget", None),
+        verification_reserve_ratio=getattr(settings, "mana_routing_verification_reserve_ratio", 0.15),
     )
 
 
@@ -130,6 +130,13 @@ def resolve_model_for_role(
     global_model: str,
     repository: RepositoryMetadata | None = None,
     task_description: str | None = None,
+    routing_authority=None,
+    task_id: str = "",
+    parent_task_id: str | None = None,
+    session_id: str = "",
+    workspace_id: str = "",
+    repository_id: str = "",
+    execution_lane: str = "",
 ) -> ResolvedModelAssignment:
     env_var, default_level = _DEFAULT_MODEL_LEVELS[role]
     role_value = str(get_setting(env_var, "") or "").strip()
@@ -139,8 +146,7 @@ def resolve_model_for_role(
     task_type, complexity, risk = _ROLE_TASK[role]
     from mana_agent.config.settings import Settings
     settings = Settings()
-    decision = route_model(
-        RoutingRequest(
+    request = RoutingRequest(
             role=role.value,
             task_description=task_description or f"Initialize the {role.value} execution lane.",
             task_type=task_type,
@@ -150,8 +156,17 @@ def resolve_model_for_role(
             latency_requirement=LatencyClass.STANDARD if complexity is not Complexity.LOW else LatencyClass.INTERACTIVE,
             budgets=routing_budgets_from_settings(settings),
             required_capabilities=frozenset({"structured_output"}) if role in {AgentRole.MAIN, AgentRole.HEAD_DECISION, AgentRole.PLANNER, AgentRole.REVIEWER, AgentRole.VERIFIER} else frozenset(),
-        ),
-        global_model=migration_target,
+            task_id=task_id,
+            parent_task_id=parent_task_id,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            repository_id=repository_id,
+            execution_lane=execution_lane or role.value,
+        )
+    decision = (
+        routing_authority.route(request)
+        if routing_authority is not None
+        else route_model(request, global_model=migration_target)
     )
     return ResolvedModelAssignment(
         role=role,

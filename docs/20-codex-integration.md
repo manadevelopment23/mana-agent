@@ -30,6 +30,12 @@ surface, but does not invoke the legacy Mana planner, tool worker, or queue
 executor. Its checklist preview deliberately returns no Mana checklist because
 the plan belongs to the Codex turn.
 
+Every Codex turn obtains a fresh task-aware decision from the gateway routing
+authority before `thread/start` or `turn/start`. The routed model replaces the
+configured Codex model hint for that invocation, and the decision ID/mode are
+recorded with Codex lifecycle events. A retry or resumed task must obtain a new
+decision; Codex never chooses an arbitrary backup model.
+
 There is no native coding fallback. If Codex is disabled, unavailable, returns
 an invalid result, or cannot obtain an isolated worktree for a write, the coding
 turn stops with an explicit error. An underspecified edit request must be

@@ -20,6 +20,7 @@ from .entry_routing import (
 )
 from .stack import ChatStack, build_chat_stack
 from .lane_coordinator import LaneCoordinator
+from .routing import GatewayRoutingAuthority, GatewayRoutingError
 from .lanes import LaneContract, LaneId, LanePriority, LaneTaskState, LockMode
 from .turn_engine import (
     ChatTurnResult,
@@ -42,6 +43,8 @@ __all__ = [
     "ChatStack",
     "build_chat_stack",
     "LaneCoordinator",
+    "GatewayRoutingAuthority",
+    "GatewayRoutingError",
     "LaneContract",
     "LaneId",
     "LanePriority",

@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -56,6 +56,8 @@ from mana_agent.services.chat_service import ChatService
 from mana_agent.services.chat_session_history import ChatSessionHistory
 from mana_agent.workspaces.service import WorkspaceService
 from mana_agent.evals.recorder import record_current
+from mana_agent.model_routing.models import Complexity, LatencyClass, RiskLevel, RoutingRequest
+from mana_agent.multi_agent.runtime.model_levels import routing_budgets_from_settings
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +252,9 @@ class AgentChatGateway:
         self._coding_agent = self._stack.coding_agent
         self._tools_orchestrator = self._stack.tools_orchestrator
         self.execution_manager = self._stack.execution_manager
+        self.routing_authority = self._stack.routing_authority
+        if self.routing_authority is None:
+            raise RuntimeError("Gateway routing authority is unavailable. No model action can be executed.")
         self._coding_agent_max_steps = self._stack.coding_agent_max_steps
         self._resolved_k = self._stack.resolved_k
         self._coding_agent_is_custom = self._stack.coding_agent_is_custom
@@ -655,12 +660,68 @@ class AgentChatGateway:
     # Simple path (Telegram, basic dashboard, API)
     # ------------------------------------------------------------------
 
+    def handle_control_command(self, text: str, *, session_id: str = "") -> str | None:
+        """Execute a typed gateway control command, or return ``None`` for chat."""
+
+        parts = str(text or "").strip().split()
+        if not parts:
+            return None
+        command = parts[0].lower()
+        if command == "/route":
+            row = self.latest_routing_decision(session_id=session_id)
+            if row is None:
+                return "No routing decision has been recorded for this session."
+            decision = row.get("decision") or {}
+            if len(parts) > 1 and parts[1].lower() == "explain":
+                return json.dumps(row, indent=2, default=str)
+            return json.dumps({
+                "decision_id": decision.get("decision_id"),
+                "provider": decision.get("provider"),
+                "model": decision.get("selected_model"),
+                "routing_mode": decision.get("routing_mode"),
+                "confidence": decision.get("confidence"),
+                "reasons": decision.get("selection_reasons", []),
+            }, indent=2, default=str)
+        if command == "/tasks":
+            rows = self.list_tasks(session_id=session_id, active_only=True)
+            return json.dumps([{
+                "task_id": row["task_id"], "parent_task_id": row["parent_task_id"],
+                "state": str(row["state"]), "lane": str(row["owning_lane"]),
+                "model": row["model"], "progress": row["progress_summary"],
+            } for row in rows], indent=2, default=str)
+        if command == "/budget":
+            return json.dumps(self.budget_usage(session_id=session_id), indent=2)
+        if command == "/candidates":
+            rows = [row for row in self.list_tasks(session_id=session_id) if row.get("task_type") == "candidate"]
+            return json.dumps(rows, indent=2, default=str)
+        if command == "/models" and len(parts) > 1 and parts[1].lower() == "health":
+            return json.dumps(self.model_health(), indent=2, default=str)
+        if command != "/task":
+            return None
+        if len(parts) < 2:
+            return "Usage: /task <id> | /task cancel|pause|resume <id>"
+        action = parts[1].lower()
+        if action in {"cancel", "pause", "resume"}:
+            if len(parts) < 3:
+                return f"Usage: /task {action} <id>"
+            task_id = parts[2]
+            payload = {
+                "cancel": lambda: self.cancel_task(task_id),
+                "pause": lambda: self.pause_task(task_id),
+                "resume": lambda: self.resume_task(task_id),
+            }[action]()
+            return json.dumps(payload, indent=2, default=str)
+        return json.dumps(self.inspect_task(parts[1]), indent=2, default=str)
+
     def send(self, session_id: str, text: str) -> str:
         """Synchronous send — full process_turn when stack is rich, else ask."""
         return asyncio.run(self.send_async(session_id, text))
 
     async def send_async(self, session_id: str, text: str) -> str:
         """Primary simple-path entry used by gateway-connected frontends."""
+        control = self.handle_control_command(text, session_id=session_id)
+        if control is not None:
+            return control
         self._active.add(session_id)
         try:
             # Prefer full turn engine when coding stack or agent tools are active
@@ -673,6 +734,24 @@ class AgentChatGateway:
             # Minimal ChatService-only path
             state = self._session(session_id)
             turn_id = f"turn_{uuid.uuid4().hex[:20]}"
+            minimal_decision = self.routing_authority.route(RoutingRequest(
+                role="main",
+                task_description=text,
+                task_type="routine",
+                complexity=Complexity.LOW,
+                risk=RiskLevel.LOW,
+                latency_requirement=LatencyClass.INTERACTIVE,
+                budgets=routing_budgets_from_settings(self.settings),
+                task_id=turn_id,
+                session_id=session_id,
+                workspace_id=str(self._stack.workspace_id or ""),
+                repository_id=str(self._stack.repository_id or ""),
+                execution_lane="conversation",
+            ))
+            minimal_ask = getattr(self._chat_service, "_ask_service", None) or getattr(self._chat_service, "ask_service", None)
+            self._apply_selected_model(getattr(minimal_ask, "qna_chain", None), minimal_decision.selected_model)
+            self._apply_selected_model(getattr(minimal_ask, "ask_agent", None), minimal_decision.selected_model)
+            state["latest_routing_decision"] = minimal_decision.concise()
             self._append_session_message(session_id, role="user", content=text, turn_id=turn_id)
             hist = state.get("history", [])[-20:]
             question = text
@@ -710,7 +789,58 @@ class AgentChatGateway:
         return "running" if session_id in self._active else "ready"
 
     def cancel(self, session_id: str) -> bool:
-        return False
+        active = self._lane_coordinator.list_tasks(active_only=True, session_id=session_id)
+        if not active:
+            return False
+        roots = [item for item in active if not item.parent_task_id]
+        for task in roots or list(active):
+            self._lane_coordinator.cancel_tree(task.task_id, reason="frontend cancellation requested")
+        return True
+
+    def list_tasks(self, *, session_id: str = "", active_only: bool = False) -> list[dict[str, Any]]:
+        return [asdict(item) for item in self._lane_coordinator.list_tasks(active_only=active_only, session_id=session_id)]
+
+    def inspect_task(self, task_id: str) -> dict[str, Any]:
+        task = self._lane_coordinator.inspect_task(task_id)
+        children = [asdict(item) for item in self._lane_coordinator.executions if item.parent_task_id == task_id]
+        return {**asdict(task), "children": children}
+
+    def pause_task(self, task_id: str, *, reason: str = "paused by main model") -> dict[str, Any]:
+        return asdict(self._lane_coordinator.pause(task_id, reason=reason))
+
+    def resume_task(self, task_id: str) -> dict[str, Any]:
+        return asdict(self._lane_coordinator.resume(task_id))
+
+    def cancel_task(self, task_id: str, *, include_children: bool = True) -> dict[str, Any]:
+        cancelled = (
+            self._lane_coordinator.cancel_tree(task_id)
+            if include_children
+            else (self._lane_coordinator.cancel_task(task_id).task_id,)
+        )
+        return {"task_id": task_id, "cancelled_task_ids": list(cancelled)}
+
+    def reprioritize_task(self, task_id: str, priority: str) -> dict[str, Any]:
+        from mana_agent.gateway.lanes import LanePriority
+
+        return asdict(self._lane_coordinator.reprioritize(task_id, LanePriority(priority)))
+
+    def attach_task_evidence(self, task_id: str, evidence: dict[str, Any]) -> dict[str, Any]:
+        return asdict(self._lane_coordinator.attach_evidence(task_id, evidence))
+
+    def request_task_verification(self, task_id: str, *, level: str = "standard") -> dict[str, Any]:
+        return asdict(self._lane_coordinator.request_verification(task_id, level=level))
+
+    def budget_usage(self, *, task_id: str = "", session_id: str = "") -> dict[str, Any]:
+        return self._lane_coordinator.budget_usage(task_id=task_id, session_id=session_id)
+
+    def latest_routing_decision(self, *, session_id: str = "", task_id: str = "") -> dict[str, Any] | None:
+        return self.routing_authority.latest(session_id=session_id, task_id=task_id)
+
+    def routing_history(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        return self.routing_authority.history_rows(limit=limit)
+
+    def model_health(self) -> dict[str, Any]:
+        return self.routing_authority.health()
 
     # ------------------------------------------------------------------
     # Full turn engine (auto-chat + coding agent + model decision)
@@ -757,6 +887,23 @@ class AgentChatGateway:
                 previous_route=str(state.get("active_route") or ""),
                 conversation_summary=_conversation_prompt(state, text)[-12000:],
             )
+            entry_model_decision = self.routing_authority.route(RoutingRequest(
+                role="head_decision",
+                task_description=f"Classify the gateway entry route for: {text}",
+                task_type="routing",
+                complexity=Complexity.MEDIUM,
+                risk=RiskLevel.MEDIUM,
+                required_capabilities=frozenset({"structured_output"}),
+                latency_requirement=LatencyClass.INTERACTIVE,
+                budgets=routing_budgets_from_settings(self.settings),
+                task_id=f"{turn_id}:entry",
+                session_id=session_id,
+                workspace_id=str(self._stack.workspace_id or ""),
+                repository_id=str(self._stack.repository_id or ""),
+                execution_lane="entry_routing",
+                expected_output_type="entry_routing_decision",
+            ))
+            self._apply_selected_model(getattr(self._entry_router, "llm", None), entry_model_decision.selected_model)
             try:
                 entry_decision = self._entry_router.route(
                     user_prompt=text,
@@ -772,6 +919,49 @@ class AgentChatGateway:
             else:
                 record_current("gateway.entry_route", {"decision": entry_decision.to_dict(), "turn_id": turn_id})
                 state["active_route"] = entry_decision.route
+                execution_role = {
+                    "coding": "coding",
+                    "search": "research",
+                    "github": "research",
+                    "browser": "research",
+                    "repository": "research",
+                    "memory": "research",
+                    "gmail": "tool",
+                    "calendar": "tool",
+                    "automation": "tool",
+                }.get(entry_decision.route, "main")
+                parallel_requested = bool(options.pop("request_parallel_candidates", False))
+                route_tools = self._entry_route_registry.get(entry_decision.route).tools
+                execution_decision = self.routing_authority.route(RoutingRequest(
+                    role=execution_role,
+                    task_description=text,
+                    task_type="coding" if entry_decision.route == "coding" else "routine",
+                    complexity=Complexity.MEDIUM if entry_decision.route == "coding" else Complexity.LOW,
+                    risk=RiskLevel.MEDIUM if entry_decision.route in {"coding", "automation"} else RiskLevel.LOW,
+                    required_tools=frozenset(route_tools),
+                    latency_requirement=LatencyClass.STANDARD,
+                    budgets=routing_budgets_from_settings(self.settings),
+                    task_id=turn_id,
+                    parent_task_id=f"{turn_id}:entry",
+                    session_id=session_id,
+                    workspace_id=str(self._stack.workspace_id or ""),
+                    repository_id=str(self._stack.repository_id or ""),
+                    execution_lane=entry_decision.route,
+                    expected_output_type="repository_patch" if entry_decision.route == "coding" else "text",
+                    subagents_allowed=bool(options.pop("subagents_allowed", False)),
+                    parallel_execution_allowed=bool(options.pop("parallel_execution_allowed", False)),
+                    main_model_requested_multi_agent=bool(options.pop("request_multi_agent", False)),
+                    main_model_requested_parallel=parallel_requested,
+                    multi_candidate_permitted=parallel_requested,
+                    isolation_available=bool(getattr(self.settings, "mana_managed_worktrees_enabled", False)),
+                    independent_verifier_available=any(
+                        profile.can_verify and ("verifier" in profile.supported_roles or "*" in profile.supported_roles)
+                        for profile in self.routing_authority.router.profiles
+                    ),
+                    maximum_concurrency=int(getattr(self.settings, "mana_routing_max_concurrent_tasks", 4)),
+                ))
+                state["latest_routing_decision"] = execution_decision.concise()
+                self._apply_selected_model(getattr(ask_service, "ask_agent", None), execution_decision.selected_model)
                 try:
                     lane_id = self._lane_coordinator.select_lane(
                         entry_route=entry_decision.route,
@@ -798,10 +988,12 @@ class AgentChatGateway:
                         workspace_id=self._lane_coordinator.taskboard.store.workspace_id,
                         repository_id=self._lane_coordinator.taskboard.store.repository_id,
                         target_files=target_files,
-                        model=str(self.config.model or ""),
+                        model=f"{execution_decision.provider}/{execution_decision.selected_model}",
                         requested_input_tokens=requested_input,
                         requested_output_tokens=requested_output,
                         capabilities=route_capabilities,
+                        routing_decision_id=execution_decision.decision_id,
+                        provider=execution_decision.provider,
                     )
                     if reservation.duplicate:
                         result = ChatTurnResult(
@@ -847,6 +1039,7 @@ class AgentChatGateway:
                                 "lane_id": lane_id.value,
                                 "lane_task_id": reservation.execution.task_id,
                                 "duplicate": False,
+                                "routing_decision": execution_decision.concise(),
                             }
                         )
                 except LaneCoordinatorError as exc:
@@ -938,6 +1131,21 @@ class AgentChatGateway:
             raise
         finally:
             self._active.discard(session_id)
+
+    @staticmethod
+    def _apply_selected_model(target: Any, model: str) -> None:
+        if target is None:
+            return
+        if hasattr(target, "update_model"):
+            target.update_model(model)
+            return
+        for name in ("model", "model_name"):
+            if hasattr(target, name):
+                try:
+                    setattr(target, name, model)
+                except (AttributeError, TypeError):
+                    pass
+                return
 
     def _execute_entry_route(
         self,

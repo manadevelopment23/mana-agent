@@ -50,19 +50,33 @@ class LockMode(_ValueEnum):
 
 
 class LaneTaskState(_ValueEnum):
+    CREATED = "created"
+    ROUTING = "routing"
     QUEUED = "queued"
     RUNNING = "running"
+    WAITING = "waiting"
+    BLOCKED = "blocked"
+    PAUSED = "paused"
+    CANCELLING = "cancelling"
     HANDOFF = "handoff"
+    VERIFYING = "verifying"
+    SELECTING_WINNER = "selecting_winner"
+    APPLYING = "applying"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    REJECTED = "rejected"
     TIMED_OUT = "timed_out"
     INTERRUPTED = "interrupted"
     BUDGET_EXHAUSTED = "budget_exhausted"
 
 
 ACTIVE_LANE_STATES = frozenset(
-    {LaneTaskState.QUEUED, LaneTaskState.RUNNING, LaneTaskState.HANDOFF}
+    {
+        LaneTaskState.ROUTING, LaneTaskState.QUEUED, LaneTaskState.RUNNING,
+        LaneTaskState.WAITING, LaneTaskState.HANDOFF, LaneTaskState.VERIFYING,
+        LaneTaskState.SELECTING_WINNER, LaneTaskState.APPLYING,
+    }
 )
 
 

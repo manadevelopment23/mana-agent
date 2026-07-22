@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import asdict
 from datetime import datetime, timezone
+import hashlib
+import json
 import math
 from typing import Iterable
 
@@ -15,6 +18,8 @@ from mana_agent.model_routing.models import (
     RoutingOutcome,
     RoutingPolicy,
     RoutingRequest,
+    RoutingMode,
+    RiskLevel,
     level_value,
     sanitize_configuration,
 )
@@ -69,10 +74,30 @@ class ModelRouter:
             raise RoutingFailure("No configured model satisfies the routing capability, reliability, latency, and budget constraints. No fallback action was executed.", rejected=tuple(rejected))
         scored.sort(key=lambda item: (-item.score, item.estimated_cost, item.profile.key))
         winner = scored[0]
-        competition = self._competition_allowed(request, scored)
-        competition_candidates = tuple(item.profile.key for item in scored[: self.policy.maximum_candidate_count]) if competition else ()
         verifier, independent = self._select_verifier(request, author=winner.profile, candidates=scored)
+        competition, competition_reasons = self._competition_allowed(
+            request,
+            scored,
+            independent_verifier=bool(verifier and independent),
+        )
+        multi_agent, multi_agent_reasons = self._multi_agent_allowed(request)
+        competition_candidates = tuple(item.profile.key for item in scored[: self.policy.maximum_candidate_count]) if competition else ()
+        if multi_agent and competition:
+            routing_mode = RoutingMode.MULTI_AGENT_WITH_PARALLEL_CANDIDATES
+        elif multi_agent:
+            routing_mode = RoutingMode.MULTI_AGENT
+        elif competition:
+            routing_mode = RoutingMode.PARALLEL_CANDIDATES
+        elif verifier is not None and (level_value(request.risk) >= level_value(RiskLevel.HIGH) or request.previous_verification_failed):
+            routing_mode = RoutingMode.SINGLE_WITH_VERIFICATION
+        else:
+            routing_mode = RoutingMode.SINGLE
         all_rejected = rejected + [CandidateRejection(item.profile.key, ("lower deterministic routing score",)) for item in scored[1:]]
+        request_id = request.request_id or self._stable_id("request", request)
+        decision_id = self._stable_id(
+            "decision",
+            {"request_id": request_id, "selected": winner.profile.key, "mode": routing_mode.value},
+        )
         return RoutingDecision(
             selected_model=winner.profile.model_id,
             provider=winner.profile.provider,
@@ -91,7 +116,28 @@ class ModelRouter:
             verifier_model=verifier.key if verifier else None,
             verifier_independent=independent,
             applicable_budgets=request.budgets,
+            decision_id=decision_id,
+            request_id=request_id,
+            task_id=request.task_id,
+            routing_mode=routing_mode,
+            required_verification_level=(
+                "independent" if competition else "enhanced" if routing_mode is RoutingMode.SINGLE_WITH_VERIFICATION else "standard"
+            ),
+            parallel_execution_permitted=competition,
+            multi_agent_execution_permitted=multi_agent,
+            applicable_limits={
+                "maximum_candidates": self.policy.maximum_candidate_count if competition else 1,
+                "maximum_concurrency": min(request.maximum_concurrency, self.policy.maximum_concurrency),
+                "maximum_task_tree_depth": self.policy.maximum_task_tree_depth,
+            },
+            deadline_seconds=self.policy.task_timeout_seconds,
+            orchestration_reasons=tuple((*multi_agent_reasons, *competition_reasons)),
         )
+
+    @staticmethod
+    def _stable_id(prefix: str, value: object) -> str:
+        payload = json.dumps(asdict(value) if hasattr(value, "__dataclass_fields__") else value, sort_keys=True, default=str, separators=(",", ":"))
+        return f"{prefix}_{hashlib.sha256(payload.encode()).hexdigest()[:20]}"
 
     def _reject(self, profile: ModelProfile, request: RoutingRequest) -> list[str]:
         reasons: list[str] = []
@@ -262,17 +308,80 @@ class ModelRouter:
                 rows.extend(self.history.query(provider=provider, model_id=candidate.model_id))
         return tuple(rows)
 
-    def _competition_allowed(self, request: RoutingRequest, candidates: list[_Scored]) -> bool:
+    def _competition_allowed(
+        self,
+        request: RoutingRequest,
+        candidates: list[_Scored],
+        *,
+        independent_verifier: bool,
+    ) -> tuple[bool, tuple[str, ...]]:
+        reasons: list[str] = []
         if not request.multi_candidate_permitted or len(candidates) < 2 or self.policy.maximum_candidate_count < 2:
-            return False
+            return False, ("parallel candidates were not requested or fewer than two candidates qualified",)
+        task_aware = bool(request.request_id or request.task_id)
+        if task_aware:
+            if not self.policy.parallel_execution_enabled or not request.parallel_execution_allowed:
+                return False, ("parallel execution is disabled by gateway policy",)
+            if not request.main_model_requested_parallel:
+                return False, ("the main coordinating model did not request parallel candidates",)
+            if not request.isolation_available:
+                return False, ("isolated candidate execution is unavailable",)
+            if not request.independent_verifier_available or not independent_verifier:
+                return False, ("an independent qualified verifier is unavailable",)
+            if request.active_task_conflict:
+                return False, ("an active task ownership conflict prevents candidate execution",)
+            if request.maximum_concurrency < 2:
+                return False, ("task concurrency does not permit two candidates",)
         threshold_value = min(level_value(self.policy.competition_complexity_threshold), level_value(self.policy.competition_risk_threshold))
         threshold = self._effective_demand(request) >= threshold_value
         triggered = threshold or request.previous_verification_failed or request.explicit_competition
         if not triggered or request.latency_requirement is LatencyClass.INTERACTIVE:
-            return False
+            return False, ("task demand or latency does not justify parallel candidates",)
+        evidence = self._parallel_evidence_score(request, candidates)
+        if task_aware and evidence < self.policy.minimum_parallel_evidence:
+            return False, (f"parallel evidence {evidence:.3f} is below {self.policy.minimum_parallel_evidence:.3f}",)
         limit = request.budgets.competition_cost_limit
         projected = sum(item.estimated_cost for item in candidates[: self.policy.maximum_candidate_count]) + self._verification_reserve(request)
-        return limit is None or projected <= limit or request.budgets.allow_controlled_override
+        if limit is not None and projected > limit and not request.budgets.allow_controlled_override:
+            return False, (f"projected candidate and verification cost {projected:.6f} exceeds {limit:.6f}",)
+        reasons.extend((
+            f"parallel evidence {evidence:.3f} satisfies policy",
+            f"{min(len(candidates), self.policy.maximum_candidate_count)} materially qualified candidates are available",
+            "independent verification and isolated execution are available" if task_aware else "legacy validated competition request",
+        ))
+        return True, tuple(reasons)
+
+    def _parallel_evidence_score(self, request: RoutingRequest, candidates: list[_Scored]) -> float:
+        demand = self._effective_demand(request)
+        initial_uncertainty = 1.0 - candidates[0].confidence
+        failure_signal = min(1.0, request.similar_task_failures / 3)
+        strategies = min(1.0, max(0, request.plausible_strategy_count - 1) / 2)
+        diversity = min(1.0, len({item.profile.provider for item in candidates}) / 2)
+        score = (
+            0.25 * demand
+            + 0.15 * initial_uncertainty
+            + 0.15 * failure_signal
+            + 0.15 * request.historical_result_variance
+            + 0.15 * request.historical_parallel_benefit
+            + 0.10 * strategies
+            + 0.05 * diversity
+        )
+        if request.explicit_competition:
+            score += 0.10
+        return min(1.0, score)
+
+    def _multi_agent_allowed(self, request: RoutingRequest) -> tuple[bool, tuple[str, ...]]:
+        if not request.main_model_requested_multi_agent:
+            return False, ("the main coordinating model did not request decomposition",)
+        if not self.policy.multi_agent_enabled or not request.subagents_allowed:
+            return False, ("multi-agent execution is disabled by gateway policy",)
+        if request.task_tree_depth >= self.policy.maximum_task_tree_depth:
+            return False, ("maximum task-tree depth would be exceeded",)
+        if request.maximum_concurrency < 2:
+            return False, ("task concurrency does not permit multiple agents",)
+        if request.active_task_conflict:
+            return False, ("an active ownership conflict prevents decomposition",)
+        return True, ("main-model decomposition request passed gateway policy",)
 
     def _select_verifier(self, request: RoutingRequest, *, author: ModelProfile, candidates: list[_Scored]) -> tuple[ModelProfile | None, bool]:
         required_context = request.expected_prompt_tokens + request.retrieved_context_tokens + request.expected_response_tokens

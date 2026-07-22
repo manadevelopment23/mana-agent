@@ -23,6 +23,7 @@ from mana_agent.integrations.codex.config import CodexSettings
 from mana_agent.multi_agent.core.types import AgentRole
 from mana_agent.multi_agent.runtime.model_levels import resolve_model_for_role
 from mana_agent.model_routing.repository import RepositoryMetadataInspector
+from mana_agent.gateway.routing import GatewayRoutingAuthority
 from mana_agent.multi_agent.runtime.tool_worker_process import ToolWorkerClient
 from mana_agent.multi_agent.runtime.tools_executor import (
     LocalToolsExecutor,
@@ -149,6 +150,7 @@ class ChatStack:
     repository_id: str | None = None
     log_path: Path | None = None
     execution_manager: ExecutionManager | None = None
+    routing_authority: GatewayRoutingAuthority | None = None
 
 
 def build_chat_stack(
@@ -241,6 +243,12 @@ def build_chat_stack(
     except Exception:
         pass
 
+    routing_authority = GatewayRoutingAuthority(
+        root,
+        settings=settings,
+        event_sink=cfg.event_sink,
+    )
+
     # --- ask + chat service ---
     if cfg.chat_service is not None:
         chat_service = cfg.chat_service
@@ -251,7 +259,10 @@ def build_chat_stack(
         build_ask = _resolve_build_ask_service()
         try:
             ask_service = build_ask(
-                settings, model_override=cfg.model, project_root=root
+                settings,
+                model_override=cfg.model,
+                project_root=root,
+                routing_authority=routing_authority,
             )
         except TypeError:
             try:
@@ -280,30 +291,41 @@ def build_chat_stack(
         gateway_ask_agent.execution_manager = execution_manager
 
     routing_repository = RepositoryMetadataInspector().inspect(root)
+    route_context = {
+        "routing_authority": routing_authority,
+        "session_id": session_id,
+        "workspace_id": str(workspace_id or ""),
+        "repository_id": str(repository_id or ""),
+    }
     effective_model = resolve_model_for_role(
         AgentRole.MAIN,
         global_model=cfg.model or settings.openai_chat_model,
         repository=routing_repository,
+        **route_context,
     ).resolved_model
     router_model_assignment = resolve_model_for_role(
         AgentRole.HEAD_DECISION,
         global_model=effective_model,
         repository=routing_repository,
+        **route_context,
     )
     coding_model_assignment = resolve_model_for_role(
         AgentRole.CODING,
         global_model=getattr(settings, "mana_codex_model", None) or effective_model,
         repository=routing_repository,
+        **route_context,
     )
     planner_model_assignment = resolve_model_for_role(
         AgentRole.PLANNER,
         global_model=settings.openai_coding_planner_model or effective_model,
         repository=routing_repository,
+        **route_context,
     )
     tool_worker_model_assignment = resolve_model_for_role(
         AgentRole.TOOL_WORKER,
         global_model=settings.openai_tool_worker_model or effective_model,
         repository=routing_repository,
+        **route_context,
     )
     effective_tool_worker_model = tool_worker_model_assignment.resolved_model
     effective_base_url = settings.openai_base_url
@@ -344,6 +366,8 @@ def build_chat_stack(
                 repository_id=repository_id,
                 session_id=session_id,
                 event_sink=cfg.event_sink,
+                routing_authority=routing_authority,
+                workspace_id=workspace_id,
             )
         else:
             if not cfg.agent_tools:
@@ -430,15 +454,18 @@ def build_chat_stack(
 
     if isinstance(coding_agent_instance, CodexCodingAgentShim):
         coding_backend = "codex"
-        coding_model = coding_agent_instance.codex_settings.model or "app-server-default"
+        coding_model = str(getattr(settings, "mana_codex_model", "") or "router-managed")
+        routed_coding_model = coding_agent_instance.codex_settings.model or "app-server-default"
         planner_model = "codex-owned"
     elif coding_agent_instance is not None:
         coding_backend = type(coding_agent_instance).__name__
         coding_model = coding_model_assignment.resolved_model
+        routed_coding_model = coding_model
         planner_model = planner_model_assignment.resolved_model
     else:
         coding_backend = "disabled"
         coding_model = "disabled"
+        routed_coding_model = "disabled"
         planner_model = "disabled"
     tool_worker_model = (
         tool_worker_model_assignment.resolved_model
@@ -447,11 +474,12 @@ def build_chat_stack(
     )
     logger.info(
         "Resolved chat runtime models: main=%s; router=%s; coding_backend=%s; "
-        "coding=%s; planner=%s; tool_worker=%s",
+        "coding=%s; coding_routed=%s; planner=%s; tool_worker=%s",
         effective_model,
         router_model_assignment.resolved_model,
         coding_backend,
         coding_model,
+        routed_coding_model,
         planner_model,
         tool_worker_model,
     )
@@ -477,6 +505,7 @@ def build_chat_stack(
         tools_execution_config=tools_execution_config,
         tools_execution_boot_warnings=tools_execution_boot_warnings,
         execution_manager=execution_manager,
+        routing_authority=routing_authority,
         coding_agent_is_custom=coding_agent_is_custom,
         effective_model=effective_model,
         chat_agent_max_steps=chat_agent_max_steps,

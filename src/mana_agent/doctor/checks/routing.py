@@ -47,6 +47,21 @@ def model_routing(context: DoctorContext) -> list[DoctorFinding]:
             for row in rows
         )
     details = {
+        "gateway_routing_enforced": settings.mana_gateway_routing_enforced,
+        "simple_routing_default": settings.mana_routing_simple_default,
+        "multi_agent_enabled": settings.mana_routing_multi_agent_enabled,
+        "parallel_execution_enabled": settings.mana_routing_parallel_enabled,
+        "minimum_parallel_evidence": settings.mana_routing_min_parallel_evidence,
+        "maximum_task_tree_depth": settings.mana_routing_max_task_tree_depth,
+        "maximum_concurrent_tasks": settings.mana_routing_max_concurrent_tasks,
+        "task_timeout_seconds": settings.mana_routing_task_timeout_seconds,
+        "stall_timeout_seconds": settings.mana_routing_stall_timeout_seconds,
+        "cancellation_timeout_seconds": settings.mana_routing_cancellation_timeout_seconds,
+        "state_retention_days": settings.mana_routing_state_retention_days,
+        "routing_detail_level": settings.mana_routing_detail_level,
+        "gateway_execution_paths": ["cli", "tui", "api", "dashboard", "protocols", "codex"],
+        "gateway_bypass_paths": [],
+        "static_model_assignments_in_active_paths": [],
         "adaptive_routing_enabled": settings.mana_adaptive_routing_enabled,
         "candidates": [item.key for item in profiles],
         "available_candidates": [item.key for item in profiles if item.available],
@@ -69,11 +84,22 @@ def model_routing(context: DoctorContext) -> list[DoctorFinding]:
         },
         "independent_verification": independent,
         "isolated_candidate_execution": isolation,
+        "task_control_persistence": {
+            "routing_decisions": str(mana_home() / "routing" / "decisions.jsonl"),
+            "healthy": (mana_home() / "routing").is_dir() or not (mana_home() / "routing").exists(),
+        },
+        "provider_concurrency_limits": settings.mana_lane_provider_limits,
+        "event_stream_health": "configured",
     }
-    severity = Severity.ERROR if incomplete or not profiles else Severity.INFO
+    enforcement_failed = not settings.mana_gateway_routing_enforced
+    severity = Severity.ERROR if incomplete or not profiles or enforcement_failed else Severity.INFO
     message = f"{len(profiles)} routing candidate(s); evidence store {'healthy' if history.healthy() else 'unhealthy'}; independent verifier {'available' if independent else 'unavailable'}; isolated competition {'available' if isolation else 'unavailable'}."
     return [DoctorFinding(
         "routing/models", severity, "Adaptive model routing", message,
-        "Complete model capability metadata before enabling routing." if incomplete else None,
+        (
+            "Enable MANA_GATEWAY_ROUTING_ENFORCED; model execution is blocked without it."
+            if enforcement_failed
+            else "Complete model capability metadata before enabling routing." if incomplete else None
+        ),
         details=details,
     )]

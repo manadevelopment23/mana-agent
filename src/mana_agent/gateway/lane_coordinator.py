@@ -127,6 +127,28 @@ class LaneHandoffError(LaneCoordinatorError):
     code = "lane_handoff_invalid"
 
 
+_CONTROL_TRANSITIONS: dict[LaneTaskState, frozenset[LaneTaskState]] = {
+    LaneTaskState.CREATED: frozenset({LaneTaskState.ROUTING, LaneTaskState.REJECTED, LaneTaskState.FAILED}),
+    LaneTaskState.ROUTING: frozenset({LaneTaskState.QUEUED, LaneTaskState.REJECTED, LaneTaskState.FAILED}),
+    LaneTaskState.QUEUED: frozenset({LaneTaskState.RUNNING, LaneTaskState.PAUSED, LaneTaskState.CANCELLING, LaneTaskState.BLOCKED, LaneTaskState.REJECTED}),
+    LaneTaskState.RUNNING: frozenset({LaneTaskState.WAITING, LaneTaskState.BLOCKED, LaneTaskState.CANCELLING, LaneTaskState.VERIFYING, LaneTaskState.COMPLETED, LaneTaskState.FAILED}),
+    LaneTaskState.WAITING: frozenset({LaneTaskState.QUEUED, LaneTaskState.RUNNING, LaneTaskState.PAUSED, LaneTaskState.BLOCKED, LaneTaskState.CANCELLING}),
+    LaneTaskState.BLOCKED: frozenset({LaneTaskState.QUEUED, LaneTaskState.CANCELLING, LaneTaskState.FAILED, LaneTaskState.REJECTED}),
+    LaneTaskState.PAUSED: frozenset({LaneTaskState.QUEUED, LaneTaskState.CANCELLING}),
+    LaneTaskState.CANCELLING: frozenset({LaneTaskState.CANCELLED, LaneTaskState.FAILED}),
+    LaneTaskState.HANDOFF: frozenset({LaneTaskState.QUEUED, LaneTaskState.CANCELLING, LaneTaskState.FAILED}),
+    LaneTaskState.VERIFYING: frozenset({LaneTaskState.SELECTING_WINNER, LaneTaskState.APPLYING, LaneTaskState.COMPLETED, LaneTaskState.REJECTED, LaneTaskState.FAILED, LaneTaskState.CANCELLING}),
+    LaneTaskState.SELECTING_WINNER: frozenset({LaneTaskState.APPLYING, LaneTaskState.REJECTED, LaneTaskState.FAILED, LaneTaskState.CANCELLING}),
+    LaneTaskState.APPLYING: frozenset({LaneTaskState.COMPLETED, LaneTaskState.FAILED, LaneTaskState.CANCELLING}),
+}
+
+_CONTROL_TERMINAL_STATES = frozenset({
+    LaneTaskState.COMPLETED, LaneTaskState.FAILED, LaneTaskState.CANCELLED,
+    LaneTaskState.REJECTED, LaneTaskState.TIMED_OUT, LaneTaskState.INTERRUPTED,
+    LaneTaskState.BUDGET_EXHAUSTED,
+})
+
+
 @dataclass(slots=True)
 class LaneBudget:
     reserved_input_tokens: int = 0
@@ -176,6 +198,9 @@ class LaneExecution:
     taskboard_task_id: str = ""
     worker_id: str = ""
     model: str = ""
+    provider: str = ""
+    routing_decision_id: str = ""
+    task_type: str = "single"
     capabilities: list[str] = field(default_factory=list)
     changed_files: list[str] = field(default_factory=list)
     verification_state: dict[str, Any] = field(default_factory=dict)
@@ -186,6 +211,11 @@ class LaneExecution:
     created_at: str = field(default_factory=_iso)
     updated_at: str = field(default_factory=_iso)
     error: str = ""
+    progress_summary: str = ""
+    current_tool_activity: dict[str, Any] = field(default_factory=dict)
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    cancellation_state: dict[str, Any] = field(default_factory=dict)
+    final_result: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -397,6 +427,9 @@ class LaneCoordinator:
         requested_output_tokens: int = 0,
         estimated_cost: float = 0.0,
         capabilities: Sequence[str] = (),
+        routing_decision_id: str = "",
+        provider: str = "",
+        task_type: str = "single",
     ) -> LaneReservation:
         contract = self.contracts[lane_id]
         if contract.requires_repository and not repository_id:
@@ -491,6 +524,7 @@ class LaneCoordinator:
                 repository_id=repository_id, workspace_id=workspace_id, session_id=session_id,
                 target_files=files, priority=selected_priority, budget=budget,
                 taskboard_task_id=task.task_id, model=model, capabilities=list(capabilities),
+                routing_decision_id=routing_decision_id, provider=provider, task_type=task_type,
                 lane_history=[{"lane_id": lane_id.value, "state": "queued", "at": _iso()}],
             )
             self._executions[task_id] = execution
@@ -498,6 +532,8 @@ class LaneCoordinator:
             self.taskboard.update_status(task_id, TaskStatus.QUEUED)
             self._persist_locked()
             self.emit("lane.queued", task_id=task_id, lane_id=lane_id)
+            self.emit("task.created", task_id=task_id, lane_id=lane_id, parent_task_id=parent_task_id)
+            self.emit("model.assigned", task_id=task_id, lane_id=lane_id, routing_decision_id=routing_decision_id, provider=provider, model=model)
             self.emit("resource.reserved", task_id=task_id, lane_id=lane_id, budget=asdict(budget))
             return LaneReservation(execution)
 
@@ -593,6 +629,151 @@ class LaneCoordinator:
         with self._condition:
             self._condition.notify_all()
         return execution
+
+    def transition(
+        self,
+        task_id: str,
+        state: LaneTaskState,
+        *,
+        reason: str = "",
+        progress_summary: str = "",
+    ) -> LaneExecution:
+        """Apply one validated live-control transition to authoritative state."""
+
+        with self._condition:
+            execution = self._executions[task_id]
+            if state == execution.state:
+                return execution
+            if state not in _CONTROL_TRANSITIONS.get(execution.state, frozenset()):
+                raise LaneCoordinatorError(
+                    f"Invalid task-state transition: {execution.state.value} -> {state.value}"
+                )
+            previous = execution.state
+            execution.state = state
+            execution.updated_at = _iso()
+            if reason:
+                execution.error = reason
+            if progress_summary:
+                execution.progress_summary = progress_summary
+            execution.lane_history.append({
+                "lane_id": execution.owning_lane.value,
+                "state": state.value,
+                "previous_state": previous.value,
+                "reason": reason,
+                "at": execution.updated_at,
+            })
+            self._persist_locked()
+        if state in _CONTROL_TERMINAL_STATES or state in {LaneTaskState.PAUSED, LaneTaskState.BLOCKED}:
+            self.lock_manager.release_task(task_id)
+        self.emit(
+            f"task.{state.value}",
+            task_id=task_id,
+            lane_id=execution.owning_lane,
+            previous_state=previous.value,
+            reason=reason,
+        )
+        with self._condition:
+            self._condition.notify_all()
+        return execution
+
+    def list_tasks(self, *, active_only: bool = False, session_id: str = "") -> tuple[LaneExecution, ...]:
+        with self._condition:
+            rows = tuple(
+                execution for execution in self._executions.values()
+                if (not active_only or execution.state not in _CONTROL_TERMINAL_STATES)
+                and (not session_id or execution.session_id == session_id)
+            )
+        return tuple(sorted(rows, key=lambda item: (PRIORITY_ORDER[item.priority], item.created_at, item.task_id)))
+
+    def inspect_task(self, task_id: str) -> LaneExecution:
+        try:
+            return self._executions[task_id]
+        except KeyError as exc:
+            raise LaneCoordinatorError(f"Unknown gateway task: {task_id}") from exc
+
+    def pause(self, task_id: str, *, reason: str = "paused by coordinator") -> LaneExecution:
+        return self.transition(task_id, LaneTaskState.PAUSED, reason=reason)
+
+    def resume(self, task_id: str) -> LaneExecution:
+        return self.transition(task_id, LaneTaskState.QUEUED, reason="resumed by coordinator")
+
+    def cancel_task(self, task_id: str, *, reason: str = "cancelled by coordinator") -> LaneExecution:
+        execution = self.inspect_task(task_id)
+        if execution.state in _CONTROL_TERMINAL_STATES:
+            return execution
+        self.transition(task_id, LaneTaskState.CANCELLING, reason=reason)
+        execution.cancellation_state.update({"requested_at": _iso(), "reason": reason})
+        result = self.transition(task_id, LaneTaskState.CANCELLED, reason=reason)
+        try:
+            self.taskboard.update_status(result.taskboard_task_id, TaskStatus.CANCELLED)
+        except Exception:
+            pass
+        return result
+
+    def cancel_tree(self, task_id: str, *, reason: str = "task tree cancelled") -> tuple[str, ...]:
+        descendants: list[LaneExecution] = []
+        pending = [task_id]
+        while pending:
+            parent = pending.pop()
+            children = [item for item in self._executions.values() if item.parent_task_id == parent]
+            descendants.extend(children)
+            pending.extend(item.task_id for item in children)
+        cancelled: list[str] = []
+        for execution in reversed(descendants):
+            if execution.state not in _CONTROL_TERMINAL_STATES:
+                self.cancel_task(execution.task_id, reason=reason)
+                cancelled.append(execution.task_id)
+        if self.inspect_task(task_id).state not in _CONTROL_TERMINAL_STATES:
+            self.cancel_task(task_id, reason=reason)
+            cancelled.append(task_id)
+        return tuple(cancelled)
+
+    def reprioritize(self, task_id: str, priority: LanePriority) -> LaneExecution:
+        with self._condition:
+            execution = self._executions[task_id]
+            if execution.state not in {LaneTaskState.QUEUED, LaneTaskState.WAITING, LaneTaskState.PAUSED}:
+                raise LaneCoordinatorError("Only queued, waiting, or paused tasks can be reprioritized")
+            execution.priority = priority
+            execution.updated_at = _iso()
+            self._persist_locked()
+            self._condition.notify_all()
+        self.emit("task.reprioritized", task_id=task_id, lane_id=execution.owning_lane, priority=priority.value)
+        return execution
+
+    def mark_blocked(self, task_id: str, *, reason: str) -> LaneExecution:
+        if not reason.strip():
+            raise LaneCoordinatorError("A blocked task requires an actionable reason")
+        return self.transition(task_id, LaneTaskState.BLOCKED, reason=reason)
+
+    def attach_evidence(self, task_id: str, evidence: Mapping[str, Any]) -> LaneExecution:
+        with self._condition:
+            execution = self._executions[task_id]
+            execution.evidence.append({**dict(evidence), "attached_at": _iso()})
+            execution.updated_at = _iso()
+            self._persist_locked()
+        self.emit("task.evidence_attached", task_id=task_id, lane_id=execution.owning_lane)
+        return execution
+
+    def request_verification(self, task_id: str, *, level: str = "standard") -> LaneExecution:
+        execution = self.transition(task_id, LaneTaskState.VERIFYING, reason=f"verification requested: {level}")
+        execution.verification_state.update({"level": level, "requested_at": _iso()})
+        with self._condition:
+            self._persist_locked()
+        self.emit("verification.started", task_id=task_id, lane_id=execution.owning_lane, level=level)
+        return execution
+
+    def budget_usage(self, *, task_id: str = "", session_id: str = "") -> dict[str, Any]:
+        rows = [
+            item for item in self._executions.values()
+            if (not task_id or item.task_id == task_id) and (not session_id or item.session_id == session_id)
+        ]
+        return {
+            "reserved_tokens": sum(item.budget.reserved_tokens for item in rows),
+            "consumed_tokens": sum(item.budget.consumed_tokens for item in rows),
+            "estimated_cost": sum(item.budget.estimated_cost for item in rows),
+            "actual_cost": sum(item.budget.actual_cost for item in rows),
+            "task_count": len(rows),
+        }
 
     def handoff(self, handoff: LaneHandoff) -> LaneExecution:
         with self._condition:
