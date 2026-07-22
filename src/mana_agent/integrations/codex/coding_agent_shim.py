@@ -11,13 +11,18 @@ from __future__ import annotations
 import asyncio
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from mana_agent.coding.models import AgentEvent, CodingTask, CodingTaskResult, WorkspaceContext
 from mana_agent.integrations.codex.backend import CodexCodingBackend
 from mana_agent.integrations.codex.config import CodexSettings
 from mana_agent.multi_agent.worktrees import WorkspaceManager, WorkspaceStatus
 from mana_agent.evals.recorder import record_current
+from mana_agent.model_routing.models import Complexity, LatencyClass, RiskLevel, RoutingRequest
+from mana_agent.multi_agent.runtime.model_levels import routing_budgets_from_settings
+
+if TYPE_CHECKING:
+    from mana_agent.gateway.routing import GatewayRoutingAuthority
 
 BackendFactory = Callable[[], CodexCodingBackend]
 WorkspaceManagerFactory = Callable[[], WorkspaceManager]
@@ -38,6 +43,8 @@ class CodexCodingAgentShim:
         workspace_manager_factory: WorkspaceManagerFactory | None = None,
         workspace_task_id: str = "",
         resume_thread_id: str = "",
+        routing_authority: "GatewayRoutingAuthority | None" = None,
+        workspace_id: str | None = None,
         **_legacy_kwargs: Any,
     ) -> None:
         self.repo_root = Path(repo_root).expanduser().resolve()
@@ -47,6 +54,12 @@ class CodexCodingAgentShim:
         self.event_sink = event_sink
         self.workspace_task_id = str(workspace_task_id or "").strip()
         self.resume_thread_id = str(resume_thread_id or "").strip()
+        self.workspace_id = str(workspace_id or "").strip()
+        if routing_authority is None:
+            from mana_agent.gateway.routing import GatewayRoutingAuthority
+
+            routing_authority = GatewayRoutingAuthority(self.repo_root, event_sink=event_sink)
+        self.routing_authority = routing_authority
         self._backend_factory = backend_factory or (
             lambda: CodexCodingBackend(self.codex_settings, resume_thread_id=self.resume_thread_id)
         )
@@ -148,6 +161,32 @@ class CodexCodingAgentShim:
         if not goal:
             raise ValueError("Codex coding request is required")
         task_id = f"codex_task_{uuid.uuid4().hex[:16]}"
+        routing_decision = self.routing_authority.route(RoutingRequest(
+            role="coding",
+            task_description=goal,
+            task_type="coding" if requires_repository_write else "planning",
+            complexity=Complexity.MEDIUM,
+            risk=RiskLevel.MEDIUM if requires_repository_write else RiskLevel.LOW,
+            required_capabilities=frozenset({"patch", "tool_calls"} if requires_repository_write else {"structured_output"}),
+            required_tools=frozenset({"repository_read", "repository_write", "test_execution"} if requires_repository_write else {"repository_read"}),
+            latency_requirement=LatencyClass.STANDARD,
+            budgets=routing_budgets_from_settings(self.routing_authority.settings),
+            task_id=task_id,
+            parent_task_id=self.workspace_task_id or None,
+            session_id=self.session_id,
+            workspace_id=self.workspace_id,
+            repository_id=str(self.repository_id or ""),
+            execution_lane="coding",
+            expected_output_type="repository_patch" if requires_repository_write else "implementation_plan",
+            isolation_available=bool(self.codex_settings.worktree_isolation),
+            independent_verifier_available=any(
+                profile.can_verify and ("verifier" in profile.supported_roles or "*" in profile.supported_roles)
+                for profile in self.routing_authority.router.profiles
+            ),
+        ))
+        self.codex_settings = self.codex_settings.model_copy(
+            update={"model": routing_decision.selected_model}
+        )
         record_current(
             "codex.turn.started",
             {
@@ -156,6 +195,8 @@ class CodexCodingAgentShim:
                 "sandbox": "workspaceWrite" if requires_repository_write else "readOnly",
                 "approval_policy": self.codex_settings.approval_policy,
                 "repository_identity": str(self.repo_root),
+                "routing_decision_id": routing_decision.decision_id,
+                "routing_mode": routing_decision.routing_mode.value,
             },
         )
         task = CodingTask(

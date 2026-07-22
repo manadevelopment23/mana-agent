@@ -60,15 +60,19 @@ All chat frontends connect through **`src/mana_agent/gateway/`**:
   CodingAgent, ToolWorker, QueueManager (same stack the old chat CLI built).
 - **`process_chat_turn`** (`turn_engine.py`): model decision routing, auto-chat
   modes, coding agent / auto-execute, web research, and classic ask path.
+- **`GatewayRoutingAuthority`** (`routing.py`): the sole task-aware wrapper around
+  the deployed evidence router; persists each request/decision and emits events.
+- **`LaneCoordinator`** (`lane_coordinator.py`): the authoritative live task
+  state machine, budget/concurrency owner, and repository/file lock manager.
 
 Frontends (CLI flags/I/O, TUI, Telegram, dashboard) collect config and render
 results; they should not rebuild CodingAgent independently.
 
 ### Adaptive model-routing boundary
 
-All inference lanes resolve through `mana_agent.model_routing.ModelRouter`. The gateway inventories repository language/framework/build and changed-scope metadata once per fingerprint, then the router validates profile capabilities, context, availability, latency, budget and verification reserve before applying its deterministic evidence score. Legacy logical levels seed profiles but never bypass the router. Invalid or missing decisions stop execution.
+All inference lanes resolve through the gateway-owned instance of `mana_agent.model_routing.ModelRouter`. Every invocation has a persisted request and decision. The gateway inventories repository language/framework/build and changed-scope metadata once per fingerprint, then the router validates profile capabilities, context, availability, latency, budget and verification reserve before applying its deterministic evidence score. Legacy logical levels seed profiles but never bypass the router. Invalid or missing decisions stop execution.
 
-High-demand coding decisions may select two author configurations when isolation, latency, and budget policy allow. Candidate executors must use separate managed worktrees or patch roots; normalized diffs and executed check evidence go to an independently routed verifier when available. The winner alone may be promoted. See [Evidence-based model routing](model-routing.md).
+Simple single-model execution is the default. The main model may request decomposition or candidate competition, but the router can reject or reduce that request. Parallel candidates require positive evidence, two materially qualified models, isolation, an independent verifier, ownership safety, concurrency, latency, and reserved budget. Candidate executors use separate managed worktrees or patch roots; normalized diffs and executed check evidence go to the independently routed verifier. The winner alone may be promoted. See [Evidence-based model routing](model-routing.md).
 
 ### Prompting and flow context
 

@@ -893,6 +893,10 @@ def chat(
     effective_model = stack.effective_model or resolve_model_for_role(
         AgentRole.MAIN,
         global_model=model or settings.openai_chat_model,
+        routing_authority=stack.routing_authority,
+        session_id=stack.session_id,
+        workspace_id=str(stack.workspace_id or ""),
+        repository_id=str(stack.repository_id or ""),
     ).resolved_model
     coding_agent_max_steps = stack.coding_agent_max_steps
     chat_agent_max_steps = stack.chat_agent_max_steps
@@ -904,6 +908,10 @@ def chat(
     tool_worker_model_assignment = resolve_model_for_role(
         AgentRole.TOOL_WORKER,
         global_model=settings.openai_tool_worker_model or effective_model,
+        routing_authority=stack.routing_authority,
+        session_id=stack.session_id,
+        workspace_id=str(stack.workspace_id or ""),
+        repository_id=str(stack.repository_id or ""),
     )
     effective_tool_worker_model = tool_worker_model_assignment.resolved_model
     chat_log_path = stack.log_path or (
@@ -2047,6 +2055,13 @@ def chat(
                     background_index_state["announced"] = True
 
             if not question:
+                continue
+            control_response = gateway.handle_control_command(
+                question,
+                session_id=chat_ui_state.session_id,
+            )
+            if control_response is not None:
+                console.print(control_response)
                 continue
             if question.lower() in {"exit", "quit", "/exit", "/quit"}:
                 console.print("Goodbye!")

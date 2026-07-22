@@ -353,6 +353,17 @@ class ManaChatApp(App):
         if not text.strip():
             return
 
+        if self.gateway is not None and hasattr(self.gateway, "handle_control_command"):
+            control = self.gateway.handle_control_command(
+                text,
+                session_id=self._gateway_session_id or "",
+            )
+            if control is not None:
+                self.history.add(AssistantMessageEvent(content=control))
+                if self.input:
+                    self.input.reset()
+                return
+
         if text == "/models" or text.startswith("/models "):
             if self._turn_in_progress:
                 self.notify("Wait for the current turn to finish before changing models.", severity="warning")
@@ -731,6 +742,14 @@ class ManaChatApp(App):
                     if isinstance(flow_id, str) and flow_id.strip():
                         self.active_flow_id = flow_id.strip()
 
+                    routing = dict((getattr(result, "payload", {}) or {}).get("routing_decision") or {})
+                    if routing:
+                        self.update_status(
+                            f"{routing.get('provider')}/{routing.get('model')} · "
+                            f"{routing.get('routing_mode', 'single')} · "
+                            f"{float(routing.get('confidence') or 0):.0%}"
+                        )
+
                     # Surface tool/mode hints when auto-chat (e.g. gmail) was used
                     route_mode = str(getattr(result, "mode", "") or "")
                     auto_mode = str(getattr(result, "auto_chat_mode", "") or "")
@@ -756,8 +775,10 @@ class ManaChatApp(App):
                         self.update_status(f"Ready ({route_mode})")
                     return
                 except Exception as exc:
-                    # Fall through to direct coding_agent / chat_service path
-                    self.update_status(f"Gateway turn failed, trying direct path… ({exc})")
+                    answer = f"Gateway execution failed: {exc}. No direct model fallback was executed."
+                    self.history.add(AssistantMessageEvent(content=answer, turn_id=turn_id))
+                    self.update_status("Gateway routing failed")
+                    return
 
             # ==========================================================
             # Decide whether to use the full CodingAgent + strict planner checklist path.

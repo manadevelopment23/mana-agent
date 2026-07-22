@@ -354,6 +354,24 @@ save a new default, but it cannot collect credentials. Use
 support `/models current`, `/models refresh`, and
 `/models set <provider/model>`.
 
+Both chat frontends also expose gateway routing and live task state:
+
+```text
+/route
+/route explain
+/tasks
+/task <id>
+/task cancel|pause|resume <id>
+/budget
+/candidates
+/models health
+```
+
+Every model-backed turn is routed and persisted. Single-model execution is the
+default; multi-agent or parallel-candidate work starts only when the coordinating
+model requests it and gateway evidence, isolation, verification, ownership,
+latency, concurrency, and budget policy approve it.
+
 Chat messages remain attached to one durable workspace session for the lifetime
 of the conversation. Both the plain CLI and Textual TUI accept `/new` to archive
 the current session and start an isolated conversation; `/models`, UI refreshes,

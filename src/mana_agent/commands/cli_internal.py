@@ -181,7 +181,7 @@ def _build_project_llm_analyzer():
     )
 
 
-def _build_main_agent_routing_llm() -> Any | None:
+def _build_main_agent_routing_llm(routing_authority: Any | None = None) -> Any | None:
     """Build the lightweight LLM used by the mandatory MainAgent route."""
     if os.getenv("PYTEST_CURRENT_TEST"):
         return None
@@ -196,6 +196,8 @@ def _build_main_agent_routing_llm() -> Any | None:
     model = resolve_model_for_role(
         AgentRole.HEAD_DECISION,
         global_model=getattr(settings, "openai_chat_model", "gpt-4.1-mini"),
+        routing_authority=routing_authority,
+        task_description="Route a CLI request into the model-driven task lifecycle.",
     ).resolved_model
     return create_chat_model(
         api_key=api_key,
@@ -225,7 +227,12 @@ def _record_multi_agent_request(
     """Record a mandatory MainAgent route before a legacy entrypoint continues."""
     if command_scope and _SKIP_NEXT_COMMAND_ROUTE.get():
         return ""
-    main_kwargs: dict[str, Any] = {"routing_llm": _build_main_agent_routing_llm()}
+    from mana_agent.gateway.routing import GatewayRoutingAuthority
+
+    routing_authority = GatewayRoutingAuthority(root)
+    main_kwargs: dict[str, Any] = {
+        "routing_llm": _build_main_agent_routing_llm(routing_authority),
+    }
     if session_id:
         main_kwargs["session_id"] = session_id
     result = MainAgent(root, **main_kwargs).run_user_request(
@@ -1683,12 +1690,24 @@ def build_ask_service(
     model_override: str | None,
     *,
     project_root: Path | None = None,
+    routing_authority: Any | None = None,
 ) -> AskService:
+    root = project_root.resolve() if project_root else Path.cwd().resolve()
+    if routing_authority is None:
+        from mana_agent.gateway.routing import GatewayRoutingAuthority
+
+        routing_authority = GatewayRoutingAuthority(root, settings=settings)
+    route_context = {
+        "routing_authority": routing_authority,
+        "workspace_id": "",
+        "repository_id": "",
+    }
     model = resolve_model_for_role(
         AgentRole.MAIN,
         global_model=model_override or settings.openai_chat_model,
+        task_description="Initialize the main conversational model through the gateway.",
+        **route_context,
     ).resolved_model
-    root = project_root.resolve() if project_root else Path.cwd().resolve()
     qna_chain_cls = _public_symbol("QnAChain", QnAChain)
     ask_agent_cls = _public_symbol("AskAgent", AskAgent)
     ask_service_cls = _public_symbol("AskService", AskService)
@@ -1696,6 +1715,8 @@ def build_ask_service(
     router_model = resolve_model_for_role(
         AgentRole.HEAD_DECISION,
         global_model=model,
+        task_description="Initialize the entry-routing model through the gateway.",
+        **route_context,
     ).resolved_model
 
     qna_chain = qna_chain_cls(

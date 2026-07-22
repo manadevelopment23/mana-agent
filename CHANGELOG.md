@@ -2,6 +2,12 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-22
+
+- Extended the deployed evidence-based model router across gateway, CLI, TUI, and Codex task dispatch with persisted task-aware requests/decisions, explicit routing modes, single-model default policy, evidence-gated multi-agent/parallel approval, and fail-closed decision persistence.
+  - Added gateway-owned live task control with validated pause/resume/cancel/reprioritize/block/verify transitions, task-tree cancellation, routing identity, budgets, evidence, ownership locks, restoration-safe state, structured events, shared CLI/TUI control commands, and expanded doctor diagnostics.
+  - Verification: `MANA_HOME=/tmp/mana-routing-full-3 PYTHONPATH=src .venv/bin/python -m pytest -q` passed (1,145 passed, 1 skipped); the focused routing/gateway/Codex/doctor/TUI suite passed (116 tests); focused Ruff, Python compilation, and `git diff --check` passed. A configured type checker was unavailable. The system `python` command points to a legacy interpreter and was not used; verification used the repository Python 3.12 virtual environment.
+
 ## 2026-07-21
 
 - Fixed adaptive gateway model selection to tolerate legacy and test settings objects that omit the optional `mana_codex_model` field while still honoring it when configured.
