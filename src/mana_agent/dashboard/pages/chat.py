@@ -14,7 +14,7 @@ from mana_agent.ui.streamlit_helpers import find_mana_root
 
 
 def _api_base() -> str:
-    return str(st.session_state.get("mana_api_base") or "http://127.0.0.1:8000").rstrip("/")
+    return str(st.session_state.get("mana_api_base") or "").strip().rstrip("/")
 
 
 def _ws_url(conversation_id: str, root: Path) -> str:
@@ -169,10 +169,17 @@ def render(root: Path | None = None) -> None:
     top[2].metric("Messages", record.get("message_count", 0))
     st.caption(f"ID `{conversation_id}` · repo `{record.get('repository_id')}`")
 
-    with st.expander("Live socket connection", expanded=record.get("status") == "running"):
-        st.caption(f"WebSocket: `{_ws_url(conversation_id, root)}`")
-        _socket_bridge(conversation_id, root)
-        st.caption("Events are also polled from durable conversation storage for reconnect recovery.")
+    with st.expander("Runtime event delivery", expanded=record.get("status") == "running"):
+        api_base = _api_base()
+        if api_base:
+            st.caption(f"WebSocket: `{_ws_url(conversation_id, root)}`")
+            _socket_bridge(conversation_id, root)
+        else:
+            st.caption(
+                "Durable event recovery is active. Configure an API base only when a Mana-Agent "
+                "FastAPI server is running and you need an external live socket."
+            )
+        st.caption("The dashboard refreshes the persisted conversation timeline while execution is running.")
 
     render_timeline(messages, events)
 
