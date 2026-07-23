@@ -373,13 +373,21 @@ model requests it and gateway evidence, isolation, verification, ownership,
 latency, concurrency, and budget policy approve it.
 
 Chat messages remain attached to one durable workspace session for the lifetime
-of the conversation. Both the plain CLI and Textual TUI accept `/new` to archive
-the current session and start an isolated conversation; `/models`, UI refreshes,
-tool calls, and model routing reuse that session. Each new chat process creates a
+of the conversation. `/new` permanently deletes the current session, its durable
+history, session memory, browser context, and transient resources before binding
+a fresh session. Use `/sessions` to list, inspect, switch, rename, or explicitly
+delete other chats; `/session` remains an alias. `/models`, UI refreshes,
+tool calls, and model routing reuse the active session. Each new chat process creates a
 fresh session and abandons any active session left by an earlier process. Mana
 still reuses one automatic repository record and one standalone workspace for
 each canonical repository path. A specific stored conversation can be selected
 explicitly with `mana-agent chat --session <session-id>`.
+
+The same typed registry provides `/connect`, `/disconnect`, `/processes`,
+`/tasks`, `/models`, `/plan`, `/analyze`, `/doctor`, and `/help` to CLI chat,
+Textual, dashboard/API clients, and Telegram. Persistent services run as
+registered workers under `~/.mana/runtime/processes/`; no chat command accepts an
+arbitrary operating-system command.
 
 ### Copying TUI text
 
@@ -818,6 +826,9 @@ streamlit run dashboard/app.py -- --root-dir .
 ```
 
 Dashboard operations use the same validation and safety rules as the CLI. Page navigation alone never authorizes destructive actions.
+Dashboard chats are canonical workspace sessions, not dashboard-only
+conversations. Existing dashboard conversations are migrated once; switching a
+chat replaces the visible timeline from the canonical chronological history.
 
 ### Observability and OTLP export
 

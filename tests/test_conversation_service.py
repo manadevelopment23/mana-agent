@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -22,7 +21,7 @@ def conv_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_create_list_and_load_conversation(conv_root: Path) -> None:
     service = ConversationService(root=conv_root)
     created = service.create(title="First")
-    assert created.conversation_id.startswith("conv_")
+    assert created.conversation_id.startswith("session_")
     listed = service.list()
     assert any(item.conversation_id == created.conversation_id for item in listed)
     loaded = service.get(created.conversation_id)

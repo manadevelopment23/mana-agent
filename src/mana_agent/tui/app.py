@@ -352,17 +352,6 @@ class ManaChatApp(App):
         if not text.strip():
             return
 
-        if self.gateway is not None and hasattr(self.gateway, "handle_control_command"):
-            control = self.gateway.handle_control_command(
-                text,
-                session_id=self._gateway_session_id or "",
-            )
-            if control is not None:
-                self.history.add(AssistantMessageEvent(content=control))
-                if self.input:
-                    self.input.reset()
-                return
-
         if text == "/models" or text.startswith("/models "):
             if self._turn_in_progress:
                 self.notify("Wait for the current turn to finish before changing models.", severity="warning")
@@ -387,6 +376,27 @@ class ManaChatApp(App):
             if self.input:
                 self.input.reset()
             return
+
+        if text.startswith("/") and self.gateway is not None and hasattr(self.gateway, "dispatch_command"):
+            if not self._gateway_session_id:
+                self._gateway_session_id = self.gateway.create_session(frontend="tui")
+            result = self.gateway.dispatch_command(
+                text, session_id=self._gateway_session_id, frontend="tui"
+            )
+            if result is not None:
+                new_session_id = str(result.data.get("session_id") or "")
+                if new_session_id:
+                    self._gateway_session_id = new_session_id
+                    self.active_flow_id = None
+                for event in result.events:
+                    if event.get("type") == "timeline.replace":
+                        self._replace_timeline(event.get("messages") or [])
+                if result.message:
+                    self.history.add(AssistantMessageEvent(content=result.message))
+                if self.input:
+                    self.input.reset()
+                self.update_status("Ready")
+                return
 
         if text == "/new":
             if self._turn_in_progress:
@@ -433,8 +443,19 @@ class ManaChatApp(App):
         )
         self.active_flow_id = None
         self.history.clear()
-        self.history.add(AssistantMessageEvent(content="Started a new conversation."))
         return self._gateway_session_id
+
+    def _replace_timeline(self, messages: list[dict[str, Any]]) -> None:
+        """Replace visible state from canonical chronological durable messages."""
+        self.history.clear()
+        for message in messages:
+            role = str(message.get("role") or "")
+            content = str(message.get("content") or "")
+            turn_id = str(message.get("turn_id") or "")
+            if role == "user":
+                self.history.add(UserMessageEvent(content=content, turn_id=turn_id))
+            elif role == "assistant":
+                self.history.add(AssistantMessageEvent(content=content, turn_id=turn_id))
 
     async def _handle_real_turn_guarded(self, user_event: UserMessageEvent) -> None:
         try:

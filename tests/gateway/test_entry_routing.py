@@ -428,5 +428,5 @@ def test_new_closes_previous_and_opens_fresh_session(tmp_path: Path, monkeypatch
 
     service = WorkspaceService()
     assert second != first
-    assert service.store.get_session(first).status == "closed"
+    assert first not in {item.session_id for item in service.store.list_sessions()}
     assert service.store.get_session(second).status == "active"

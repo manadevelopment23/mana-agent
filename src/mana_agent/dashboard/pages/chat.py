@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import threading
 import time
 from pathlib import Path
-from typing import Any
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -84,7 +82,7 @@ def _socket_bridge(conversation_id: str, root: Path, height: int = 120) -> None:
     components.html(html, height=height)
 
 
-def _run_chat_async(root: Path, conversation_id: str, content: str) -> None:
+def _run_chat(root: Path, conversation_id: str, content: str) -> None:
     service = conversation_service_for_root(root)
     try:
         service.send_message(conversation_id, content)
@@ -174,13 +172,7 @@ def render(root: Path | None = None) -> None:
         st.rerun()
 
     if prompt := st.chat_input("Message this conversation"):
-        # Optimistic UI: write user message path via background execution.
-        st.session_state["_pending_prompt"] = prompt
-        thread = threading.Thread(
-            target=_run_chat_async,
-            args=(root, conversation_id, prompt),
-            daemon=True,
-        )
-        thread.start()
-        time.sleep(0.15)
+        # The canonical service owns execution; no frontend-owned daemon thread.
+        with st.spinner("Mana-Agent is working…"):
+            _run_chat(root, conversation_id, prompt)
         st.rerun()

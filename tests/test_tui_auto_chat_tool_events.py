@@ -6,7 +6,7 @@ from pathlib import Path
 
 from types import SimpleNamespace
 
-from mana_agent.chat.events import AssistantMessageEvent, ToolCallEvent, ToolResultEvent, UserMessageEvent
+from mana_agent.chat.events import ToolCallEvent, ToolResultEvent, UserMessageEvent
 from mana_agent.chat.history import ChatHistory
 from mana_agent.gateway.turn_engine import ChatTurnResult, _serialize_tool_traces
 from mana_agent.tui.app import ManaChatApp
@@ -97,6 +97,4 @@ def test_tui_new_conversation_uses_gateway_boundary_and_clears_visible_history(t
     assert new_session == "session_new"
     assert app._gateway_session_id == "session_new"
     events = history.get_events()
-    assert len(events) == 1
-    assert isinstance(events[0], AssistantMessageEvent)
-    assert events[0].content == "Started a new conversation."
+    assert events == []

@@ -2,6 +2,14 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-23
+
+- Unified chat lifecycle around canonical workspace sessions, with destructive `/new`, `/sessions` management and exact history switching, title generation, safe physical deletion, memory tombstones, and one-time dashboard-conversation migration.
+  - Added the shared typed command registry across gateway, CLI chat, Textual, API, and Telegram, connector setup/management, API session/command/connector/process endpoints, and a generated CLI capability matrix with explicit unsupported reasons.
+  - Added a persistent registered-worker process manager with atomic metadata, identity-checked stop/restart, stale recovery, singleton prevention, bounded log reads, lifecycle events, and background Telegram startup without PID-file or arbitrary-shell execution.
+  - Removed the TUI `/new` history message, the Telegram-only command implementation, dashboard-only chat identity, and dashboard-managed daemon chat thread.
+  - Verification: `PATH="$PWD/venv/bin:$PATH" venv/bin/python -m pytest -q` passed (1,207 passed, 2 skipped); focused unified-session/command/process, gateway, TUI, Telegram, and API conversation tests passed (45 tests); new/affected-module Ruff, Python compilation, and `git diff --check` passed. The required repository-wide `ruff check .` was run and still reports 803 unrelated pre-existing findings in legacy files/tests.
+
 ## 2026-07-22
 
 - Added explicit, shared `codex`/`internal` coding-backend selection across the gateway-owned CLI, TUI, API, and dashboard stack. Disabling Codex now activates Mana-Agent's existing model-driven internal coding tools without starting or authenticating Codex, while a selected Codex turn remains fail-closed with no runtime fallback.
