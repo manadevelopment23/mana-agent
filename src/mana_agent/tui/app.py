@@ -461,12 +461,12 @@ class ManaChatApp(App):
             self._gateway_session_id, frontend="tui"
         )
         self.active_flow_id = None
-        self.history.clear()
+        self._clear_conversation_view()
         return self._gateway_session_id
 
     def _replace_timeline(self, messages: list[dict[str, Any]]) -> None:
         """Replace visible state from canonical chronological durable messages."""
-        self.history.clear()
+        self._clear_conversation_view()
         for message in messages:
             role = str(message.get("role") or "")
             content = str(message.get("content") or "")
@@ -475,6 +475,14 @@ class ManaChatApp(App):
                 self.history.add(UserMessageEvent(content=content, turn_id=turn_id))
             elif role == "assistant":
                 self.history.add(AssistantMessageEvent(content=content, turn_id=turn_id))
+
+    def _clear_conversation_view(self) -> None:
+        """Clear both canonical TUI events and already-mounted timeline widgets."""
+        self.history.clear()
+        if self.chat_log is not None:
+            self.chat_log.clear_log()
+        self._tool_cid_map.clear()
+        self.token_count = 0
 
     def _apply_session_action(self, action: Any | None) -> None:
         if action is None or self.gateway is None or not self._gateway_session_id:

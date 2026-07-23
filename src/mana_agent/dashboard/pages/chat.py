@@ -82,10 +82,10 @@ def _socket_bridge(conversation_id: str, root: Path, height: int = 120) -> None:
     components.html(html, height=height)
 
 
-def _run_chat(root: Path, conversation_id: str, content: str) -> None:
+def _run_chat(root: Path, conversation_id: str, content: str) -> dict[str, object] | None:
     service = conversation_service_for_root(root)
     try:
-        service.send_message(conversation_id, content)
+        return service.send_message(conversation_id, content)
     except Exception as exc:  # ensure status recovers
         try:
             service.set_status(conversation_id, "failed")
@@ -99,6 +99,7 @@ def _run_chat(root: Path, conversation_id: str, content: str) -> None:
             )
         except Exception:
             pass
+        return None
 
 
 def render(root: Path | None = None) -> None:
@@ -183,5 +184,8 @@ def render(root: Path | None = None) -> None:
     if prompt := st.chat_input("Message this conversation"):
         # The canonical service owns execution; no frontend-owned daemon thread.
         with st.spinner("Mana-Agent is working…"):
-            _run_chat(root, conversation_id, prompt)
+            result = _run_chat(root, conversation_id, prompt)
+        replacement_id = str((result or {}).get("conversation_id") or "")
+        if replacement_id and replacement_id != conversation_id:
+            st.session_state.active_conversation_id = replacement_id
         st.rerun()

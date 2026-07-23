@@ -131,7 +131,9 @@ class SessionService:
                 if active == session_id:
                     self._active_by_frontend.pop(frontend, None)
 
-    def replace(self, session_id: str, *, gateway: Any, frontend: str) -> SessionRecord:
+    def replace(
+        self, session_id: str, *, gateway: Any | None, frontend: str
+    ) -> SessionRecord:
         record = self.workspaces.store.get_session(session_id)
         self.delete(session_id, gateway=gateway)
         return self.create(record.cwd, workspace_id=record.workspace_id, frontend=frontend)

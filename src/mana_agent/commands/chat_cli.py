@@ -2106,9 +2106,9 @@ def chat(
                         session_turns.clear()
                         active_flow_id = None
                     for event in result.events:
-                        if event.get("type") == "timeline.replace" and event.get("messages"):
+                        if event.get("type") == "timeline.replace":
                             console.clear()
-                            for message in event["messages"]:
+                            for message in event.get("messages") or []:
                                 role = str(message.get("role") or "").capitalize()
                                 if role in {"User", "Assistant"}:
                                     console.print(f"[bold]{role}:[/bold] {message.get('content') or ''}")

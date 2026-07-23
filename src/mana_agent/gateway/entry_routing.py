@@ -173,6 +173,10 @@ follow-up; reroute when the user's intent changes. Do not route by isolated keyw
 
 The required_sources array is an execution contract: every listed tool source is mandatory and
 must complete successfully before response generation. Never substitute a source or provider.
+Use only identifiers from required_source_vocabulary in the request payload, and obey its
+required_source_rules. Route registry `tools` are executor tool names, not source identifiers;
+never copy a tool name or route name into required_sources unless it is explicitly present in the
+source vocabulary. In particular, command is tool-free and requires exactly ["none"].
 When no supported available capability can satisfy a required source, return route capability_error
 with that source and an exact error_code. unsupported is a distinct model decision, never a
 fallback. Direct URL signals are supplied separately; do not treat them as repository evidence.
@@ -225,6 +229,23 @@ class EntryRouter:
             "user_prompt": str(user_prompt or "").strip(),
             "context": context.to_dict(),
             "routes": self.registry.snapshot(),
+            "required_source_vocabulary": sorted(REQUIRED_SOURCES),
+            "required_source_rules": {
+                "conversation": [["none"]],
+                "command": [["none"]],
+                "unsupported": [["none"]],
+                "coding": [["repository"]],
+                "artifact": [["artifact"]],
+                "gmail": [["gmail"]],
+                "calendar": [["calendar"]],
+                "browser": [["browser"], ["browser", "search"]],
+                "search": [["search"]],
+                "github": [["github"]],
+                "repository": [["repository"]],
+                "memory": [["memory"]],
+                "automation": [["repository"]],
+                "capability_error": "one or more unavailable source identifiers",
+            },
             "direct_url_signals": _public_urls(user_prompt),
         }
         try:
@@ -296,10 +317,12 @@ class EntryRouter:
                 "Reason: required_sources must be a non-empty list."
             )
         sources = tuple(str(item).strip() for item in raw_sources)
-        if any(source not in REQUIRED_SOURCES for source in sources):
+        unknown_sources = sorted({source for source in sources if source not in REQUIRED_SOURCES})
+        if unknown_sources:
             raise EntryRoutingError(
                 "Model decision failed: entry_route. No response was generated. "
-                "Reason: required_sources contains an unknown source."
+                "Reason: required_sources contains unknown source identifier(s): "
+                f"{', '.join(unknown_sources)}. Allowed values: {', '.join(sorted(REQUIRED_SOURCES))}."
             )
         if len(set(sources)) != len(sources) or ("none" in sources and len(sources) != 1):
             raise EntryRoutingError("Model decision failed: entry_route. No response was generated. Reason: invalid required_sources combination.")

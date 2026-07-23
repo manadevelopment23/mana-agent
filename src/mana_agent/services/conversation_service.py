@@ -225,6 +225,32 @@ class ConversationService:
         if not prompt:
             raise ValueError("message content is required")
         self.get_or_raise(conversation_id)
+        if prompt.startswith("/"):
+            from mana_agent.chat_commands import (
+                CommandContext,
+                CommandDispatcher,
+                build_default_registry,
+            )
+
+            record = self._sessions.workspaces.store.get_session(conversation_id)
+            context = CommandContext(
+                frontend="dashboard",
+                session_id=conversation_id,
+                workspace_id=record.workspace_id,
+                repository_id=record.primary_repository_id,
+                capabilities={"chat", "sessions"},
+                sessions=self._sessions,
+            )
+            command = CommandDispatcher(build_default_registry()).dispatch(prompt, context)
+            if command is not None:
+                active_id = str(command.data.get("session_id") or conversation_id)
+                return {
+                    "ok": command.status == "success",
+                    "conversation_id": active_id,
+                    "execution_id": "",
+                    "command_result": command.model_dump(mode="json"),
+                    "events": command.events,
+                }
         execution_id = _new_id("exec")
         self.set_status(conversation_id, "running", execution_id=execution_id)
         user_message = self.append_message(

@@ -54,9 +54,17 @@ def _sessions(context: CommandContext, args: list[str]) -> CommandResult:
 
 
 def _new(context: CommandContext, _args: list[str]) -> CommandResult:
-    if not context.gateway or not context.session_id:
-        raise RuntimeError("An active gateway session is required. No fallback action was executed.")
-    sid = context.gateway.start_new_conversation(context.session_id, frontend=context.frontend)
+    if not context.session_id or context.sessions is None:
+        raise RuntimeError("An active canonical session is required. No fallback action was executed.")
+    if context.gateway is not None:
+        sid = context.gateway.start_new_conversation(
+            context.session_id, frontend=context.frontend
+        )
+    else:
+        replacement = context.sessions.replace(
+            context.session_id, gateway=None, frontend=context.frontend
+        )
+        sid = replacement.session_id
     return CommandResult(status="success", message="", data={"session_id": sid}, events=[{"type": "timeline.replace", "messages": []}, {"type": "session.activated", "session_id": sid}])
 
 
