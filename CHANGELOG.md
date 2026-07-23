@@ -4,6 +4,9 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-23
 
+- Fixed the dashboard chat page's misleading default socket connection. The standalone Streamlit dashboard now uses durable event recovery by default, and external WebSockets are opt-in only after configuring a running FastAPI endpoint.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_dashboard_navigation.py tests/test_chat_websocket.py` passed.
+
 - Fixed observability span persistence to keep truncated attributes as valid JSON, and made dashboard reads tolerate malformed historical telemetry rows.
   - Verification: `PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_observability.py` passed.
 

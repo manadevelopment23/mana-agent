@@ -24,8 +24,11 @@ inspection, file patching, file writing, and verification steps.
 The optional Streamlit dashboard uses multipage navigation and persistent
 conversations under `~/.mana/repositories/<id>/dashboard/conversations/`.
 Runtime activity is the same normalized `ChatEvent` model used by the CLI/TUI,
-published through `ExecutionEventHub` and delivered over FastAPI WebSocket
-(`/api/v1/ws/conversations/{id}`) with durable JSONL replay for reconnects.
+published through `ExecutionEventHub` and persisted for durable timeline
+recovery. The standalone dashboard refreshes that persisted timeline while a
+conversation runs. An external FastAPI WebSocket
+(`/api/v1/ws/conversations/{id}`) is optional and must be configured with a
+running API server; the dashboard does not start one automatically.
 Analyze from the dashboard starts `ProjectAnalyzeService` jobs (not a separate
 pipeline) and surfaces repository analysis artifacts.
 

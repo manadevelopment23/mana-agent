@@ -43,14 +43,14 @@ st.set_page_config(
 
 root = find_mana_root()
 st.session_state.setdefault("mana_dashboard_root", str(root))
-st.session_state.setdefault("mana_api_base", "http://127.0.0.1:8000")
+st.session_state.setdefault("mana_api_base", "")
 
 
 def _page(fn, *, title: str, icon: str, url_path: str, default: bool = False):
     def _runner() -> None:
         st.sidebar.markdown("## 🧠 Mana Agent")
         st.sidebar.caption(f"Root: `{root.name}`")
-        st.sidebar.text_input("API base (for sockets)", key="mana_api_base")
+        st.sidebar.text_input("API base (optional, for live sockets)", key="mana_api_base")
         st.sidebar.caption("Navigation uses Streamlit page routes with active highlighting.")
         fn(root)
 
