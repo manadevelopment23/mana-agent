@@ -4,6 +4,14 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-24
 
+- Fixed macOS Music playback false positives. A play request now selects a
+  random local-library track when no query is supplied (or searches the library
+  using an argv-bound query), then reads Music's player state and reports success
+  only when it is actually `playing`.
+  - Verification: focused macOS provider and computer-control tests,
+    affected-file Ruff, Python compilation, AppleScript compilation, and
+    `git diff --check` passed.
+
 - Bridged structured `permission_required` results from isolated computer-tool
   workers back into the owning gateway process. Every computer permission scope
   can now open the same TUI/dashboard chat approval UI even when the provider

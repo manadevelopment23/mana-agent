@@ -7,7 +7,12 @@ import plistlib
 from pathlib import Path
 from mana_agent.config.settings import mana_home
 
-from mana_agent.integrations.computer_control.errors import ApplicationNotInstalled, CapabilityUnavailable, InvalidActionDecision
+from mana_agent.integrations.computer_control.errors import (
+    ApplicationNotInstalled,
+    ApplicationNotResponding,
+    CapabilityUnavailable,
+    InvalidActionDecision,
+)
 from mana_agent.integrations.computer_control.models import (
     ApplicationDescriptor,
     CapabilityAvailability,
@@ -100,10 +105,67 @@ class MacOSProvider(BaseProvider):
                 raise CapabilityUnavailable(
                     f"The macOS media adapter for {application_id!r} is not implemented; Apple Music was not controlled instead."
                 )
-            command = {"media.play": "play", "media.resume": "play", "media.pause": "pause", "media.next": "next track", "media.previous": "previous track", "media.stop": "stop"}[op]
-            script = f'tell application "Music" to {command}'
-            await self._run(action, ["osascript", "-e", script])
-            return self._result(action, message=f"Media action {command} completed.")
+            if op == "media.play":
+                query = str(action.arguments.get("query") or "").strip()
+                script = (
+                    "on run argv\n"
+                    ' tell application "Music"\n'
+                    "  activate\n"
+                    "  set requestedQuery to item 1 of argv\n"
+                    "  if requestedQuery is \"\" then\n"
+                    "   set libraryTrackCount to count of tracks of library playlist 1\n"
+                    "   if libraryTrackCount is 0 then error \"The Music library has no playable tracks.\"\n"
+                    "   set selectedIndex to random number from 1 to libraryTrackCount\n"
+                    "   play track selectedIndex of library playlist 1\n"
+                    "  else\n"
+                    "   set matchingTracks to search library playlist 1 for requestedQuery\n"
+                    "   if (count of matchingTracks) is 0 then error \"No matching track was found in the Music library.\"\n"
+                    "   play item 1 of matchingTracks\n"
+                    "  end if\n"
+                    "  delay 1\n"
+                    "  return player state as text\n"
+                    " end tell\n"
+                    "end run"
+                )
+                stdout, _ = await self._run(action, ["osascript", "-e", script, query])
+                state = stdout.strip().lower()
+                if state != "playing":
+                    raise ApplicationNotResponding(
+                        f"Music accepted the play command but reported {state or 'no playback state'}.",
+                        corrective_action="Add a playable track to the Music library or choose a specific library song/playlist.",
+                    )
+                return self._result(
+                    action,
+                    message="Music playback started and was verified.",
+                    data={"playback_state": state},
+                )
+            command = {
+                "media.resume": "play",
+                "media.pause": "pause",
+                "media.next": "next track",
+                "media.previous": "previous track",
+                "media.stop": "stop",
+            }[op]
+            script = (
+                f'tell application "Music"\n {command}\n delay 0.3\n'
+                " return player state as text\nend tell"
+            )
+            stdout, _ = await self._run(action, ["osascript", "-e", script])
+            state = stdout.strip().lower()
+            expected = {
+                "media.resume": "playing",
+                "media.pause": "paused",
+                "media.stop": "stopped",
+            }.get(op)
+            if expected is not None and state != expected:
+                raise ApplicationNotResponding(
+                    f"Music accepted {command!r} but reported {state or 'no playback state'}."
+                )
+            return self._result(
+                action,
+                message=f"Music {command} completed; playback state is {state or 'unknown'}.",
+                data={"playback_state": state or "unknown"},
+            )
         if op == "system.volume":
             volume = action.arguments.get("volume")
             if not isinstance(volume, (int, float)) or not 0 <= float(volume) <= 1:

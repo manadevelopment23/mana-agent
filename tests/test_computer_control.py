@@ -20,6 +20,7 @@ from mana_agent.integrations.computer_control.errors import (
     ActionCancelled,
     ActionTimedOut,
     ApplicationNotInstalled,
+    ApplicationNotResponding,
     ConfirmationRequired,
     CapabilityUnavailable,
     InvalidActionDecision,
@@ -566,6 +567,33 @@ def test_macos_application_identifier_blocks_argument_injection(tmp_path: Path, 
     missing = action("applications.open", target=ComputerTarget(application_id="com.example.Missing"))
     with pytest.raises(ApplicationNotInstalled):
         run(provider.execute_platform_action(missing))
+
+
+def test_macos_random_music_play_is_verified_and_query_is_argv(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider = MacOSProvider(settings(tmp_path))
+    captured = []
+
+    async def playing(_action, argv, **_kwargs):
+        captured.append(list(argv))
+        return "playing\n", ""
+
+    monkeypatch.setattr(provider, "_run", playing)
+    request = action("media.play", arguments={"query": "safe; not script"})
+    result = run(provider.execute_platform_action(request))
+    assert result.message == "Music playback started and was verified."
+    assert result.data["playback_state"] == "playing"
+    assert captured[0][-1] == "safe; not script"
+    assert "safe; not script" not in captured[0][2]
+
+    async def stopped(_action, _argv, **_kwargs):
+        return "stopped\n", ""
+
+    monkeypatch.setattr(provider, "_run", stopped)
+    with pytest.raises(ApplicationNotResponding, match="accepted the play command"):
+        run(provider.execute_platform_action(action("media.play")))
 
 
 def test_windows_recycle_bin_uses_path_as_separate_argument(tmp_path: Path, monkeypatch) -> None:
