@@ -7,7 +7,10 @@ from mana_agent.tools.contracts import ToolContract
 
 _TOOLS: tuple[tuple[str, str], ...] = (
     ("computer_capabilities", "Discover desktop capability groups; application details require apps-read permission."),
-    ("computer_permission_status", "Read one computer permission decision without granting it."),
+    (
+        "computer_permission_status",
+        "Read one permission decision without creating a prompt; `ask` means submit the exact selected action to create its in-chat request.",
+    ),
     ("computer_list_apps", "List discovered installed application metadata."),
     ("computer_open_app", "Open one validated installed application."),
     ("computer_close_app", "Close one validated application; unsaved work may be affected."),

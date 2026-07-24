@@ -4,6 +4,13 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-24
 
+- Fixed computer-route permission probing so an `ask` status is explicitly
+  reported as having created no prompt. The model is now instructed to submit
+  the exact requested action—which creates the bound in-chat request—and cannot
+  tell users to approve a nonexistent prompt.
+  - Verification: focused computer-control and gateway tests, affected-file
+    Ruff, Python compilation, and `git diff --check` passed.
+
 - Fixed Textual computer-permission prompts to use the non-blocking UI message
   pump. Permission events emitted on a gateway/tool worker thread now open the
   in-chat modal instead of deadlocking in a synchronous cross-thread callback.

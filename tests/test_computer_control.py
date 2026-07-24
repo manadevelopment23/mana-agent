@@ -390,6 +390,24 @@ def test_runtime_tools_require_authenticated_gateway_context(tmp_path: Path) -> 
     assert wrong_decision["error_code"] == "remote_control_denied"
 
 
+def test_permission_status_ask_says_no_prompt_exists_until_exact_action(tmp_path: Path) -> None:
+    config = settings(
+        tmp_path,
+        permissions={spec.permission_scope: "ask" for spec in ACTION_SPECS.values()},
+    )
+    control = service(tmp_path, config=config)
+    tools = {tool.name: tool for tool in build_computer_langchain_tools(control)}
+    with computer_client_scope("session", "tui"):
+        response = json.loads(tools["computer_permission_status"].invoke({
+            "scope": "computer.apps.control",
+        }))
+    assert response["ok"] is True
+    assert response["result"]["decision"] == "ask"
+    assert response["result"]["request_created"] is False
+    assert "invoke that exact computer action tool" in response["result"]["next_step"]
+    assert control.pending_permissions() == []
+
+
 @pytest.mark.parametrize(
     ("operation", "target", "arguments"),
     [

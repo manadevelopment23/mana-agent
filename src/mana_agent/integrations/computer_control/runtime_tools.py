@@ -208,7 +208,24 @@ def build_computer_langchain_tools(service: ComputerControlService | None = None
 
     def permission_status(**kwargs: object) -> str:
         payload = _PermissionInput.model_validate(kwargs)
-        return _response(lambda: (authenticated_client(), _run(control.permission_status(payload.scope)))[1])
+
+        def read_status() -> dict[str, Any]:
+            authenticated_client()
+            status = _run(control.permission_status(payload.scope))
+            result = status.model_dump(mode="json")
+            result["request_created"] = False
+            if status.decision.value == "ask":
+                result["next_step"] = (
+                    "No approval prompt exists yet. If the user requested a concrete action, "
+                    "invoke that exact computer action tool now; it will create the bound in-chat request."
+                )
+            elif not status.granted:
+                result["next_step"] = "Stop because this permission is denied or unavailable."
+            else:
+                result["next_step"] = "Continue with the exact model-selected computer action."
+            return result
+
+        return _response(read_status)
 
     def no_target(operation: str, capability: str, kwargs: dict[str, object]) -> str:
         payload = _NoTarget.model_validate(kwargs)
@@ -291,7 +308,13 @@ def build_computer_langchain_tools(service: ComputerControlService | None = None
     decision = "Requires a validated model decision ID. "
     tools = [
         tool(capabilities, "computer_capabilities", "Discover available desktop capability groups; installed application details are redacted unless apps-read permission exists."),
-        tool(permission_status, "computer_permission_status", "Read one Mana-Agent computer permission decision; does not request or grant permission.", _PermissionInput),
+        tool(
+            permission_status,
+            "computer_permission_status",
+            "Read one Mana-Agent computer permission decision. This never creates a prompt: an `ask` "
+            "result means invoke the exact requested action tool so its bound in-chat prompt can be shown.",
+            _PermissionInput,
+        ),
         tool(lambda **kw: no_target("applications.list", "applications", kw), "computer_list_apps", decision + "Lists discovered application metadata; read-only.", _NoTarget),
         tool(lambda **kw: application("applications.open", kw), "computer_open_app", decision + "Opens one validated application identifier; modifies desktop state.", _Application),
         tool(lambda **kw: application("applications.close", kw), "computer_close_app", decision + "Closes one application and may affect unsaved work; permission/preview required.", _Application),
