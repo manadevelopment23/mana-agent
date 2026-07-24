@@ -165,6 +165,7 @@ class Settings(BaseSettings):
     mana_browser_upload_roots: str = Field(default="", alias="MANA_BROWSER_UPLOAD_ROOTS")
     mana_browser_artifact_dir: str = Field(default="", alias="MANA_BROWSER_ARTIFACT_DIR")
     mana_browser_profile_max_age_days: int = Field(default=30, alias="MANA_BROWSER_PROFILE_MAX_AGE_DAYS")
+    mana_computer_control_enabled: bool = Field(default=False, alias="MANA_COMPUTER_CONTROL_ENABLED")
     # When enabled, coding/tool multi-agent routes allocate an isolated Git worktree
     # under ~/.mana/repositories/<repository-id>/worktrees/ instead of mutating the
     # primary checkout. Explicit merge intent is still required after review.

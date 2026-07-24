@@ -157,6 +157,8 @@ class ManaChatApp(App):
         self._planning_questions: list[str] = []
         self._planning_answers: list[str] = []
         self._turn_in_progress = False
+        self._computer_permission_requests_shown: set[str] = set()
+        self._unsubscribe_computer_permissions = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -192,6 +194,9 @@ class ManaChatApp(App):
                     [definition.canonical_name for definition in registry.definitions()]
                 )
             self.input.focus()
+        self._unsubscribe_computer_permissions = self.history.subscribe(
+            self._handle_computer_permission_event
+        )
 
         # Safe immediate footer (avoids any early watcher issues)
         self.sub_title = "Ready"
@@ -233,6 +238,76 @@ class ManaChatApp(App):
         # send it automatically as the first user message.
         if self.initial_prompt:
             self.run_worker(self._send_initial_prompt(), exclusive=True)
+
+    def _handle_computer_permission_event(self, event: Any) -> None:
+        if not isinstance(event, CodingActivityEvent):
+            return
+        activity = event.activity
+        if activity.get("event_type") != "computer.waiting_permission":
+            return
+        metadata = activity.get("metadata") or {}
+        request_id = str(metadata.get("permission_request_id") or "")
+        if not request_id or request_id in self._computer_permission_requests_shown:
+            return
+        self._computer_permission_requests_shown.add(request_id)
+        from mana_agent.tui.computer_permission import ComputerPermissionRequested
+
+        # Chat history listeners run synchronously on the gateway/tool thread.
+        # Posting a Textual message is thread-safe and non-blocking; call_from_thread
+        # would wait for the UI callback and can deadlock the active tool turn.
+        self.post_message(ComputerPermissionRequested(
+            request_id=request_id,
+            scope=str(metadata.get("permission_scope") or ""),
+            preview=str(metadata.get("preview") or activity.get("title") or ""),
+        ))
+
+    def on_computer_permission_requested(self, event: Any) -> None:
+        from mana_agent.tui.computer_permission import ComputerPermissionScreen
+
+        self.push_screen(
+            ComputerPermissionScreen(
+                request_id=event.request_id,
+                scope=event.scope,
+                preview=event.preview,
+            ),
+            self._apply_computer_permission,
+        )
+
+    def _apply_computer_permission(self, choice: Any) -> None:
+        if choice is None:
+            return
+        self.run_worker(
+            self._complete_computer_permission(choice),
+            name=f"computer-permission-{choice.request_id}",
+        )
+
+    async def _complete_computer_permission(self, choice: Any) -> None:
+        from mana_agent.integrations.computer_control.cancellation import (
+            decide_computer_permission,
+            deny_computer_permission,
+        )
+
+        try:
+            if choice.decision is None:
+                await asyncio.to_thread(
+                    deny_computer_permission,
+                    choice.request_id,
+                    client_type="tui",
+                )
+                self.notify("Computer action denied.", severity="warning")
+                return
+            result = await asyncio.to_thread(
+                decide_computer_permission,
+                choice.request_id,
+                decision=choice.decision,
+                client_type="tui",
+            )
+            self.notify(result.message)
+            self.history.add(AssistantMessageEvent(
+                content=f"Computer action completed after permission approval: {result.message}"
+            ))
+        except Exception as exc:
+            self.notify(f"Computer permission action failed: {exc}", severity="error")
 
     def update_status(self, text: str) -> None:
         """Update the status reactive. The watcher + refresh_footer will keep the footer in sync."""
@@ -1370,6 +1445,9 @@ class ManaChatApp(App):
 
     def on_unmount(self) -> None:
         """Use the same idempotent finalization path for all TUI shutdowns."""
+        if self._unsubscribe_computer_permissions is not None:
+            self._unsubscribe_computer_permissions()
+            self._unsubscribe_computer_permissions = None
         if self.gateway is not None and hasattr(self.gateway, "close_session"):
             self.gateway.close_session(self._gateway_session_id)
 

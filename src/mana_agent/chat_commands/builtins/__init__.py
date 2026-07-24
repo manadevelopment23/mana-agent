@@ -125,6 +125,84 @@ def _cancel(context: CommandContext, _args: list[str]) -> CommandResult:
     return CommandResult(status="success", message="Cancellation requested." if cancelled else "No cancellable turn is active.")
 
 
+def _computer_confirm(context: CommandContext, args: list[str]) -> CommandResult:
+    from mana_agent.integrations.computer_control.cancellation import approve_computer_action
+    from mana_agent.integrations.computer_control.service import default_computer_control_service
+
+    service = default_computer_control_service()
+    if not args or args[0] == "list":
+        pending = service.pending_confirmations()
+        return CommandResult(
+            status="success",
+            message=json.dumps(pending, indent=2) if pending else "No computer actions are waiting for confirmation.",
+            data={"confirmations": pending},
+        )
+    if len(args) != 1:
+        raise ValueError("Usage: /computer-confirm [list|<confirmation-request-id>]")
+    client_type = {"cli": "local_cli", "tui": "tui", "dashboard": "dashboard"}[context.frontend]
+    result = approve_computer_action(args[0], client_type=client_type)
+    return CommandResult(
+        status="success",
+        message=f"Approved and executed the exact computer action: {result.message}",
+        data={
+            "confirmation_request_id": args[0],
+            "approved": True,
+            "result": result.model_dump(mode="json"),
+        },
+    )
+
+
+def _computer_permission(context: CommandContext, args: list[str]) -> CommandResult:
+    from mana_agent.integrations.computer_control.cancellation import (
+        decide_computer_permission,
+        deny_computer_permission,
+    )
+    from mana_agent.integrations.computer_control.models import PermissionDecision
+    from mana_agent.integrations.computer_control.service import default_computer_control_service
+
+    service = default_computer_control_service()
+    if not args or args[0] == "list":
+        pending = service.pending_permissions()
+        return CommandResult(
+            status="success",
+            message=json.dumps(pending, indent=2) if pending else "No computer actions are waiting for permission.",
+            data={"permission_requests": pending},
+        )
+    if len(args) != 2 or args[1] not in {"deny", "once", "session", "always"}:
+        raise ValueError(
+            "Usage: /computer-permission [list|<permission-request-id> deny|once|session|always]"
+        )
+    client_type = {"cli": "local_cli", "tui": "tui", "dashboard": "dashboard"}[context.frontend]
+    request_id, choice = args
+    if choice == "deny":
+        deny_computer_permission(request_id, client_type=client_type)
+        return CommandResult(
+            status="success",
+            message="Denied the pending computer action.",
+            data={"permission_request_id": request_id, "approved": False},
+        )
+    decisions = {
+        "once": PermissionDecision.ALLOW_ONCE,
+        "session": PermissionDecision.ALLOW_SESSION,
+        "always": PermissionDecision.ALWAYS_ALLOW,
+    }
+    result = decide_computer_permission(
+        request_id,
+        decision=decisions[choice],
+        client_type=client_type,
+    )
+    return CommandResult(
+        status="success",
+        message=f"Permission approved and the pending computer action executed: {result.message}",
+        data={
+            "permission_request_id": request_id,
+            "approved": True,
+            "decision": decisions[choice].value,
+            "result": result.model_dump(mode="json"),
+        },
+    )
+
+
 def _identity(context: CommandContext, _args: list[str]) -> CommandResult:
     if context.frontend != "telegram":
         return CommandResult(status="error", message="/id is intentionally available only in Telegram.")
@@ -155,6 +233,22 @@ def definitions() -> list[CommandDefinition]:
         CommandDefinition(canonical_name="disconnect", description="Remove connector configuration.", argument_schema="<name>", required_capability="connectors", confirmation_required=True, handler=lambda context, args: _connect(context, ["disconnect", *args])),
         CommandDefinition(canonical_name="status", description="Show the active chat status.", required_capability="gateway", handler=_status),
         CommandDefinition(canonical_name="cancel", description="Cancel the active agent turn.", required_capability="gateway", handler=_cancel),
+        CommandDefinition(
+            canonical_name="computer-confirm",
+            description="List or explicitly approve a pending exact computer action.",
+            argument_schema="[list|<confirmation-request-id>]",
+            required_capability="gateway",
+            frontends=frozenset({"cli", "tui", "dashboard"}),
+            handler=_computer_confirm,
+        ),
+        CommandDefinition(
+            canonical_name="computer-permission",
+            description="List or decide a pending computer permission in this local client.",
+            argument_schema="[list|<permission-request-id> deny|once|session|always]",
+            required_capability="gateway",
+            frontends=frozenset({"cli", "tui", "dashboard"}),
+            handler=_computer_permission,
+        ),
         CommandDefinition(canonical_name="id", description="Show connector identity details.", required_capability="gateway", frontends=frozenset({"telegram"}), handler=_identity),
     ]
     for name, description in {

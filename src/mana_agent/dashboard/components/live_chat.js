@@ -19,6 +19,7 @@
       messages: new Map(),
       tools: new Map(),
       activities: new Map(),
+      permissionRequests: new Map(),
       seenSequences: new Set(),
       seenUnsequenced: new Set(),
       lastSequence: 0,
@@ -230,6 +231,26 @@
       state.seenUnsequenced.add(key);
     }
     const type = eventType(event);
+    const metadata = metaOf(event);
+    const permissionRequestId = text(metadata.permission_request_id);
+    if (type === "computer.waiting_permission" && permissionRequestId) {
+      state.permissionRequests.set(permissionRequestId, {
+        requestId: permissionRequestId,
+        scope: text(metadata.permission_scope),
+        preview: text(metadata.preview || event.title || eventSummary(event)),
+        status: "pending",
+        decision: "",
+      });
+    } else if (type === "computer.permission_decided" && permissionRequestId) {
+      const previous = state.permissionRequests.get(permissionRequestId) || {
+        requestId: permissionRequestId,
+      };
+      state.permissionRequests.set(permissionRequestId, {
+        ...previous,
+        status: "decided",
+        decision: text(metadata.decision),
+      });
+    }
     if (type === "message.accepted" || type === "turn.started" && metaOf(event).role === "user") {
       applyAcceptedMessage(state, event);
     } else if (type.startsWith("tool.") || type.startsWith("command.")) {
@@ -290,6 +311,7 @@
       messages: [...state.messages.values()].map(cleanMessage),
       tools: [...state.tools.values()],
       activities: [...state.activities.values()],
+      permissionRequests: [...state.permissionRequests.values()],
       lastSequence: state.lastSequence,
       socketReady: state.socketReady,
       submitting: state.submitting,
@@ -321,6 +343,9 @@
         summary{cursor:pointer}.tool pre{white-space:pre-wrap;max-height:220px;overflow:auto;color:#cbd5e1}
         form{display:flex;gap:8px;padding:10px;border-top:1px solid #ffffff18} textarea{flex:1;min-height:44px;max-height:120px;resize:vertical;border-radius:9px;padding:10px;background:#11141a;color:#fff;border:1px solid #ffffff28}
         button{border:0;border-radius:9px;padding:0 18px;background:#2563eb;color:#fff;font-weight:600}button:disabled{opacity:.45}
+        .permission{border-color:#f59e0b88}.permission-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}
+        .permission-actions button{min-height:34px;padding:6px 12px}.permission-actions .deny{background:#b91c1c}
+        .permission-state{margin-top:7px;color:#aeb4bd}.permission-error{margin-top:7px;color:#fca5a5}
         .error{color:#fca5a5}.logs{font-size:12px;color:#aeb4bd;white-space:pre-wrap}
         @media(max-width:520px){.message{max-width:96%}.shell{border-radius:7px}.timeline{padding:8px}}
       </style>
@@ -329,9 +354,11 @@
     const timeline = mount.querySelector(".timeline");
     const form = mount.querySelector("form");
     const input = mount.querySelector("textarea");
-    const button = mount.querySelector("button");
+    const submitButton = form.querySelector("button");
     const dot = mount.querySelector(".dot");
     const statusText = mount.querySelector(".statusText");
+    const permissionBusy = new Set();
+    const permissionErrors = new Map();
 
     const addText = (parent, tag, value, className) => {
       const node = document.createElement(tag);
@@ -373,13 +400,76 @@
         } else {
           const event = row.value;
           const node = document.createElement("div");
-          node.className = "activity";
-          addText(node, "div", `${event.title || eventType(event)} · ${eventStatus(event)}`);
-          if (eventSummary(event)) addText(node, "div", eventSummary(event), "logs");
+          const type = eventType(event);
+          const metadata = metaOf(event);
+          const permissionRequestId = text(metadata.permission_request_id);
+          if (type === "computer.waiting_permission" && permissionRequestId) {
+            node.className = "activity permission";
+            const request = state.permissionRequests.get(permissionRequestId) || {};
+            addText(node, "div", "Computer permission required");
+            addText(node, "div", request.preview || metadata.preview || event.title, "logs");
+            addText(node, "div", `Scope: ${request.scope || metadata.permission_scope || ""}`, "meta");
+            if (request.status === "decided") {
+              addText(node, "div", `Decision: ${request.decision || "completed"}`, "permission-state");
+            } else {
+              const actions = document.createElement("div");
+              actions.className = "permission-actions";
+              const choices = [
+                ["Deny", "deny", "deny"],
+                ["Allow once", "allow_once", ""],
+                ["This session", "allow_session", ""],
+                ["Always", "always", ""],
+              ];
+              for (const [label, decision, className] of choices) {
+                const decisionButton = document.createElement("button");
+                decisionButton.type = "button";
+                decisionButton.textContent = label;
+                decisionButton.className = className;
+                decisionButton.disabled = permissionBusy.has(permissionRequestId);
+                decisionButton.addEventListener("click", async () => {
+                  permissionBusy.add(permissionRequestId);
+                  permissionErrors.delete(permissionRequestId);
+                  render();
+                  try {
+                    const response = await fetch(
+                      `${config.apiBase}/api/v1/conversations/${encodeURIComponent(config.sessionId)}/computer-permissions/${encodeURIComponent(permissionRequestId)}`,
+                      {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}) },
+                        body: JSON.stringify({ decision, root: config.root }),
+                      },
+                    );
+                    const payload = await response.json();
+                    if (!response.ok) throw new Error(payload.detail || payload.error || `HTTP ${response.status}`);
+                    state.permissionRequests.set(permissionRequestId, {
+                      ...request,
+                      requestId: permissionRequestId,
+                      status: "decided",
+                      decision,
+                    });
+                  } catch (error) {
+                    permissionErrors.set(permissionRequestId, error.message || String(error));
+                  } finally {
+                    permissionBusy.delete(permissionRequestId);
+                    render();
+                  }
+                });
+                actions.appendChild(decisionButton);
+              }
+              node.appendChild(actions);
+              if (permissionErrors.has(permissionRequestId)) {
+                addText(node, "div", permissionErrors.get(permissionRequestId), "permission-error");
+              }
+            }
+          } else {
+            node.className = "activity";
+            addText(node, "div", `${event.title || type} · ${eventStatus(event)}`);
+            if (eventSummary(event)) addText(node, "div", eventSummary(event), "logs");
+          }
           timeline.appendChild(node);
         }
       }
-      button.disabled = !state.socketReady || state.submitting;
+      submitButton.disabled = !state.socketReady || state.submitting;
       dot.classList.toggle("ok", state.socketReady);
       statusText.textContent = state.socketReady
         ? state.submitting || state.runStatus === "running" || state.runStatus === "starting" ? "Agent is working · live" : "Live events connected"

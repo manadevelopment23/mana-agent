@@ -1,5 +1,16 @@
 # Tool System
 
+## Computer tools
+
+When `[computer_control].enabled` is true, the normal model-selected tool loop
+loads narrow `computer_*`, `calendar_*`, `media_*`, `notes_*`, desktop
+`browser_*`, and `clipboard_*` contracts. No raw computer-command tool exists.
+Every call carries the validated source decision ID; the runtime supplies the
+authenticated gateway client identity outside model arguments. High/critical
+calls require an exact-action token. See
+[`22-computer-control.md`](22-computer-control.md) for the full tool, permission,
+risk, and provider contract.
+
 `mana-agent` includes a repository-aware tool system for search, inspection, and
 controlled file changes during agent workflows.
 

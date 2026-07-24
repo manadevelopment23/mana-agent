@@ -147,7 +147,7 @@ class LaneContract:
 
 READ_CAPABILITIES = (
     "repository_read", "shell_read", "web_search", "browser", "git_read",
-    "test_execution", "email", "calendar",
+    "test_execution", "email", "calendar", "computer",
 )
 WRITE_CAPABILITIES = (
     "repository_write", "shell_write", "git_write", "release", "deployment",
@@ -219,7 +219,7 @@ def default_lane_contracts() -> dict[LaneId, LaneContract]:
             lane_id=LaneId.OPERATIONS, display_name="Operations", description="Handles deployment, infrastructure, and monitoring.",
             owns=("deployment", "infrastructure checks", "monitoring"),
             handoff_targets=(LaneId.CODING,),
-            allowed_tools=("shell_read", "shell_write", "deployment", "browser", "git_read"),
+            allowed_tools=("shell_read", "shell_write", "deployment", "browser", "git_read", "computer"),
             denied_tools=("repository_write", "release", "secrets", "email", "calendar"), allowed_models=(),
             max_concurrent_jobs=1, max_subagents=0, token_budget=25_000, cost_budget=12.0,
             default_priority=LanePriority.NORMAL, can_create_subagents=False, requires_repository=False,
@@ -280,6 +280,7 @@ ENTRY_ROUTE_LANES: dict[str, LaneId] = {
     "memory": LaneId.RESEARCH,
     "gmail": LaneId.RESEARCH,
     "calendar": LaneId.RESEARCH,
+    "computer": LaneId.OPERATIONS,
     "automation": LaneId.OPERATIONS,
     "conversation": LaneId.RESEARCH,
     "unsupported": LaneId.RESEARCH,
@@ -332,6 +333,13 @@ for _document_read_tool in ("document_detect", "document_read", "document_analyz
     TOOL_CAPABILITIES[_document_read_tool] = frozenset({"repository_read"})
 for _document_write_tool in ("document_create", "document_update", "document_delete"):
     TOOL_CAPABILITIES[_document_write_tool] = frozenset({"repository_write"})
+try:
+    from mana_agent.integrations.computer_control.tool_contracts import computer_tool_contracts
+except ImportError:  # optional integration packaging failure remains fail-closed
+    pass
+else:
+    for _computer_tool in computer_tool_contracts():
+        TOOL_CAPABILITIES[_computer_tool.name] = frozenset({"computer"})
 
 
 class LanePermissionError(PermissionError):

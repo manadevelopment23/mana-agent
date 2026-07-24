@@ -2,6 +2,69 @@
 
 All notable repository changes should be recorded here.
 
+## 2026-07-24
+
+- Fixed macOS Music playback false positives. A play request now selects a
+  random local-library track when no query is supplied (or searches the library
+  using an argv-bound query), then reads Music's player state and reports success
+  only when it is actually `playing`.
+  - Verification: focused macOS provider and computer-control tests,
+    affected-file Ruff, Python compilation, AppleScript compilation, and
+    `git diff --check` passed.
+
+- Bridged structured `permission_required` results from isolated computer-tool
+  workers back into the owning gateway process. Every computer permission scope
+  can now open the same TUI/dashboard chat approval UI even when the provider
+  action executes outside the frontend process.
+  - Verification: focused computer-control, gateway, and Textual tests,
+    affected-file Ruff, Python compilation, and `git diff --check` passed.
+
+- Fixed computer-route permission probing so an `ask` status is explicitly
+  reported as having created no prompt. The model is now instructed to submit
+  the exact requested action—which creates the bound in-chat request—and cannot
+  tell users to approve a nonexistent prompt.
+  - Verification: focused computer-control and gateway tests, affected-file
+    Ruff, Python compilation, and `git diff --check` passed.
+
+- Fixed Textual computer-permission prompts to use the non-blocking UI message
+  pump. Permission events emitted on a gateway/tool worker thread now open the
+  in-chat modal instead of deadlocking in a synchronous cross-thread callback.
+  - Verification: real worker-thread permission execution opened
+    `ComputerPermissionScreen`; focused computer-control and Textual tests,
+    affected-file Ruff, Python compilation, and `git diff --check` passed.
+
+- Added the default-off, provider-neutral computer-control framework with typed
+  actions/results/capabilities/content models, strict provider and application
+  adapter contracts, macOS/Windows/Linux auto-selection, truthful discovery,
+  fine-grained allow-once/session/persistent permissions, remote-client policy,
+  exact-action expiring confirmations, bounded execution/cancellation, sanitized
+  live events, and owner-only retention-aware audit records.
+  - Added narrow model-selected tools for application, calendar, media, notes,
+    desktop browser, clipboard, allowed-path filesystem, screenshots,
+    notifications, and system operations; raw OS automation program input is
+    not exposed, invalid model decisions fail closed, personal content is not
+    copied into events/audit, and removal uses Trash/Recycle Bin.
+  - Integrated the explicit `computer` route and authenticated frontend context
+    with the shared gateway, tool catalog, lane coordinator, `/cancel`, Textual
+    configuration, dashboard settings/capability matrix, user configuration,
+    security/architecture/tool/configuration documentation, and README.
+  - Added a desktop-safe fake provider and cross-platform mocked tests covering
+    discovery, unavailable/headless behavior, permissions, exact/expired
+    confirmation, remote restrictions, adapter selection, calendar/media/notes/
+    browser/clipboard flows, screenshots, timeout/cancellation, audit redaction,
+    allowed paths, Trash/Recycle Bin, command injection, Windows paths, macOS
+    identifiers, and Linux command construction.
+  - Added interactive pending-permission requests for `ask` scopes: Textual
+    displays an in-chat once/session/always/deny modal, Dashboard chat displays
+    the same actionable card (also mirrored on its Computer Control page), and
+    approval resumes the immutable stored action immediately instead of returning
+    a dead-end permission message.
+  - Verification: `PYTHONPATH=src .venv/bin/python -m pytest -q` passed
+    (1,263 passed, 2 skipped); the focused computer-control, API, dashboard-chat,
+    WebSocket, Textual, and gateway pass passed (70 tests); all 8 browser reducer
+    tests passed; affected-file Ruff, Python compilation, and `git diff --check`
+    passed.
+
 ## 2026-07-23
 
 - Fixed Gmail search/read/thread tools in dashboard and API chat so synchronous

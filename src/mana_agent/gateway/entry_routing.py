@@ -17,6 +17,7 @@ EntryRouteName = Literal[
     "coding",
     "gmail",
     "calendar",
+    "computer",
     "browser",
     "search",
     "github",
@@ -30,12 +31,12 @@ EntryRouteName = Literal[
 ]
 
 RequiredSource = Literal[
-    "repository", "browser", "search", "gmail", "calendar", "github",
+    "repository", "browser", "search", "gmail", "calendar", "computer", "github",
     "memory", "artifact", "internal_knowledge", "none",
 ]
 
 REQUIRED_SOURCES: set[str] = {
-    "repository", "browser", "search", "gmail", "calendar", "github",
+    "repository", "browser", "search", "gmail", "calendar", "computer", "github",
     "memory", "artifact", "internal_knowledge", "none",
 }
 TOOL_SOURCES = REQUIRED_SOURCES - {"internal_knowledge", "none"}
@@ -152,7 +153,9 @@ Route semantics:
 - coding: repository code/file changes handled by the Codex coding workflow.
 - artifact: creation, editing, conversion, inspection, or export of a user-provided document, spreadsheet, presentation, PDF, or image. A user artifact is not repository code, even when it has a filename. Use the supplied artifact_evidence, including provenance and repository membership. Only select coding when the resolved target is a repository member and the requested change is a repository edit.
 - gmail: inspect or act on the user's Gmail/email account through registered email tools.
-- calendar: calendar account operations through a registered calendar connector.
+- calendar: calendar account operations through a registered account/cloud calendar connector.
+- computer: permission-aware control of the local desktop, installed applications, native calendar,
+  media, notes, clipboard, screenshots, filesystem, notifications, browser application, or system.
 - browser: direct public-page inspection using browser tools. A supplied public HTTP(S) URL is a
   strong signal for this route; page content, HTML, metadata, links, robots, and sitemap content
   require browser rather than search snippets.
@@ -167,6 +170,9 @@ Route semantics:
 Repository context is only one possible evidence source. Current mailbox/account data is never ordinary conversation. Requests to check an inbox, latest
 email, Gmail message, email thread, or mailbox must select gmail when that registered route
 represents the request. The conversation route must never speculate about connector availability.
+Use computer—not calendar—for an explicitly native/installed desktop calendar, and computer—not
+browser—for the user's current installed browser page or tabs. Do not choose computer merely as an
+availability fallback for a cloud calendar or isolated public-browser request.
 
 Use previous_route and conversation_summary only for continuity. Reuse the active route for a true
 follow-up; reroute when the user's intent changes. Do not route by isolated keywords alone.
@@ -183,7 +189,7 @@ fallback. Direct URL signals are supplied separately; do not treat them as repos
 
 Return JSON only:
 {
-  "route": "conversation|coding|artifact|command|gmail|calendar|browser|search|github|repository|memory|automation|unsupported|capability_error",
+  "route": "conversation|coding|artifact|command|gmail|calendar|computer|browser|search|github|repository|memory|automation|unsupported|capability_error",
   "confidence": 0.0,
   "reason": "short routing reason",
   "required_sources": ["browser"],
@@ -238,6 +244,7 @@ class EntryRouter:
                 "artifact": [["artifact"]],
                 "gmail": [["gmail"]],
                 "calendar": [["calendar"]],
+                "computer": [["computer"]],
                 "browser": [["browser"], ["browser", "search"]],
                 "search": [["search"]],
                 "github": [["github"]],
@@ -345,7 +352,7 @@ class EntryRouter:
         if route == "capability_error" and not error_code:
             raise EntryRoutingError("Model decision failed: entry_route. No response was generated. Reason: capability_error requires error_code.")
         availability = {row["name"]: bool(row["availability"]["available"]) for row in self.registry.snapshot()}
-        source_routes = {"browser": "browser", "search": "search", "github": "github", "repository": "repository", "gmail": "gmail", "calendar": "calendar", "memory": "memory"}
+        source_routes = {"browser": "browser", "search": "search", "github": "github", "repository": "repository", "gmail": "gmail", "calendar": "calendar", "computer": "computer", "memory": "memory"}
         unavailable = [source for source in sources if source in source_routes and not availability.get(source_routes[source], False)]
         if unavailable and route != "capability_error":
             raise EntryRoutingError(
