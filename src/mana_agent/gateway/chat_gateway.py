@@ -66,6 +66,39 @@ from mana_agent.integrations.computer_control.context import authenticated_compu
 logger = logging.getLogger(__name__)
 
 
+def _computer_permission_requests_from_trace(response: Any) -> list[dict[str, str]]:
+    """Recover worker-process permission events from structured tool results."""
+    requests: dict[str, dict[str, str]] = {}
+    for item in _serialize_tool_traces(response):
+        candidates = (
+            item.get("output_preview"),
+            item.get("result_summary"),
+            item.get("result"),
+            item.get("error"),
+        )
+        for candidate in candidates:
+            payload: Any = candidate
+            if isinstance(candidate, str):
+                try:
+                    payload = json.loads(candidate)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+            if not isinstance(payload, dict) or payload.get("error_code") != "permission_required":
+                continue
+            request_id = str(payload.get("permission_request_id") or "").strip()
+            scope = str(payload.get("permission_scope") or "").strip()
+            execution_id = str(payload.get("execution_id") or "").strip()
+            if not request_id or not scope.startswith("computer.") or not execution_id:
+                continue
+            requests[request_id] = {
+                "permission_request_id": request_id,
+                "permission_scope": scope,
+                "execution_id": execution_id,
+                "preview": str(payload.get("preview") or "Computer permission required."),
+            }
+    return list(requests.values())
+
+
 class _RoutePreflightComplete(RuntimeError):
     """Internal control flow for a truthful pre-dispatch capability response."""
 
@@ -1923,6 +1956,28 @@ class AgentChatGateway:
                     flow_id=context.session_id,
                     run_id=context.turn_id,
                 )
+                # Computer tools may run in an isolated worker process. Its
+                # process-local event stream cannot reach the owning TUI, so
+                # reconstruct only validated permission-required events from
+                # the structured tool result and publish them in this process.
+                from mana_agent.integrations.computer_control.events import publish_computer_event
+                from mana_agent.integrations.computer_control.models import (
+                    ComputerControlEvent,
+                    ExecutionState,
+                )
+
+                for permission in _computer_permission_requests_from_trace(response):
+                    publish_computer_event(ComputerControlEvent(
+                        event_type="waiting_permission",
+                        execution_id=permission["execution_id"],
+                        state=ExecutionState.WAITING_PERMISSION,
+                        message=permission["preview"],
+                        metadata={
+                            "permission_request_id": permission["permission_request_id"],
+                            "permission_scope": permission["permission_scope"],
+                            "preview": permission["preview"],
+                        },
+                    ))
         except Exception as exc:
             return ChatTurnResult(
                 answer=str(exc),

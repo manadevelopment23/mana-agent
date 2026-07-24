@@ -4,6 +4,13 @@ All notable repository changes should be recorded here.
 
 ## 2026-07-24
 
+- Bridged structured `permission_required` results from isolated computer-tool
+  workers back into the owning gateway process. Every computer permission scope
+  can now open the same TUI/dashboard chat approval UI even when the provider
+  action executes outside the frontend process.
+  - Verification: focused computer-control, gateway, and Textual tests,
+    affected-file Ruff, Python compilation, and `git diff --check` passed.
+
 - Fixed computer-route permission probing so an `ask` status is explicitly
   reported as having created no prompt. The model is now instructed to submit
   the exact requested action—which creates the bound in-chat request—and cannot

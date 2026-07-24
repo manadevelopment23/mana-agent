@@ -24,8 +24,9 @@ _frontend_sink: ContextVar[Callable[..., None] | None] = ContextVar(
 
 def publish_computer_event(event: ComputerControlEvent) -> None:
     """Publish sanitized progress without sensitive result values."""
+    event_id = f"computer-{event.execution_id}-{event.event_type}"
     get_history().add(CodingActivityEvent(activity={
-        "event_id": f"computer-{event.execution_id}-{event.event_type}",
+        "event_id": event_id,
         "event_type": f"computer.{event.event_type}",
         "task_id": event.execution_id,
         "backend": "computer-control",
@@ -43,6 +44,7 @@ def publish_computer_event(event: ComputerControlEvent) -> None:
                 execution_id=event.execution_id,
                 status=event.state.value,
                 metadata=event.metadata,
+                event_id=event_id,
             )
         except Exception:
             logger.debug("computer-control frontend event sink raised", exc_info=True)

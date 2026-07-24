@@ -55,6 +55,7 @@ from mana_agent.gateway.entry_routing import (
     RouteAvailability,
     RouteRegistration,
 )
+from mana_agent.gateway.chat_gateway import _computer_permission_requests_from_trace
 from mana_agent.services.execution_event_hub import (
     get_execution_event_hub,
     reset_execution_event_hub_for_tests,
@@ -149,6 +150,7 @@ def test_ask_permission_waits_for_local_choice_and_allow_once_is_consumed(tmp_pa
     assert fake.executed == []
     pending = control.pending_permissions()
     assert pending[0]["permission_request_id"] == raised.value.permission_request_id
+    assert raised.value.payload()["execution_id"] == request.execution_id
     waiting = next(event for event in events if event.event_type == "waiting_permission")
     assert waiting.metadata["permission_scope"] == "computer.media.control"
     assert waiting.metadata["permission_request_id"] == raised.value.permission_request_id
@@ -406,6 +408,27 @@ def test_permission_status_ask_says_no_prompt_exists_until_exact_action(tmp_path
     assert response["result"]["request_created"] is False
     assert "invoke that exact computer action tool" in response["result"]["next_step"]
     assert control.pending_permissions() == []
+
+
+def test_worker_permission_result_is_recovered_for_frontend_modal() -> None:
+    response = SimpleNamespace(trace=[{
+        "tool_name": "media_play",
+        "status": "ok",
+        "output_preview": json.dumps({
+            "ok": False,
+            "error_code": "permission_required",
+            "permission_request_id": "permission-worker",
+            "permission_scope": "computer.media.control",
+            "execution_id": "computer-execution",
+            "preview": "Play music.",
+        }),
+    }])
+    assert _computer_permission_requests_from_trace(response) == [{
+        "permission_request_id": "permission-worker",
+        "permission_scope": "computer.media.control",
+        "execution_id": "computer-execution",
+        "preview": "Play music.",
+    }]
 
 
 @pytest.mark.parametrize(

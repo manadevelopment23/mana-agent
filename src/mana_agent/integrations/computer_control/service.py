@@ -170,6 +170,7 @@ class ComputerControlService:
             permission_request_id=request_id,
             permission_scope=action.permission_scope,
             preview=preview,
+            execution_id=action.execution_id,
         )
 
     async def approve_permission_and_execute(

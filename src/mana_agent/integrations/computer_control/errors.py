@@ -52,11 +52,13 @@ class PermissionApprovalRequired(ComputerControlError):
         permission_request_id: str,
         permission_scope: str,
         preview: str,
+        execution_id: str,
     ) -> None:
         super().__init__(message)
         self.permission_request_id = permission_request_id
         self.permission_scope = permission_scope
         self.preview = preview
+        self.execution_id = execution_id
 
     def payload(self) -> dict[str, str]:
         return {
@@ -64,6 +66,7 @@ class PermissionApprovalRequired(ComputerControlError):
             "permission_request_id": self.permission_request_id,
             "permission_scope": self.permission_scope,
             "preview": self.preview,
+            "execution_id": self.execution_id,
         }
 
 
