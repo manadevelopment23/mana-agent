@@ -252,6 +252,26 @@ class ManaConfigurationApp(App[bool]):
                 yield Switch(value=bool(values.get("MANA_A2A_DELEGATION_ENABLED", False)), id="a2a-delegation-enabled")
                 yield Label("Enable explicitly authorized remote delegation", classes="hint")
                 yield Input(value=str(values.get("MANA_A2A_MAX_DELEGATION_DEPTH") or 3), placeholder="Maximum delegation depth", id="a2a-depth")
+            with TabPane("Computer control", id="computer-control"):
+                computer = values.get("computer_control") if isinstance(values.get("computer_control"), dict) else {}
+                yield Label("Local desktop automation", classes="section-title")
+                yield Switch(value=bool(computer.get("enabled", False)), id="computer-enabled")
+                yield Label("Enable scoped computer-control tools (disabled by default)", classes="hint")
+                yield Switch(value=bool(computer.get("allow_remote_control", False)), id="computer-remote")
+                yield Label("Allow authenticated remote clients (private-data scopes remain separately disabled)", classes="hint")
+                yield Switch(value=bool(computer.get("require_local_confirmation_for_high_risk", True)), id="computer-local-confirmation")
+                yield Label("Require trusted local confirmation for high-risk remote actions", classes="hint")
+                yield Switch(value=bool(computer.get("audit_enabled", True)), id="computer-audit")
+                yield Label("Keep sanitized action audit records (never note/page/clipboard/screenshot content)", classes="hint")
+                yield Input(
+                    value=",".join(str(item) for item in computer.get("allowed_paths", [])),
+                    placeholder="Allowed filesystem roots (comma-separated absolute paths)",
+                    id="computer-paths",
+                )
+                yield Static(
+                    "Fine-grained permission decisions and the live supported/unsupported capability matrix are available in Dashboard → Computer Control.",
+                    classes="hint",
+                )
             with TabPane("Review and save", id="review"):
                 yield Label("Review", classes="section-title")
                 yield Static(self._overview_text(), id="review-summary")
@@ -380,8 +400,23 @@ class ManaConfigurationApp(App[bool]):
                 "MANA_A2A_MAX_CONCURRENT_TASKS": int(self.query_one("#a2a-concurrency", Input).value),
                 "MANA_A2A_DELEGATION_ENABLED": self.query_one("#a2a-delegation-enabled", Switch).value,
                 "MANA_A2A_MAX_DELEGATION_DEPTH": int(self.query_one("#a2a-depth", Input).value),
+                "MANA_COMPUTER_CONTROL_ENABLED": self.query_one("#computer-enabled", Switch).value,
             }
         )
+        existing_computer = self.draft.values.get("computer_control")
+        computer = dict(existing_computer) if isinstance(existing_computer, dict) else {}
+        computer.update({
+            "enabled": self.query_one("#computer-enabled", Switch).value,
+            "allow_remote_control": self.query_one("#computer-remote", Switch).value,
+            "require_local_confirmation_for_high_risk": self.query_one("#computer-local-confirmation", Switch).value,
+            "audit_enabled": self.query_one("#computer-audit", Switch).value,
+            "allowed_paths": [
+                item.strip()
+                for item in self.query_one("#computer-paths", Input).value.split(",")
+                if item.strip()
+            ],
+        })
+        self.draft.values["computer_control"] = computer
         self.draft.set_secret(self._provider_secret_name(provider), self.query_one("#provider-api-key", Input).value)
         self.draft.set_secret("MANA_WEB_SEARCH_API_KEY", self.query_one("#search-api-key", Input).value)
         self.draft.set_secret("MANA_GITHUB_TOKEN", self.query_one("#github-token", Input).value)
@@ -496,7 +531,7 @@ class ManaConfigurationApp(App[bool]):
             self.action_cancel()
         elif button_id in {"continue", "back"}:
             tabs = self.query_one(TabbedContent)
-            order = ["overview", "providers", "models", "embeddings", "coding-runtime", "memory", "search", "github", "protocols", "review"]
+            order = ["overview", "providers", "models", "embeddings", "coding-runtime", "memory", "search", "github", "protocols", "computer-control", "review"]
             current = order.index(tabs.active)
             tabs.active = order[min(len(order) - 1, current + (1 if button_id == "continue" else -1))]
 

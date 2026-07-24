@@ -164,6 +164,47 @@ DEFAULT_USER_CONFIG: dict[str, Any] = {
     "MANA_BROWSER_UPLOAD_ROOTS": "",
     "MANA_BROWSER_ARTIFACT_DIR": "",
     "MANA_BROWSER_PROFILE_MAX_AGE_DAYS": 30,
+    "MANA_COMPUTER_CONTROL_ENABLED": False,
+    "computer_control": {
+        "enabled": False,
+        "provider": "auto",
+        "allowed_clients": ["local_cli", "tui", "dashboard"],
+        "allow_remote_control": False,
+        "remote_sensitive_scopes": [],
+        "require_local_confirmation_for_high_risk": True,
+        "require_confirmation": True,
+        "audit_enabled": True,
+        "audit_retention_days": 30,
+        "timeout_seconds": 30,
+        "allowed_paths": [],
+        "permissions": {
+            "computer.apps.read": "ask",
+            "computer.apps.control": "ask",
+            "computer.calendar.read": "ask",
+            "computer.calendar.write": "ask",
+            "computer.media.read": "ask",
+            "computer.media.control": "ask",
+            "computer.notes.read": "ask",
+            "computer.notes.write": "ask",
+            "computer.browser.tabs.read": "ask",
+            "computer.browser.page.read": "ask",
+            "computer.browser.control": "ask",
+            "computer.clipboard.read": "ask",
+            "computer.clipboard.write": "ask",
+            "computer.files.read": "ask",
+            "computer.files.write": "ask",
+            "computer.screenshot.capture": "ask",
+            "computer.notifications.send": "ask",
+            "computer.system.read": "ask",
+            "computer.system.control": "ask",
+        },
+        "defaults": {
+            "browser": "auto",
+            "calendar": "auto",
+            "music": "auto",
+            "notes": "auto",
+        },
+    },
     # Empty is the compatibility sentinel; the configuration TUI persists an
     # explicit value when the user saves its coding-runtime screen.
     "MANA_CODING_BACKEND": "",
@@ -299,6 +340,7 @@ FIELD_NAME_BY_ENV: dict[str, str] = {
     "MANA_BROWSER_UPLOAD_ROOTS": "mana_browser_upload_roots",
     "MANA_BROWSER_ARTIFACT_DIR": "mana_browser_artifact_dir",
     "MANA_BROWSER_PROFILE_MAX_AGE_DAYS": "mana_browser_profile_max_age_days",
+    "MANA_COMPUTER_CONTROL_ENABLED": "mana_computer_control_enabled",
     "MANA_CODING_BACKEND": "mana_coding_backend",
     "MANA_CODEX_ENABLED": "mana_codex_enabled",
     "MANA_CODEX_MAX_WORKERS": "mana_codex_max_workers",
@@ -407,6 +449,8 @@ CONFIG_WRITE_ORDER = [
     "MANA_BROWSER_UPLOAD_ROOTS",
     "MANA_BROWSER_ARTIFACT_DIR",
     "MANA_BROWSER_PROFILE_MAX_AGE_DAYS",
+    "MANA_COMPUTER_CONTROL_ENABLED",
+    "computer_control",
     "MANA_CODING_BACKEND",
     "MANA_CODEX_ENABLED",
     "MANA_CODEX_MAX_WORKERS",
@@ -467,6 +511,13 @@ def _toml_scalar(value: Any) -> str:
     return json.dumps(text)
 
 
+def _toml_key(value: str) -> str:
+    """Quote dotted/special keys so permission scopes remain literal TOML keys."""
+    import re
+
+    return value if re.fullmatch(r"[A-Za-z0-9_-]+", value) else json.dumps(value)
+
+
 def _write_toml(path: Path, values: dict[str, Any], *, mode: int = 0o600) -> None:
     ensure_user_config_dir()
     ordered_keys = [key for key in CONFIG_WRITE_ORDER if key in values]
@@ -479,7 +530,7 @@ def _write_toml(path: Path, values: dict[str, Any], *, mode: int = 0o600) -> Non
             if lines and lines[-1] != "":
                 lines.append("")
             lines.append(f"[{prefix}]")
-            lines.extend(f"{key} = {_toml_scalar(value)}" for key, value in scalar_items)
+            lines.extend(f"{_toml_key(key)} = {_toml_scalar(value)}" for key, value in scalar_items)
         for key, value in table.items():
             if isinstance(value, dict):
                 append_tables(f"{prefix}.{key}", value)
@@ -644,6 +695,13 @@ def validate_model_level(value: str) -> str:
 
 def validate_config_values(values: dict[str, Any]) -> dict[str, Any]:
     cleaned = dict(values)
+    if "computer_control" in cleaned:
+        from mana_agent.integrations.computer_control.config import ComputerControlSettings
+
+        raw_computer = cleaned["computer_control"]
+        if not isinstance(raw_computer, dict):
+            raise UserConfigError("computer_control must be a TOML table.")
+        cleaned["computer_control"] = ComputerControlSettings.model_validate(raw_computer).model_dump(mode="json")
     if cleaned.get("OPENAI_BASE_URL"):
         cleaned["OPENAI_BASE_URL"] = validate_base_url(str(cleaned["OPENAI_BASE_URL"]))
     for name in (

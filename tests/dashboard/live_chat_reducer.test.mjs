@@ -80,6 +80,39 @@ test("events apply immediately, duplicates are idempotent, and replay does not d
   assert.equal(snapshot(state).lastSequence, 1);
 });
 
+test("computer permission requests remain actionable until a local decision event", () => {
+  const state = createState("session-1");
+  reduce(state, {
+    type: "event",
+    event: event(1, "computer.waiting_permission", {
+      metadata: {
+        permission_request_id: "permission-1",
+        permission_scope: "computer.screenshot.capture",
+        preview: "Capture the full screen.",
+      },
+    }),
+  });
+  assert.deepEqual(snapshot(state).permissionRequests, [{
+    requestId: "permission-1",
+    scope: "computer.screenshot.capture",
+    preview: "Capture the full screen.",
+    status: "pending",
+    decision: "",
+  }]);
+  reduce(state, {
+    type: "event",
+    event: event(2, "computer.permission_decided", {
+      status: "success",
+      metadata: {
+        permission_request_id: "permission-1",
+        decision: "allow_once",
+      },
+    }),
+  });
+  assert.equal(snapshot(state).permissionRequests[0].status, "decided");
+  assert.equal(snapshot(state).permissionRequests[0].decision, "allow_once");
+});
+
 test("out-of-order terminal events and failed submissions remain visible", () => {
   const state = createState("session-1");
   reduce(state, { type: "event", event: event(5, "tool.finished", { event_id: "tool-a", status: "success", metadata: { tool_call_id: "tool-a", tool_name: "search" } }) });

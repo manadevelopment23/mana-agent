@@ -61,6 +61,7 @@ from mana_agent.workspaces.preparation import PreparedRepository, RepositoryPrep
 from mana_agent.evals.recorder import record_current
 from mana_agent.model_routing.models import Complexity, LatencyClass, RiskLevel, RoutingRequest
 from mana_agent.multi_agent.runtime.model_levels import routing_budgets_from_settings
+from mana_agent.integrations.computer_control.context import authenticated_computer_client
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +361,27 @@ class AgentChatGateway:
             ),
             RouteRegistration("calendar", "Connected calendar operations.", lambda: self._available(False, "No calendar connector is registered.")),
             RouteRegistration(
+                "computer",
+                "Permission-aware local desktop and installed-application control.",
+                self._computer_route_availability,
+                (
+                    "computer_capabilities", "computer_permission_status", "computer_list_apps",
+                    "computer_open_app", "computer_close_app", "computer_active_app",
+                    "calendar_list_events", "calendar_create_event", "calendar_update_event",
+                    "calendar_delete_event", "media_get_status", "media_play", "media_pause",
+                    "media_next", "media_previous", "media_set_volume", "notes_search",
+                    "notes_read", "notes_create", "notes_update", "notes_delete",
+                    "browser_get_active_page", "browser_read_page", "browser_list_tabs",
+                    "browser_open_url", "browser_activate_tab", "browser_close_tab",
+                    "clipboard_read", "clipboard_write", "computer_take_screenshot",
+                    "computer_open_path", "computer_reveal_path", "computer_file_metadata",
+                    "computer_copy_path", "computer_move_path", "computer_rename_path",
+                    "computer_create_directory", "computer_trash_path",
+                    "computer_send_notification", "computer_get_system_status",
+                    "computer_set_system_volume", "computer_control_system",
+                ),
+            ),
+            RouteRegistration(
                 "browser",
                 "Direct public-page inspection using the browser connector.",
                 self._browser_route_availability,
@@ -433,6 +455,28 @@ class AgentChatGateway:
                 details=dict(status),
             )
         return RouteAvailability(available=True, details=dict(status))
+
+    def _computer_route_availability(self) -> RouteAvailability:
+        from mana_agent.integrations.computer_control.config import ComputerControlSettings
+
+        try:
+            settings = ComputerControlSettings.load()
+        except ValueError as exc:
+            return RouteAvailability(
+                available=False,
+                configured=True,
+                authorized=False,
+                reason=f"Computer-control configuration is invalid: {exc}",
+            )
+        if not settings.enabled:
+            return RouteAvailability(
+                available=False,
+                configured=False,
+                authorized=False,
+                reason="Computer control is disabled by default.",
+                setup_action="Set [computer_control].enabled = true in ~/.mana/config.toml.",
+            )
+        return RouteAvailability(available=True, configured=True, authorized=True)
 
     def _search_route_availability(self) -> RouteAvailability:
         from mana_agent.search.config import SearchConfig
@@ -928,9 +972,16 @@ class AgentChatGateway:
         return "running" if session_id in self._active else "ready"
 
     def cancel(self, session_id: str) -> bool:
+        computer_cancelled = False
+        try:
+            from mana_agent.integrations.computer_control.cancellation import cancel_computer_session
+
+            computer_cancelled = cancel_computer_session(session_id)
+        except Exception:
+            logger.debug("computer-control cancellation failed", exc_info=True)
         active = self._lane_coordinator.list_tasks(active_only=True, session_id=session_id)
         if not active:
-            return False
+            return computer_cancelled
         roots = [item for item in active if not item.parent_task_id]
         for task in roots or list(active):
             self._lane_coordinator.cancel_tree(task.task_id, reason="frontend cancellation requested")
@@ -985,6 +1036,7 @@ class AgentChatGateway:
     # Full turn engine (auto-chat + coding agent + model decision)
     # ------------------------------------------------------------------
 
+    @authenticated_computer_client
     def process_turn(
         self,
         session_id: str,
@@ -1107,6 +1159,7 @@ class AgentChatGateway:
                     "memory": "research",
                     "gmail": "tool",
                     "calendar": "tool",
+                    "computer": "tool",
                     "automation": "tool",
                     "artifact": "tool",
                 }.get(entry_decision.route, "main")
@@ -1162,6 +1215,7 @@ class AgentChatGateway:
                         "memory": ("memory",),
                         "gmail": ("email",),
                         "calendar": ("calendar",),
+                        "computer": ("computer",),
                         "automation": ("deployment", "shell_read", "shell_write"),
                         "artifact": ("artifact_read", "artifact_write"),
                     }.get(entry_decision.route, ())
@@ -1283,13 +1337,15 @@ class AgentChatGateway:
                     turn_id=turn_id,
                     metadata={"state": "failed" if result.error else "interrupted"},
                 )
-            write_warning = self._record_followup_memory(
-                session_id=session_id,
-                conversation_id=conversation_id,
-                turn_id=turn_id,
-                user_text=text,
-                result=result,
-            )
+            write_warning = ""
+            if result.payload.get("entry_route") != "computer":
+                write_warning = self._record_followup_memory(
+                    session_id=session_id,
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    user_text=text,
+                    result=result,
+                )
             if write_warning:
                 result.warnings.append(write_warning)
             record_current(
@@ -1297,7 +1353,11 @@ class AgentChatGateway:
                 {
                     "turn_id": turn_id,
                     "mode": result.mode,
-                    "answer": result.answer,
+                    "answer": (
+                        "[computer-control response omitted from observability]"
+                        if result.payload.get("entry_route") == "computer"
+                        else result.answer
+                    ),
                     "error": result.error,
                     "warnings": result.warnings,
                     "changed_files": result.changed_files,
@@ -1350,6 +1410,7 @@ class AgentChatGateway:
             "automation",
             "gmail",
             "calendar",
+            "computer",
         }:
             return ChatTurnResult(
                 answer="The model-selected route requires mutation, but this protocol session is read-only.",
@@ -1427,6 +1488,19 @@ class AgentChatGateway:
                 text=_conversation_prompt(state, text),
                 ask_service=ask_service,
                 callbacks=options.get("callbacks"),
+            )
+
+        if decision.route == "computer":
+            if lane_task_id:
+                for tool_name in registration.tools:
+                    self._lane_coordinator.authorize_tool(lane_task_id, tool_name)
+            return self._execute_computer_route(
+                decision=decision,
+                context=context,
+                text=_conversation_prompt(state, text),
+                ask_service=ask_service,
+                callbacks=options.get("callbacks"),
+                event_sink=sink,
             )
 
         if decision.route == "artifact":
@@ -1782,6 +1856,90 @@ class AgentChatGateway:
             trace=trace,
             warnings=warnings,
             payload={"route": "gmail"},
+        )
+
+    def _execute_computer_route(
+        self,
+        *,
+        decision: EntryRoutingDecision,
+        context: EntryRouteContext,
+        text: str,
+        ask_service: Any,
+        callbacks: Any,
+        event_sink: Any = None,
+    ) -> ChatTurnResult:
+        ask_agent = getattr(ask_service, "ask_agent", None)
+        if ask_agent is None or not callable(getattr(ask_agent, "run", None)):
+            return ChatTurnResult(
+                answer="Computer control is enabled, but its tool execution agent is unavailable.",
+                error="computer_executor_unavailable",
+                mode="route-computer-error",
+                decision=decision,
+                payload={"route": "computer"},
+            )
+        from mana_agent.config.settings import default_index_dir
+        from mana_agent.integrations.computer_control.tool_contracts import computer_tool_contracts
+
+        source_decision_id = f"{context.turn_id}:computer-entry-decision"
+        system_prompt = (
+            "You are Mana-Agent's computer-control executor. Use only the supplied narrow computer "
+            "tools and only after selecting the exact tool and typed arguments from current evidence. "
+            f"Every action call must use source_decision_id={source_decision_id!r}. Start with "
+            "computer_capabilities or computer_permission_status when availability or authorization "
+            "is not already established. Never invent IDs, paths, URLs, permissions, success, or "
+            "private content. Never request or construct raw shell, AppleScript, PowerShell, D-Bus, "
+            "COM, JavaScript, accessibility, mouse, or keyboard commands. If a tool returns "
+            "permission_required, stop: the active trusted local TUI or dashboard will show "
+            "once/session/always choices and resume the stored exact action after approval. If it returns "
+            "confirmation_required, show its preview and confirmation_request_id and stop; only a "
+            "trusted local user can approve it. Stop the sequence after any denial, cancellation, "
+            "timeout, unavailable capability, or partial failure."
+        )
+        try:
+            from mana_agent.integrations.computer_control.context import computer_decision_scope
+            from mana_agent.integrations.computer_control.events import computer_event_scope
+
+            with computer_decision_scope(source_decision_id), computer_event_scope(event_sink):
+                response = ask_agent.run(
+                    question=text,
+                    index_dir=self._index_dir or default_index_dir(self.root),
+                    k=self._resolved_k,
+                    max_steps=max(12, int(self.config.agent_max_steps or 6)),
+                    timeout_seconds=max(30, self._agent_timeout_seconds),
+                    callbacks=callbacks,
+                    system_prompt=system_prompt,
+                    tool_policy={
+                        "allowed_tools": [contract.name for contract in computer_tool_contracts()],
+                        "disable_external_search": True,
+                        "require_initial_tool_call": True,
+                    },
+                    flow_id=context.session_id,
+                    run_id=context.turn_id,
+                )
+        except Exception as exc:
+            return ChatTurnResult(
+                answer=str(exc),
+                error=f"Computer-control route failed: {exc}",
+                mode="route-computer-error",
+                decision=decision,
+                payload={"route": "computer"},
+            )
+        trace = []
+        for item in _serialize_tool_traces(response):
+            trace.append({
+                "tool_name": str(item.get("tool_name") or "computer"),
+                "status": str(item.get("status") or ""),
+                "error_code": str(item.get("error_code") or ""),
+                "result_summary": "[computer-control tool content omitted]",
+            })
+        return ChatTurnResult(
+            answer=str(getattr(response, "answer", response) or "").strip(),
+            sources=[],
+            mode="route-computer",
+            decision=decision,
+            trace=trace,
+            warnings=[str(item) for item in (getattr(response, "warnings", []) or [])],
+            payload={"route": "computer"},
         )
 
     async def process_turn_async(

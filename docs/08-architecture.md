@@ -14,6 +14,18 @@ them while a sniffer steers follow-up reads/edits/verification.
 
 ## Major Components
 
+### Computer-control integration boundary
+
+`mana_agent.integrations.computer_control` is the sole desktop automation
+boundary for every frontend. Typed model actions pass through operation schema
+validation, client policy, independent Mana/OS permissions, action-bound
+confirmation, an application adapter or OS provider, cooperative
+timeout/cancellation, live events, and sanitized audit logging. Platform
+providers contain platform behavior; the core service contains no
+platform-specific conditional tree. Unknown or invalid model decisions stop
+without a default tool/provider/action. See
+[`22-computer-control.md`](22-computer-control.md).
+
 ### Pluggable memory boundary
 
 All application consumers import `mana_agent.memory.MemoryService`. The service

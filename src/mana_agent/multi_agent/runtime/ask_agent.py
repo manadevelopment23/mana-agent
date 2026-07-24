@@ -1775,12 +1775,24 @@ class AskAgent:
             else:
                 browser_tools = build_browser_langchain_tools()
 
+        computer_tools = []
+        computer_settings = get_setting("computer_control", {})
+        computer_enabled = (
+            isinstance(computer_settings, dict)
+            and bool(computer_settings.get("enabled", False))
+        ) or bool(get_setting("MANA_COMPUTER_CONTROL_ENABLED", False))
+        if computer_enabled:
+            from mana_agent.integrations.computer_control.runtime_tools import build_computer_langchain_tools
+
+            computer_tools = build_computer_langchain_tools()
+
         # Account metadata is local; Gmail is contacted only if the model calls
         # one of these explicitly selected tools.
         all_tools = [
             *base_tools,
             *build_email_langchain_tools(),
             *browser_tools,
+            *computer_tools,
             *mcp_tools,
             *list(getattr(self, "tools", []) or []),
         ]

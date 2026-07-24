@@ -26,6 +26,7 @@
 - [CLI reference](#cli-reference)
 - [Troubleshooting](#troubleshooting)
 - [Configuration](#configuration)
+- [Computer control](docs/22-computer-control.md)
 - [Telegram connector](#telegram-connector)
 - [Web dashboard](#web-dashboard)
 - [Documentation](#documentation)
@@ -75,6 +76,7 @@ Use Mana-Agent to:
 | Experience-to-Skill Workshop | Verified task experience becomes redacted, evidence-backed proposals that require explicit review before installation. |
 | Documents | Detect, read, query, analyze, create, update, and delete supported document formats. |
 | Browser automation | Model-selected navigation, clicking, typing, forms, tabs, uploads, downloads, screenshots, and guarded submissions. |
+| Computer control | Optional, default-off, permission-scoped local desktop/application automation with exact-action confirmation, cancellation, audit redaction, and macOS/Windows/Linux providers. |
 | External search | Optional model-selected web and GitHub search with repository-local result caching. |
 | Remote connectors | Gmail access and Telegram bot interaction through the same tool-aware chat runtime. |
 | Protocol gateway | ACP v1 editor access and A2A 1.0 server/client delegation through the shared gateway, sessions, task board, memory, lanes, and tool policy. |
@@ -115,6 +117,7 @@ flowchart LR
     T --> B["Browser tools"]
     T --> S["Web + GitHub search"]
     T --> C["Connector tools"]
+    T --> CC["Computer-control service"]
 
     R --> V["Verifier + reviewer"]
     G --> V
@@ -122,6 +125,7 @@ flowchart LR
     B --> V
     S --> V
     C --> V
+    CC --> V
 
     V --> MC["Merge candidate"]
     MC --> O["Answer, artifact, or explicit merge"]
@@ -134,6 +138,11 @@ flowchart LR
 The model chooses capabilities from tool metadata and active policy. Fixed chat keywords should not silently replace model routing for repository, connector, search, or mutation work.
 
 Every chat turn first passes through the gateway's typed entry router. It selects a registered conversation, coding, connector, search, repository, or automation path from live runtime availability before any response is generated. One session is opened per chat, reused for all turns, and explicitly finalized on exit or `/new`; see [entry routing and chat sessions](docs/21-entry-routing-and-chat-sessions.md).
+
+Local computer control is an explicit `computer` route and remains disabled
+until configured. It exposes narrow tools rather than raw OS command execution,
+keeps remote control off separately, and truthfully reports unsupported desktop
+capabilities. See [Computer Control and Desktop Automation](docs/22-computer-control.md).
 
 ---
 

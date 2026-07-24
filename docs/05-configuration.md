@@ -1,5 +1,15 @@
 # Configuration
 
+## Computer control
+
+Computer control is disabled by default and configured through the Textual
+Settings → Computer control tab, Dashboard → Computer Control, or the
+`[computer_control]` table. Permission scopes, allowed filesystem roots, remote
+restrictions, exact-action confirmations, audit retention, defaults, and the
+complete example are documented in
+[`22-computer-control.md`](22-computer-control.md). `MANA_COMPUTER_CONTROL_ENABLED`
+is a compatibility flat switch; the validated table is authoritative.
+
 ## Experience-to-Skill Workshop
 
 The workshop reads the `[experience_to_skill]` table from the existing user
